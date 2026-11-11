@@ -258,7 +258,11 @@ test("a previewed script lands by its id after a restart, in a new session, and 
   await start();
 
   // Another person's assistant can't use the id, even on a model shared with them for editing.
-  const pat = await signUp("pat@example.com", "Pat Example");
+  // The restart closed the connections this process keeps open to the app; the first request after it can pick one up and is sent again.
+  const pat = await signUp("pat@example.com", "Pat Example").catch((err: unknown) => {
+    if (!String(err).includes("fetch failed")) throw err;
+    return signUp("pat@example.com", "Pat Example");
+  });
   await post(`/models/${modelId}/share`, { email: "pat@example.com", role: "edit" }, sam);
   const theirs = await connect(await signInAssistant(pat), () => "accept");
   expect(await call(theirs, "bim_apply_output", args)).toMatchObject({ status: "refused", message: expect.stringContaining("That preview has expired"), nothing_changed: true });

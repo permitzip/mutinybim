@@ -15,11 +15,12 @@ describe("render-picture-size", () => {
     const png = Buffer.from(Array.from({ length: 4096 }, (_, i) => i % 251));
     const result = imageResult({ status: "drawn", revision: 7 }, { png });
     expect(result.content).toHaveLength(2);
-    const [text, image] = result.content;
+    const [first, image] = result.content;
     expect(image).toEqual({ type: "image", data: png.toString("base64"), mimeType: "image/png" });
-    expect(text?.type).toBe("text");
-    expect(text && "text" in text ? JSON.parse(text.text) : null).toEqual({ status: "drawn", revision: 7 });
-    expect(text && "text" in text ? text.text : "").not.toContain(png.toString("base64").slice(0, 64));
+    expect(first?.type).toBe("text");
+    const words = first?.type === "text" ? first.text : "";
+    expect(JSON.parse(words)).toEqual({ status: "drawn", revision: 7 });
+    expect(words).not.toContain(png.toString("base64").slice(0, 64));
   });
 
   it("the default size is about a megapixel, and a larger one is still there to ask for", () => {
