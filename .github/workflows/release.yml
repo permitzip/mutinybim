@@ -109,7 +109,7 @@ jobs:
         run: node tools/release/publish.mjs pack "${{ needs.version.outputs.version }}" dist/release
       - name: Attest the tarballs
         if: ${{ !github.event.repository.private && hashFiles('dist/release/*.tgz') != '' }}
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: dist/release/*.tgz
       - name: Publish
@@ -154,7 +154,7 @@ jobs:
             ghcr.io/permitzip/mutinybim-authority:sha-${{ needs.version.outputs.sha }}
       - name: Attest the image
         if: ${{ !github.event.repository.private }}
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-name: ghcr.io/permitzip/mutinybim-authority
           subject-digest: ${{ steps.build.outputs.digest }}
