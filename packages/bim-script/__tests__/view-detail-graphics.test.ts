@@ -7,6 +7,7 @@
  */
 import {
   CATEGORY_OVERRIDES_FEATURE,
+  VIEW_SCHEMATIC_DETAIL_FEATURE,
   DEFAULT_SETTINGS,
   buildViewScene,
   planCommit,
@@ -19,7 +20,7 @@ import {
 } from "@permitzip/bim-kernel";
 import { defineScript, documents, routes, runScript, sliceModel, units } from "../src";
 
-const FEATURES = [CATEGORY_OVERRIDES_FEATURE];
+const FEATURES = [CATEGORY_OVERRIDES_FEATURE, VIEW_SCHEMATIC_DETAIL_FEATURE];
 const peerReads = (f: string) => FEATURES.includes(f);
 
 let seq = 0;

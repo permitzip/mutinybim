@@ -1,4 +1,4 @@
-import { SERVICES_REGISTRY_FEATURE, type ServiceRow } from "@permitzip/bim-kernel";
+import { SERVICES_REGISTRY_FEATURE, type ServiceLineCodeDef, type ServiceRow } from "@permitzip/bim-kernel";
 
 /**
  * The Mechanical add-on's service rows (`SERVICE_POINT`, round 13 K13 step
@@ -32,13 +32,25 @@ export const MECHANICAL_SERVICE_ROWS: readonly ServiceRow[] = [
   air("return_air", "Return air", "AIRCONDITIONING", "#b04fc8", false),
   air("exhaust_air", "Exhaust air", "EXHAUST", "#a0682a", true),
   air("outside_air", "Outside air", "VENTILATION", "#3fa34d", true),
-  { id: "hydronic_supply", label: "Hydronic supply", discipline: "mechanical", medium: "liquid", regime: "pressure", connector: "pipe", quantities: ["load.gpm_fixed"], asSystem: true, asLoad: false, ifc: dist("USERDEFINED", "HydronicSupply"), graphics: { colour: "#c2185b", pattern: "solid" }, lineCode: "HWS", pipeFamily: "water", flowUnit: "GPM" },
-  { id: "hydronic_return", label: "Hydronic return", discipline: "mechanical", medium: "liquid", regime: "pressure", connector: "pipe", quantities: ["load.gpm_fixed"], asSystem: true, asLoad: false, ifc: dist("USERDEFINED", "HydronicReturn"), graphics: { colour: "#7b1fa2", pattern: "solid" }, lineCode: "HWR", pipeFamily: "water", flowUnit: "GPM" },
-  { id: "condensate", label: "Condensate", discipline: "mechanical", medium: "liquid", regime: "gravity", connector: "pipe", quantities: ["load.gpm_fixed"], asSystem: true, asLoad: false, ifc: dist("DRAINAGE"), graphics: { colour: "#26a69a", pattern: "dotted" }, lineCode: "CD", pipeFamily: "drainage", flowUnit: "" },
-  { id: "refrigerant", label: "Refrigerant", discipline: "mechanical", medium: "liquid", regime: "pressure", connector: "pipe", quantities: [], asSystem: true, asLoad: false, ifc: dist("REFRIGERATION"), graphics: { colour: "#0097a7", pattern: "solid" }, lineCode: "REF", flowUnit: "" },
+  { id: "hydronic_supply", label: "Hydronic supply", discipline: "mechanical", medium: "liquid", regime: "pressure", connector: "pipe", quantities: ["load.gpm_fixed"], asSystem: true, asLoad: false, ifc: dist("USERDEFINED", "HydronicSupply"), graphics: { colour: "#c2185b", pattern: "solid" }, pipeFamily: "water", flowUnit: "GPM" },
+  { id: "hydronic_return", label: "Hydronic return", discipline: "mechanical", medium: "liquid", regime: "pressure", connector: "pipe", quantities: ["load.gpm_fixed"], asSystem: true, asLoad: false, ifc: dist("USERDEFINED", "HydronicReturn"), graphics: { colour: "#7b1fa2", pattern: "solid" }, pipeFamily: "water", flowUnit: "GPM" },
+  { id: "condensate", label: "Condensate", discipline: "mechanical", medium: "liquid", regime: "gravity", connector: "pipe", quantities: ["load.gpm_fixed"], asSystem: true, asLoad: false, ifc: dist("DRAINAGE"), graphics: { colour: "#26a69a", pattern: "dotted" }, pipeFamily: "drainage", flowUnit: "" },
+  { id: "refrigerant", label: "Refrigerant", discipline: "mechanical", medium: "liquid", regime: "pressure", connector: "pipe", quantities: [], asSystem: true, asLoad: false, ifc: dist("REFRIGERATION"), graphics: { colour: "#0097a7", pattern: "solid" }, flowUnit: "" },
   { id: "heat_gain", label: "Heat gain", discipline: "mechanical", medium: "none", regime: "pressure", connector: "none", quantities: [], asSystem: false, asLoad: true, ifc: dist("NOTDEFINED") },
-  { id: "chilled_water_supply", label: "Chilled water supply", discipline: "mechanical", medium: "liquid", regime: "pressure", connector: "pipe", quantities: ["load.gpm_fixed"], asSystem: true, asLoad: false, ifc: dist("CHILLEDWATER"), graphics: { colour: "#0277bd", pattern: "solid" }, lineCode: "CWS", feature: SERVICES_REGISTRY_FEATURE, pipeFamily: "water", flowUnit: "GPM" },
-  { id: "chilled_water_return", label: "Chilled water return", discipline: "mechanical", medium: "liquid", regime: "pressure", connector: "pipe", quantities: ["load.gpm_fixed"], asSystem: true, asLoad: false, ifc: dist("CHILLEDWATER"), graphics: { colour: "#4fa3d8", pattern: "dashed" }, lineCode: "CWR", feature: SERVICES_REGISTRY_FEATURE, pipeFamily: "water", flowUnit: "GPM" },
-  { id: "heating_water_supply", label: "Heating water supply", discipline: "mechanical", medium: "liquid", regime: "pressure", connector: "pipe", quantities: ["load.gpm_fixed"], asSystem: true, asLoad: false, ifc: dist("HEATING"), graphics: { colour: "#b71c1c", pattern: "solid" }, lineCode: "HWS", feature: SERVICES_REGISTRY_FEATURE, pipeFamily: "water", flowUnit: "GPM" },
-  { id: "heating_water_return", label: "Heating water return", discipline: "mechanical", medium: "liquid", regime: "pressure", connector: "pipe", quantities: ["load.gpm_fixed"], asSystem: true, asLoad: false, ifc: dist("HEATING"), graphics: { colour: "#e57373", pattern: "dashed" }, lineCode: "HWR", feature: SERVICES_REGISTRY_FEATURE, pipeFamily: "water", flowUnit: "GPM" },
+  { id: "chilled_water_supply", label: "Chilled water supply", discipline: "mechanical", medium: "liquid", regime: "pressure", connector: "pipe", quantities: ["load.gpm_fixed"], asSystem: true, asLoad: false, ifc: dist("CHILLEDWATER"), graphics: { colour: "#0277bd", pattern: "solid" }, feature: SERVICES_REGISTRY_FEATURE, pipeFamily: "water", flowUnit: "GPM" },
+  { id: "chilled_water_return", label: "Chilled water return", discipline: "mechanical", medium: "liquid", regime: "pressure", connector: "pipe", quantities: ["load.gpm_fixed"], asSystem: true, asLoad: false, ifc: dist("CHILLEDWATER"), graphics: { colour: "#4fa3d8", pattern: "dashed" }, feature: SERVICES_REGISTRY_FEATURE, pipeFamily: "water", flowUnit: "GPM" },
+  { id: "heating_water_supply", label: "Heating water supply", discipline: "mechanical", medium: "liquid", regime: "pressure", connector: "pipe", quantities: ["load.gpm_fixed"], asSystem: true, asLoad: false, ifc: dist("HEATING"), graphics: { colour: "#b71c1c", pattern: "solid" }, feature: SERVICES_REGISTRY_FEATURE, pipeFamily: "water", flowUnit: "GPM" },
+  { id: "heating_water_return", label: "Heating water return", discipline: "mechanical", medium: "liquid", regime: "pressure", connector: "pipe", quantities: ["load.gpm_fixed"], asSystem: true, asLoad: false, ifc: dist("HEATING"), graphics: { colour: "#e57373", pattern: "dashed" }, feature: SERVICES_REGISTRY_FEATURE, pipeFamily: "water", flowUnit: "GPM" },
+];
+
+/** Default repeating inline schematic codes for mechanical piping services. */
+export const MECHANICAL_SERVICE_LINE_CODES: readonly ServiceLineCodeDef[] = [
+  { id: "mechanical.hydronic_supply", serviceId: "hydronic_supply", lineCode: "HWS" },
+  { id: "mechanical.hydronic_return", serviceId: "hydronic_return", lineCode: "HWR" },
+  { id: "mechanical.condensate", serviceId: "condensate", lineCode: "CD" },
+  { id: "mechanical.refrigerant", serviceId: "refrigerant", lineCode: "REF" },
+  { id: "mechanical.chilled_water_supply", serviceId: "chilled_water_supply", lineCode: "CWS" },
+  { id: "mechanical.chilled_water_return", serviceId: "chilled_water_return", lineCode: "CWR" },
+  { id: "mechanical.heating_water_supply", serviceId: "heating_water_supply", lineCode: "HWS" },
+  { id: "mechanical.heating_water_return", serviceId: "heating_water_return", lineCode: "HWR" },
 ];

@@ -4,8 +4,33 @@ import { TrackedReader, requireKind } from "../model";
 import { draftElements } from "../store";
 import { asElementId, type BimElement, type ModelState } from "../types";
 import type { Pen } from "../drawing/sheet";
+import { VIEW_SCHEMATIC_DETAIL_FEATURE } from "../categories/types";
+import { defineExtensionPoint } from "../packs/contract";
+import { activePackSet } from "../packs/scope";
+import { peerReads } from "../elements/feature";
 import { activeServiceRegistry, serviceById, type ServiceRegistry } from "../services/registry";
 import type { MepSystem } from "./types";
+
+/**
+ * Default repeating inline code printed inside single-line runs for a service
+ * (e.g. `"CW"`, `"SAN"`, `"G"`). Add-ons contribute rows to
+ * `SERVICE_LINE_CODE_POINT` without changing a frozen `ServiceRow`'s meaning.
+ */
+export interface ServiceLineCodeDef {
+  /** Unique contribution id (e.g. `"pack.service_id"`). */
+  readonly id: string;
+  /** Service id this inline code applies to. */
+  readonly serviceId: string;
+  /** Short repeating inline code printed along single-line runs. */
+  readonly lineCode: string;
+}
+
+export const SERVICE_LINE_CODE_POINT = defineExtensionPoint<ServiceLineCodeDef>({
+  id: "kernel.service_line_code",
+  version: 1,
+  label: "Service inline codes",
+  idOf: (r) => r.id,
+});
 
 /**
  * How each system looks: its colour on screen (3D and the live plan), and its
@@ -140,6 +165,9 @@ export function systemLineCode(elements: Readonly<Record<string, BimElement>>, s
   if (s?.kind !== "mep_system") return undefined;
   const own = s.graphics?.lineCode;
   if (own !== undefined) return own.length > 0 ? own : undefined;
+  for (const row of activePackSet().items(SERVICE_LINE_CODE_POINT)) {
+    if (row.serviceId === s.systemKind && row.lineCode.length > 0) return row.lineCode;
+  }
   const fallback = serviceById(s.systemKind, activeServiceRegistry())?.lineCode;
   return fallback && fallback.length > 0 ? fallback : undefined;
 }
@@ -188,6 +216,7 @@ export function executeSystemGraphicsCommand(model: ModelState, cmd: SystemGraph
   if (typeof given === "string" && !HEX.test(given)) refuse("invalid_value", `${cmd.colour} isn't a colour; give it as #rrggbb (#1f6fd1)`, [system.id]);
   if (cmd.pattern && !SYSTEM_LINE_PATTERNS.includes(cmd.pattern)) refuse("invalid_value", `${cmd.pattern} isn't a line pattern; use ${SYSTEM_LINE_PATTERNS.join(", ")}`, [system.id]);
   if (cmd.weight && !SYSTEM_LINE_WEIGHTS.includes(cmd.weight)) refuse("invalid_value", `${cmd.weight} isn't a line weight; use ${SYSTEM_LINE_WEIGHTS.join(", ")}`, [system.id]);
+  if (cmd.lineCode !== undefined && !peerReads(VIEW_SCHEMATIC_DETAIL_FEATURE)) refuse("invalid_value", "Inline service codes can't be saved yet: the model server this model is open on is an older version. Try again once it is updated.", [system.id]);
   const givenCode = typeof cmd.lineCode === "string" ? cmd.lineCode.trim() : cmd.lineCode;
   if (typeof givenCode === "string" && givenCode.length > 12) refuse("invalid_value", `Line code "${givenCode}" is too long (at most 12 characters)`, [system.id]);
   const prior = system.graphics ?? {};

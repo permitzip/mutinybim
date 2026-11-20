@@ -230,7 +230,7 @@ export const KIT_ENTRIES: readonly KitEntry[] = [
     name: "routes.setSystemGraphics",
     summary: "Overrides a system's colour, line pattern, line weight, or repeating inline service code (\"CW\", \"SAN\", \"G\"; \"\" hides the code, null resets to default).",
     signature: "setSystemGraphics(ctx: ScriptContext, systemId: string, changes: { colour?: string | null; pattern?: SystemLinePattern | null; weight?: SystemLineWeight | null; lineCode?: string | null }): void",
-    example: route(`    routes.setSystemGraphics(ctx, "san-1", { pattern: "solid", weight: "medium", lineCode: "SAN" });`),
+    example: route(`    routes.along(ctx, { level: "L1", domain: "pipe", size: routes.pipe(units.in(4), "pvc"), system: { id: "san-1", kind: "sanitary" }, height: units.ft(-1), points: [{ x: units.ft(0), y: units.ft(0) }, { x: units.ft(40), y: units.ft(0) }] });\n    routes.setSystemGraphics(ctx, "san-1", { pattern: "solid", weight: "medium", lineCode: "SAN" });`),
     topics: ["system graphics", "line pattern", "line weight", "line code", "schematic", "colour", "piping style"],
   },
   {

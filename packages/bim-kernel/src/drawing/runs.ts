@@ -28,7 +28,8 @@ import { partSymbolLines } from "../part-model/symbols";
 
 export type LineFn = (a: Vec2, b: Vec2, pen: Pen, dash?: number[]) => void;
 export type TextFn = (at: Vec2, text: string, size: number) => void;
-export type InlineTextFn = (at: Vec2, text: string, size: number, rotationDeg: number) => void;
+/** Emits a rotated inline label; returns true when it fit and was placed (so the caller cuts a gap in the line only when placed). */
+export type InlineTextFn = (at: Vec2, text: string, size: number, rotationDeg: number) => boolean;
 
 export interface RunDrawOptions {
   /** Resolved detail level for this run (category override ?? view detailLevel). */
@@ -37,14 +38,20 @@ export interface RunDrawOptions {
   readonly singleLineBelowMm?: number | null;
   /** Inline repeating service code ("CW", "SAN", "G") for single-line runs; undefined suppresses. */
   readonly lineCode?: string;
-  /** Rotated text callback for inline service codes. */
+  /** Rotated text callback for inline service codes; returns true when emitted. */
   readonly inlineText?: InlineTextFn;
   /** Default pen for single-line runs when the system has no weight override. */
   readonly singleLinePen?: Pen;
+  /** Optional model-space crop bounds so very long runs only iterate visible inline labels. */
+  readonly clipBounds?: { readonly min: Vec2; readonly max: Vec2 };
+  /** Optional resolver for a connected fitting's own single-line decision (handles mismatched category overrides). */
+  readonly fittingIsSingleLine?: (f: RunFitting) => boolean;
 }
 
 const plan = (p: { x: number; y: number }): Vec2 => ({ x: p.x, y: p.y });
-const flatDir = (d: { z: number }): boolean => Math.abs(d.z) < 0.5;
+/** Truly plumb (vertical) port direction (> ~81°); 45° slopes stay non-plumb so they project as bends. */
+const isPlumb = (d: { x: number; y: number; z: number }): boolean => Math.hypot(d.x, d.y) < 0.15 && Math.abs(d.z) > 0.85;
+const flatDir = (d: { x: number; y: number; z: number }): boolean => !isPlumb(d);
 
 /** Paper-mm schematic symbol radii, scaled by `scaleMmPerPaperMm` into model mm. */
 const SCHEMATIC_TICK_HALF_MM = 1.25;
@@ -55,9 +62,11 @@ const SCHEMATIC_NODE_RADIUS_MM = 1.5;
  * Domain-neutral single-line vs double-line rule:
  * - If a category/service sets `singleLineBelowMm`, runs narrower than that
  *   threshold draw single-line and runs at or above draw double-line.
- * - Otherwise: Coarse = all single-line; Medium = duct double-line, pipe and
- *   conduit single-line schematic; Fine = all double-line.
+ * - Otherwise: Coarse = all single-line; Medium = air runs double-line, other
+ *   runs single-line schematic; Fine = all double-line.
  */
+const BEND_FITTING: RunFitting["fittingType"] = "elbow";
+const BRANCH_TAP_FITTING: RunFitting["fittingType"] = "tap";
 export function isSingleLineRun(domain: RunSegment["domain"], size: RunSegment["size"] | undefined, detail: DetailLevel = "medium", singleLineBelowMm: number | null = null): boolean {
   if (singleLineBelowMm !== null && singleLineBelowMm !== undefined) {
     if (singleLineBelowMm <= 0) return false;
@@ -100,28 +109,43 @@ function vertical(seg: RunSegment): boolean {
   return Math.hypot(seg.end.x - seg.start.x, seg.end.y - seg.start.y) < 0.01;
 }
 
+/** Effective schematic bend radius for a bend fitting, coordinated with connected leg lengths so short legs never bleed through the bend. */
+function elbowOffsetMm(model: ModelState, f: RunFitting, scaleMmPerPaperMm: number): number {
+  let maxR = SCHEMATIC_FITTING_OFFSET_MM * scaleMmPerPaperMm;
+  for (const pt of f.ports) {
+    const link = pt.link;
+    const seg = link ? model.elements[link.elementId] : undefined;
+    if (seg?.kind === "run_segment") {
+      const legLen = Math.hypot(seg.end.x - seg.start.x, seg.end.y - seg.start.y);
+      if (legLen > 1e-3) maxR = Math.min(maxR, legLen * 0.35);
+    }
+  }
+  return maxR;
+}
+
 /** How far to trim a single-line segment's endpoint back so curved elbows and rise circles draw cleanly without lines bleeding through. */
-function schematicEndTrimMm(model: ModelState, seg: RunSegment, end: "start" | "end", scaleMmPerPaperMm: number, detail: DetailLevel, singleLineBelowMm: number | null): number {
+function schematicEndTrimMm(model: ModelState, seg: RunSegment, end: "start" | "end", scaleMmPerPaperMm: number, detail: DetailLevel, singleLineBelowMm: number | null, fittingIsSingleLine?: (f: RunFitting) => boolean): number {
   const link = seg.links[end];
   if (!link) return 0;
   const f = model.elements[link.elementId];
   if (f?.kind !== "run_fitting") return 0;
-  if (!isSingleLineRun(f.domain, f.ports[0]?.size ?? seg.size, detail, singleLineBelowMm)) return 0;
-  if (f.fittingType === "elbow" && f.ports.length >= 2) {
+  const fSingle = fittingIsSingleLine ? fittingIsSingleLine(f) : isSingleLineRun(f.domain, f.ports[0]?.size ?? seg.size, detail, singleLineBelowMm);
+  if (!fSingle) return 0;
+  if (f.fittingType === BEND_FITTING && f.ports.length >= 2) {
     const [pa, pb] = f.ports;
     if (!pa || !pb) return 0;
     if (flatDir(pa.direction) && flatDir(pb.direction)) {
       const da = unit(plan(pa.direction));
       const db = unit(plan(pb.direction));
       // Only curve non-collinear bends.
-      if (Math.abs(da.x * db.y - da.y * db.x) > 0.05) return SCHEMATIC_FITTING_OFFSET_MM * scaleMmPerPaperMm;
+      if (Math.abs(da.x * db.y - da.y * db.x) > 0.05) return elbowOffsetMm(model, f, scaleMmPerPaperMm);
       return 0;
     }
     const vPort = !flatDir(pa.direction) ? pa : !flatDir(pb.direction) ? pb : null;
     // Turning UP (rise): pipe stops at the circle perimeter; turning DOWN (drop): pipe runs to center.
     if (vPort && vPort.direction.z > 0.5) return SCHEMATIC_NODE_RADIUS_MM * scaleMmPerPaperMm;
   }
-  if ((f.fittingType === "tee" || f.fittingType === "tap") && f.ports.some((pt) => !flatDir(pt.direction) && pt.direction.z > 0.5)) {
+  if ((f.fittingType === "tee" || f.fittingType === BRANCH_TAP_FITTING) && f.ports.some((pt) => !flatDir(pt.direction) && pt.direction.z > 0.5)) {
     return SCHEMATIC_NODE_RADIUS_MM * scaleMmPerPaperMm;
   }
   return 0;
@@ -135,8 +159,33 @@ function uprightAngleDeg(u: Vec2): number {
   return deg;
 }
 
-/** Draw a single-line run, breaking for repeating inline service codes ("CW", "SAN", "G") when configured. */
-function drawSingleLineWithCode(a: Vec2, b: Vec2, pen: Pen, dash: number[] | undefined, line: LineFn, scaleMmPerPaperMm: number, lineCode: string | undefined, inlineText: InlineTextFn | undefined): void {
+/** Visible [tMin, tMax] parameter interval of segment a->b against an axis-aligned crop box, or null if outside. */
+function visibleParamRange(a: Vec2, b: Vec2, clip: { readonly min: Vec2; readonly max: Vec2 }): [number, number] | null {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  let t0 = 0;
+  let t1 = 1;
+  const edges: readonly [number, number][] = [
+    [-dx, a.x - clip.min.x],
+    [dx, clip.max.x - a.x],
+    [-dy, a.y - clip.min.y],
+    [dy, clip.max.y - a.y],
+  ];
+  for (const [p, q] of edges) {
+    if (Math.abs(p) < 1e-12) {
+      if (q < 0) return null;
+    } else {
+      const r = q / p;
+      if (p < 0) t0 = Math.max(t0, r);
+      else t1 = Math.min(t1, r);
+      if (t0 > t1) return null;
+    }
+  }
+  return [t0, t1];
+}
+
+/** Draw a single-line run, breaking for repeating inline service codes ("CW", "SAN", "G") when configured and actually placed. */
+function drawSingleLineWithCode(a: Vec2, b: Vec2, pen: Pen, dash: number[] | undefined, line: LineFn, scaleMmPerPaperMm: number, lineCode: string | undefined, inlineText: InlineTextFn | undefined, clipBounds?: { readonly min: Vec2; readonly max: Vec2 }): void {
   const len = Math.hypot(b.x - a.x, b.y - a.y);
   if (len < 1e-6) return;
   if (!lineCode || !inlineText) {
@@ -145,7 +194,8 @@ function drawSingleLineWithCode(a: Vec2, b: Vec2, pen: Pen, dash: number[] | und
   }
   const paperLen = len / scaleMmPerPaperMm;
   const textSize = 1.8;
-  const gapPaper = lineCode.length * textSize * 0.72 + 2.4;
+  // Conservative glyph width (1.0 * cap height per char + generous end padding) so wide glyphs like W/M never get struck through.
+  const gapPaper = lineCode.length * textSize * 1.0 + 2.8;
   if (paperLen < gapPaper + 12) {
     line(a, b, pen, dash);
     return;
@@ -155,13 +205,27 @@ function drawSingleLineWithCode(a: Vec2, b: Vec2, pen: Pen, dash: number[] | und
   const u = unit(sub(b, a));
   const angle = uprightAngleDeg(u);
   const halfGapModel = (gapPaper / 2) * scaleMmPerPaperMm;
+  let iStart = 0;
+  let iEnd = count - 1;
+  if (clipBounds) {
+    const range = visibleParamRange(a, b, clipBounds);
+    if (!range) {
+      line(a, b, pen, dash);
+      return;
+    }
+    const padT = halfGapModel / len;
+    iStart = Math.max(0, Math.floor((range[0] - padT) * count - 0.5));
+    iEnd = Math.min(count - 1, Math.ceil((range[1] + padT) * count - 0.5));
+  }
   let cursor = 0;
-  for (let i = 0; i < count; i++) {
+  for (let i = iStart; i <= iEnd; i++) {
     const centerDist = ((i + 0.5) / count) * len;
+    const at = add(a, scale(u, centerDist));
+    // Only cut a gap in the pipe when the label is actually accepted & emitted.
+    if (!inlineText(at, lineCode, textSize, angle)) continue;
     const gapStart = Math.max(cursor, centerDist - halfGapModel);
     const gapEnd = Math.min(len, centerDist + halfGapModel);
     if (gapStart - cursor > 1e-3) line(add(a, scale(u, cursor)), add(a, scale(u, gapStart)), pen, dash);
-    inlineText(add(a, scale(u, centerDist)), lineCode, textSize, angle);
     cursor = gapEnd;
   }
   if (len - cursor > 1e-3) line(add(a, scale(u, cursor)), b, pen, dash);
@@ -177,10 +241,20 @@ export function drawRunSegment(model: ModelState, seg: RunSegment, line: LineFn,
   const a = plan(seg.start);
   const b = plan(seg.end);
   if (seg.flex) {
-    // Flex: both edges along its curve with ticks across, labelled as flex.
-    for (const [p, q, what] of flexPlanLines(seg)) line(p, q, what === "edge" ? "medium" : "thin");
+    if (singleLine) {
+      // Single-line flex: draw its curved centreline.
+      const pts = seg.flex.path;
+      for (let i = 0; i + 1 < pts.length; i++) {
+        const p0 = pts[i];
+        const p1 = pts[i + 1];
+        if (p0 && p1) line(plan(p0), plan(p1), singlePen, dash);
+      }
+    } else {
+      // Flex: both edges along its curve with ticks across, labelled as flex.
+      for (const [p, q, what] of flexPlanLines(seg)) line(p, q, what === "edge" ? "medium" : "thin");
+    }
     const mid = seg.flex.path[Math.floor(seg.flex.path.length / 2)] ?? seg.start;
-    if (label) label(add(plan(mid), { x: 0, y: sizeWidth(seg.size) / 2 + 6 * scaleMmPerPaperMm }), `${sizeLabel(seg.size)} FLEX`, 2.5);
+    if (label) label(add(plan(mid), { x: 0, y: (singleLine ? 0 : sizeWidth(seg.size) / 2) + 6 * scaleMmPerPaperMm }), `${sizeLabel(seg.size)} FLEX`, 2.5);
     return;
   }
   drawInsulationPlan(model, seg, line);
@@ -197,9 +271,16 @@ export function drawRunSegment(model: ModelState, seg: RunSegment, line: LineFn,
       for (let i = 0; i < 4; i++) line(corners[i] ?? a, corners[(i + 1) % 4] ?? a, "medium");
       line(corners[0] ?? a, corners[2] ?? a, "thin");
     } else if (singleLine) {
-      const pen = seg.domain === "duct" ? (weight ?? "medium") : singlePen;
-      circle(a, h, line, pen);
-      riseDot(a, h, line, "thin");
+      // When a connected fitting owns the rise/drop transition symbol, don't overwrite a drop circle with a rise dot.
+      const ownedByFitting = [seg.links.start, seg.links.end].some((l) => {
+        const f = l ? model.elements[l.elementId] : undefined;
+        return f?.kind === "run_fitting" && f.ports.some((pt) => !flatDir(pt.direction));
+      });
+      if (!ownedByFitting) {
+        const pen = seg.domain === "duct" ? (weight ?? "medium") : singlePen;
+        circle(a, h, line, pen);
+        riseDot(a, h, line, "thin");
+      }
     } else {
       circle(a, h, line, weight ?? "medium");
       const r = h * 0.7;
@@ -233,11 +314,11 @@ export function drawRunSegment(model: ModelState, seg: RunSegment, line: LineFn,
     if (!seg.links.end) line(add(b, scale(n, w / 2)), add(b, scale(n, -w / 2)), "medium");
   } else {
     const runLen = Math.hypot(b.x - a.x, b.y - a.y);
-    const trimA = opts ? Math.min(runLen * 0.35, schematicEndTrimMm(model, seg, "start", scaleMmPerPaperMm, detail, singleLineBelowMm)) : 0;
-    const trimB = opts ? Math.min(runLen * 0.35, schematicEndTrimMm(model, seg, "end", scaleMmPerPaperMm, detail, singleLineBelowMm)) : 0;
+    const trimA = opts ? Math.min(runLen * 0.45, schematicEndTrimMm(model, seg, "start", scaleMmPerPaperMm, detail, singleLineBelowMm, opts.fittingIsSingleLine)) : 0;
+    const trimB = opts ? Math.min(runLen * 0.45, schematicEndTrimMm(model, seg, "end", scaleMmPerPaperMm, detail, singleLineBelowMm, opts.fittingIsSingleLine)) : 0;
     const pa = trimA > 0 ? add(a, scale(u, trimA)) : a;
     const pb = trimB > 0 ? add(b, scale(u, -trimB)) : b;
-    drawSingleLineWithCode(pa, pb, singlePen, dash, line, scaleMmPerPaperMm, opts?.lineCode, opts?.inlineText);
+    drawSingleLineWithCode(pa, pb, singlePen, dash, line, scaleMmPerPaperMm, opts?.lineCode, opts?.inlineText, opts?.clipBounds);
   }
   const run = Math.hypot(b.x - a.x, b.y - a.y);
   if (label && run / scaleMmPerPaperMm > 25) {
@@ -293,20 +374,21 @@ function drawSchematicFitting(model: ModelState, f: RunFitting, line: LineFn, sc
   const [pa, pb] = f.ports;
 
   switch (f.fittingType) {
-    case "elbow": {
+    case BEND_FITTING: {
       if (!pa || !pb) return;
       if (flatDir(pa.direction) && flatDir(pb.direction)) {
         const da = unit(plan(pa.direction));
         const db = unit(plan(pb.direction));
+        const bendR = elbowOffsetMm(model, f, scaleMmPerPaperMm);
         if (Math.abs(da.x * db.y - da.y * db.x) <= 0.05) {
-          jointTick(p, da, offset, tickHalf, line);
-          jointTick(p, db, offset, tickHalf, line);
+          jointTick(p, da, bendR, tickHalf, line);
+          jointTick(p, db, bendR, tickHalf, line);
           return;
         }
-        const p1 = add(p, scale(da, offset));
-        const p2 = add(p, scale(db, offset));
-        jointTick(p, da, offset, tickHalf, line);
-        jointTick(p, db, offset, tickHalf, line);
+        const p1 = add(p, scale(da, bendR));
+        const p2 = add(p, scale(db, bendR));
+        jointTick(p, da, bendR, tickHalf, line);
+        jointTick(p, db, bendR, tickHalf, line);
         // Smooth quadratic bend from p1 through corner p to p2.
         const steps = 4;
         let prev = p1;
@@ -331,25 +413,37 @@ function drawSchematicFitting(model: ModelState, f: RunFitting, line: LineFn, sc
       return;
     }
     case "tee":
-    case "tap": {
+    case BRANCH_TAP_FITTING: {
       const vPort = f.ports.find((pt) => !flatDir(pt.direction));
       const flatPorts = f.ports.filter((pt) => flatDir(pt.direction));
       if (vPort) {
         circle(p, nodeR, line, pen);
         if (vPort.direction.z > 0.5) riseDot(p, nodeR, line, "thin");
-        for (const pt of flatPorts) jointTick(p, unit(plan(pt.direction)), nodeR + 0.5 * scaleMmPerPaperMm, tickHalf * 0.85, line);
+        for (const pt of flatPorts) {
+          const pp = plan(pt.position);
+          if (Math.hypot(pp.x - p.x, pp.y - p.y) > 1) line(p, pp, pen);
+          jointTick(p, unit(plan(pt.direction)), nodeR + 0.5 * scaleMmPerPaperMm, tickHalf * 0.85, line);
+        }
         return;
       }
-      for (const pt of flatPorts) jointTick(p, unit(plan(pt.direction)), offset, tickHalf, line);
+      for (const pt of flatPorts) {
+        const pp = plan(pt.position);
+        // Hosted branch ports sit on the trunk's outer face; bridge back to the single-line trunk centreline.
+        if (Math.hypot(pp.x - p.x, pp.y - p.y) > 1) line(p, pp, pen);
+        jointTick(pp, unit(plan(pt.direction)), offset, tickHalf, line);
+      }
       return;
     }
     case "wye": {
       const flatPorts = f.ports.filter((pt) => flatDir(pt.direction));
-      for (const pt of flatPorts) jointTick(p, unit(plan(pt.direction)), offset, tickHalf, line);
+      for (const pt of flatPorts) {
+        const pp = plan(pt.position);
+        if (Math.hypot(pp.x - p.x, pp.y - p.y) > 1) line(p, pp, pen);
+        jointTick(pp, unit(plan(pt.direction)), offset, tickHalf, line);
+      }
       // Swept 45° diagonal marker on the branch port so wyes read distinctly from tees.
       if (flatPorts.length >= 3) {
         const dirs = flatPorts.map((pt) => unit(plan(pt.direction)));
-        // Branch is the port not opposing any other port (dot > -0.95 with all others).
         let branchIdx = 2;
         for (let i = 0; i < dirs.length; i++) {
           const di = dirs[i];
@@ -363,15 +457,34 @@ function drawSchematicFitting(model: ModelState, f: RunFitting, line: LineFn, sc
         const bd = dirs[branchIdx];
         const md = dirs[(branchIdx + 1) % dirs.length];
         if (bd && md) {
-          const bPt = add(p, scale(bd, offset * 0.9));
-          const mPt = add(p, scale(md, offset * 0.9));
-          line(bPt, mPt, "thin");
+          line(add(p, scale(bd, offset * 0.9)), add(p, scale(md, offset * 0.9)), "thin");
         }
       } else if (pa) {
-        const d = unit(plan(pa.direction));
-        const n = perp(d);
-        line(p, add(p, scale(add(d, n), offset)), "thin");
+        // Hosted wye on a continuous trunk: derive trunk axis from the host segment when available.
+        const hostSeg = f.host ? model.elements[f.host.segmentId] : undefined;
+        const bd = unit(plan(pa.direction));
+        const trunkDir = hostSeg?.kind === "run_segment" && !vertical(hostSeg) ? unit(sub(plan(hostSeg.end), plan(hostSeg.start))) : perp(bd);
+        const branchStart = add(p, scale(bd, offset * 0.9));
+        const trunkPt = add(p, scale(trunkDir, offset * 0.9));
+        line(branchStart, trunkPt, "thin");
       }
+      return;
+    }
+    case "accessory": {
+      // Inline valve / cleanout / damper bowtie symbol along host segment axis.
+      const hostSeg = f.host ? model.elements[f.host.segmentId] : undefined;
+      const d = hostSeg?.kind === "run_segment" && !vertical(hostSeg) ? unit(sub(plan(hostSeg.end), plan(hostSeg.start))) : { x: 1, y: 0 };
+      const n = perp(d);
+      const halfLen = 1.4 * scaleMmPerPaperMm;
+      const halfW = 1.0 * scaleMmPerPaperMm;
+      const a1 = add(add(p, scale(d, -halfLen)), scale(n, halfW));
+      const a2 = add(add(p, scale(d, -halfLen)), scale(n, -halfW));
+      const b1 = add(add(p, scale(d, halfLen)), scale(n, halfW));
+      const b2 = add(add(p, scale(d, halfLen)), scale(n, -halfW));
+      line(a1, a2, pen);
+      line(b1, b2, pen);
+      line(a1, b2, pen);
+      line(a2, b1, pen);
       return;
     }
     case "transition": {
@@ -424,10 +537,48 @@ function drawSchematicFitting(model: ModelState, f: RunFitting, line: LineFn, sc
   }
 }
 
+/** Effective nominal size of a fitting for single-line threshold checks (falls back to host segment for portless hosted accessories). */
+function fittingSize(model: ModelState, f: RunFitting): RunSegment["size"] | undefined {
+  if (f.ports[0]?.size) return f.ports[0].size;
+  if (f.host) {
+    const host = model.elements[f.host.segmentId];
+    if (host?.kind === "run_segment") return host.size;
+  }
+  return undefined;
+}
+
 export function drawRunFitting(model: ModelState, f: RunFitting, line: LineFn, vanes = true, scaleMmPerPaperMm = 48, opts?: Pick<RunDrawOptions, "detail" | "singleLineBelowMm" | "singleLinePen">): void {
   drawInsulationPlan(model, f, line);
   const detail = opts?.detail ?? (vanes ? "fine" : "medium");
-  const singleLine = opts !== undefined ? isSingleLineRun(f.domain, f.ports[0]?.size, detail, opts.singleLineBelowMm ?? null) : f.domain !== "duct";
+  const threshold = opts?.singleLineBelowMm ?? null;
+  // Transition straddling a singleLineBelowMm threshold: one side is double-line and the other single-line regardless of port order.
+  if (opts !== undefined && f.fittingType === "transition" && f.ports.length >= 2) {
+    const [pa, pb] = f.ports;
+    if (pa && pb) {
+      const aSingle = isSingleLineRun(f.domain, pa.size, detail, threshold);
+      const bSingle = isSingleLineRun(f.domain, pb.size, detail, threshold);
+      if (aSingle !== bSingle && flatDir(pa.direction)) {
+        const p = plan(f.position);
+        const doublePort = aSingle ? pb : pa;
+        const singlePort = aSingle ? pa : pb;
+        const d = unit(plan(doublePort.direction));
+        const n = perp(d);
+        const halfW = (f.domain === "duct" ? sizeWidth(doublePort.size) : drawnWidth(doublePort.size)) / 2;
+        const halfLen = Math.max(halfW, 1.4 * scaleMmPerPaperMm);
+        const pDouble = add(p, scale(d, halfLen));
+        const pSingle = add(p, scale(unit(plan(singlePort.direction)), halfLen));
+        const d1 = add(pDouble, scale(n, halfW));
+        const d2 = add(pDouble, scale(n, -halfW));
+        const pen = opts.singleLinePen ?? (f.domain === "duct" ? "wide" : "medium");
+        line(d1, d2, "medium");
+        line(d1, pSingle, "medium");
+        line(d2, pSingle, "medium");
+        line(p, pSingle, pen);
+        return;
+      }
+    }
+  }
+  const singleLine = opts !== undefined ? isSingleLineRun(f.domain, fittingSize(model, f), detail, threshold) : f.domain !== "duct";
   if (singleLine && opts !== undefined) {
     drawSchematicFitting(model, f, line, scaleMmPerPaperMm, opts.singleLinePen ?? (f.domain === "duct" ? "wide" : "medium"));
     return;
@@ -438,7 +589,7 @@ export function drawRunFitting(model: ModelState, f: RunFitting, line: LineFn, v
   const flat = (d: { z: number }) => Math.abs(d.z) < 1e-6;
   const isDuct = f.domain === "duct";
   switch (f.fittingType) {
-    case "elbow": {
+    case BEND_FITTING: {
       if (!pa || !pb) return;
       const w = (isDuct ? sizeWidth(pa.size) : drawnWidth(pa.size)) / 2;
       if (flat(pa.direction) && flat(pb.direction) && !singleLine) {
@@ -467,7 +618,7 @@ export function drawRunFitting(model: ModelState, f: RunFitting, line: LineFn, v
       line(add(p, scale(n, w)), add(p, scale(n, -w)), "wide");
       return;
     }
-    case "tap":
+    case BRANCH_TAP_FITTING:
     case "tee":
     case "wye": {
       if (!pa) return;

@@ -266,6 +266,7 @@ export interface ViewChanges {
   readonly visualStyle?: VisualStyle;
   readonly showLineCodes?: boolean;
   readonly hide?: ViewProps["hiddenCategories"];
+  /** Replaces the view's per-category and per-service (`"service:<id>"`) graphics overrides map. Pass `{}` to clear all overrides. */
   readonly categoryOverrides?: Readonly<Record<string, CategoryOverrideSpec>>;
 }
 

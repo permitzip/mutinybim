@@ -13,6 +13,7 @@
  */
 import {
   CATEGORY_OVERRIDES_FEATURE,
+  VIEW_SCHEMATIC_DETAIL_FEATURE,
   DEFAULT_SETTINGS,
   buildViewScene,
   planCommit,
@@ -32,7 +33,7 @@ const IN = 25.4;
 let seq = 0;
 function commit(model: ModelState, command: Command): ModelState {
   const d = withUpgradePolicy(
-    (f) => f === CATEGORY_OVERRIDES_FEATURE,
+    (f) => f === CATEGORY_OVERRIDES_FEATURE || f === VIEW_SCHEMATIC_DETAIL_FEATURE,
     () =>
       planCommit(
         model,
