@@ -477,6 +477,7 @@ export function enlargedPlanCommands(model: Pick<ModelState, "elements">, input:
     ...(parentProps.viewTopMm !== undefined ? { viewTopMm: parentProps.viewTopMm } : {}),
     ...(parentProps.detailLevel ? { detailLevel: parentProps.detailLevel } : {}),
     ...(parentProps.visualStyle ? { visualStyle: parentProps.visualStyle } : {}),
+    ...(parentProps.showLineCodes !== undefined ? { showLineCodes: parentProps.showLineCodes } : {}),
     ...(parentProps.hiddenCategories ? { hiddenCategories: [...parentProps.hiddenCategories] } : {}),
     ...(parentProps.categoryOverrides && Object.keys(parentProps.categoryOverrides).length > 0 && categoryOverridesWritable()
       ? { categoryOverrides: { ...parentProps.categoryOverrides } as CreateViewProps["categoryOverrides"] }

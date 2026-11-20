@@ -271,8 +271,35 @@ export interface WallSpec { level: string; from: PlanPoint; to: PlanPoint; typeI
 export interface ChainHandle { readonly prefix: string; element(n: number): string }
 export interface OpeningSpec { wall: string; along: Measure; width?: Measure; height?: Measure; sill?: Measure; side?: 1 | -1; typeId?: string; mark?: string; values?: Record<string, string | number | boolean>; id?: string }
 export interface PlacedPart { readonly id: string; connector(connectorId: string): RouteEnd }
+export type SystemLinePattern = "solid" | "dashed" | "dotted" | "dash_dot" | "dash_dot_dot" | "dash_dot_dot_dot" | "long_dash";
+export type SystemLineWeight = "thin" | "medium" | "wide" | "heavy";
+export interface CategoryOverrideSpec {
+  visible?: boolean; halftone?: boolean;
+  lineWeights?: { cut?: SystemLineWeight; projection?: SystemLineWeight };
+  pattern?: SystemLinePattern; colour?: string; planSymbol?: boolean; maskBeneath?: boolean; transparency?: number;
+  detailLevel?: "coarse" | "medium" | "fine";
+  singleLineBelow?: Measure;
+}
 export interface CropBoxSpec { min: PlanPoint; max: PlanPoint }
-export interface PlanViewSpec { level: string; name: string; discipline?: string; scale?: number; cutHeight?: Measure; hide?: string[]; crop?: CropBoxSpec; id?: string }
+export interface PlanViewSpec {
+  level: string; name: string; discipline?: string; scale?: number; cutHeight?: Measure;
+  detailLevel?: "coarse" | "medium" | "fine";
+  visualStyle?: "wireframe" | "hidden_line" | "shaded" | "consistent_colors";
+  showLineCodes?: boolean;
+  hide?: string[];
+  categoryOverrides?: Readonly<Record<string, CategoryOverrideSpec>>;
+  crop?: CropBoxSpec;
+  id?: string;
+}
+export interface ViewChanges {
+  discipline?: string | null; scale?: number; cutHeight?: Measure;
+  detailLevel?: "coarse" | "medium" | "fine";
+  visualStyle?: "wireframe" | "hidden_line" | "shaded" | "consistent_colors";
+  showLineCodes?: boolean;
+  hide?: string[];
+  /** Replaces the view's category override map; pass {} to clear all overrides. */
+  categoryOverrides?: Readonly<Record<string, CategoryOverrideSpec>>;
+}
 export interface VerticalViewSpec { name: string; start: PlanPoint; end: PlanPoint; direction?: 1 | -1; depth?: Measure; level?: string; discipline?: string; scale?: number; hide?: string[]; id?: string }
 export interface EnlargedPlanSpec { parentViewId: string; name: string; box: CropBoxSpec; scale?: number; label?: string; head?: PlanPoint; discipline?: string; cutHeight?: Measure; id?: string; calloutId?: string }
 export interface CalloutRefSpec { parentViewId: string; targetViewId: string; box: CropBoxSpec; label?: string; head?: PlanPoint; id?: string }
