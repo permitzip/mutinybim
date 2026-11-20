@@ -196,10 +196,14 @@ export function ensureEditorDemoBuilt(options: BuildOptions = {}): Promise<Build
     return buildEditorDemo({ ...options, outDir })
   })()
   pending.set(outDir, next)
-  next.catch((err: unknown) => {
-    console.error('[editor-demo] build failed', err)
-    pending.delete(outDir)
-  })
+  // Share only work in flight; the next request must check source mtimes again.
+  next.then(
+    () => { pending.delete(outDir) },
+    (err: unknown) => {
+      console.error('[editor-demo] build failed', err)
+      pending.delete(outDir)
+    },
+  )
   return next
 }
 
