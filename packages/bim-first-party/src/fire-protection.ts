@@ -24,8 +24,8 @@ const dist = (predefinedType: string) => ({ system: "IfcDistributionSystem" as c
 
 /** Stored system kinds since the service registry (written only to a peer that reads `SERVICES_REGISTRY_FEATURE`). */
 export const FIRE_PROTECTION_SERVICE_ROWS: readonly ServiceRow[] = [
-  { id: "fire_protection_wet", label: "Fire protection, wet", discipline: "fire_protection", medium: "liquid", regime: "pressure", connector: "pipe", quantities: ["load.gpm_fixed"], asSystem: true, asLoad: false, ifc: dist("FIREPROTECTION"), graphics: { colour: "#e53935", pattern: "solid" }, feature: SERVICES_REGISTRY_FEATURE, flowUnit: "GPM" },
-  { id: "fire_protection_dry", label: "Fire protection, dry", discipline: "fire_protection", medium: "liquid", regime: "pressure", connector: "pipe", quantities: ["load.gpm_fixed"], asSystem: true, asLoad: false, ifc: dist("FIREPROTECTION"), graphics: { colour: "#ef6c00", pattern: "dashed" }, feature: SERVICES_REGISTRY_FEATURE, flowUnit: "GPM" },
+  { id: "fire_protection_wet", label: "Fire protection, wet", discipline: "fire_protection", medium: "liquid", regime: "pressure", connector: "pipe", quantities: ["load.gpm_fixed"], asSystem: true, asLoad: false, ifc: dist("FIREPROTECTION"), graphics: { colour: "#e53935", pattern: "solid" }, lineCode: "FP", feature: SERVICES_REGISTRY_FEATURE, flowUnit: "GPM" },
+  { id: "fire_protection_dry", label: "Fire protection, dry", discipline: "fire_protection", medium: "liquid", regime: "pressure", connector: "pipe", quantities: ["load.gpm_fixed"], asSystem: true, asLoad: false, ifc: dist("FIREPROTECTION"), graphics: { colour: "#ef6c00", pattern: "dashed" }, lineCode: "FPD", feature: SERVICES_REGISTRY_FEATURE, flowUnit: "GPM" },
 ];
 
 /** A linked model's sprinklers and their piping show in plans as MEP does: up to the view's top, and in ceiling plans. */

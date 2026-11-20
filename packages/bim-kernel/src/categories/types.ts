@@ -1,4 +1,4 @@
-import type { CategoryLineWeights } from "../documents";
+import type { CategoryLineWeights, DetailLevel } from "../documents";
 import type { ClassDiscipline } from "../registry/types";
 
 /**
@@ -45,6 +45,10 @@ export interface CategoryOverride {
   readonly maskBeneath?: boolean;
   /** 0 opaque … 1 invisible. May be unread in this release. */
   readonly transparency?: number;
+  /** Override the view's detail level for this category or service (coarse = single-line schematic, medium = duct double-line / pipe & conduit schematic, fine = double-line). */
+  readonly detailLevel?: DetailLevel;
+  /** Runs narrower than this nominal width (mm) draw single-line; runs at or above draw double-line. 0 forces double-line regardless of size. */
+  readonly singleLineBelowMm?: number;
 }
 
 export type CategoryOverrides = Readonly<Record<CategoryId, CategoryOverride>>;

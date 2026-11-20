@@ -214,6 +214,8 @@ const categoryOverrideSchema = z
     planSymbol: z.boolean(),
     maskBeneath: z.boolean(),
     transparency: z.number().finite().min(0).max(1),
+    detailLevel: z.enum(["coarse", "medium", "fine"]),
+    singleLineBelowMm: z.number().finite().min(0).max(3000),
   })
   .partial()
   .strict();
@@ -238,6 +240,7 @@ const viewPropsPatchObject = z
     linkedHiddenLines: z.boolean(),
     linkedMinObjectMm: z.number().finite().min(0).max(3000),
     detailLevel: z.enum(["coarse", "medium", "fine"]),
+    showLineCodes: z.boolean(),
     visualStyle: z.enum(VISUAL_STYLES),
     showHiddenLines: z.boolean(),
     hiddenLineCategories: z.array(z.enum(VIEW_CATEGORIES)).max(VIEW_CATEGORIES.length),
