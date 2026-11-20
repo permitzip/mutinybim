@@ -6,6 +6,7 @@ import {
   LINE_WEIGHTS_2D,
   ONE_LINE_TEXT_MM,
   autoDimensionCommand,
+  buildViewScene,
   builtinFormTemplate,
   detailComponents,
   formScheduleKinds,
@@ -546,6 +547,72 @@ export const documents = {
   /** Changes a tag style's look: lines, box, orientation, applies-to or its arrow (`"none"` removes it). */
   setTagStyle(ctx: ScriptContext, styleId: string, changes: TagStyleChanges): void {
     ctx.edit({ type: "update_tag_style", styleId, ...changes });
+  },
+  /** Moves an existing tag in a plan view to `at` (and optionally toggles its leader). */
+  moveTag(ctx: ScriptContext, tagId: string, at: { readonly x: Measure; readonly y: Measure }, opts?: { readonly leader?: boolean }): void {
+    const existing = onWorking(ctx, "documents.moveTag", (m) => {
+      const el = m.elements[tagId];
+      if (!el || el.kind !== "drawing_item" || el.shape !== "tag") throw new ScriptRunError(`No tag "${tagId}" on this model.`);
+      return el;
+    });
+    ctx.edit({
+      type: "update_drawing_item",
+      itemId: tagId,
+      points: [{ x: mm(at.x, "Tag x"), y: mm(at.y, "Tag y") }],
+      ...(opts?.leader !== undefined && existing.tag ? { tag: { ...existing.tag, leader: opts.leader } } : {}),
+    });
+  },
+  /**
+   * Every text label rendered on a plan view (paper mm) plus any colliding
+   * pairs, so a script can verify legibility and move overlapping tags.
+   */
+  planLabels(ctx: ScriptContext, viewRef: string): {
+    readonly viewId: string;
+    readonly scale: number;
+    readonly labels: readonly {
+      readonly text: string;
+      readonly at: { readonly xMm: number; readonly yMm: number };
+      readonly sizeMm: number;
+      readonly anchor: "start" | "middle" | "end";
+      readonly box: { readonly minX: number; readonly minY: number; readonly maxX: number; readonly maxY: number };
+    }[];
+    readonly overlaps: readonly { readonly a: string; readonly b: string; readonly overlapAreaMm2: number }[];
+  } {
+    return onWorking(ctx, "documents.planLabels", (m) => {
+      const v = viewIn(m, viewRef, "planLabels");
+      const { scene, frame } = buildViewScene(m, v.id);
+      const labels = scene.primitives
+        .filter((p): p is Extract<typeof p, { kind: "text" }> => p.kind === "text")
+        .map((p) => {
+          const w = Math.max(p.size * 0.65, p.text.length * p.size * 0.6);
+          const minX = p.anchor === "start" ? p.at.x : p.anchor === "end" ? p.at.x - w : p.at.x - w / 2;
+          return {
+            text: p.text,
+            at: { xMm: Math.round(p.at.x * 100) / 100, yMm: Math.round(p.at.y * 100) / 100 },
+            sizeMm: p.size,
+            anchor: p.anchor,
+            box: {
+              minX: Math.round(minX * 100) / 100,
+              minY: Math.round((p.at.y - p.size) * 100) / 100,
+              maxX: Math.round((minX + w) * 100) / 100,
+              maxY: Math.round((p.at.y + p.size * 0.25) * 100) / 100,
+            },
+          };
+        });
+      const overlaps: { readonly a: string; readonly b: string; readonly overlapAreaMm2: number }[] = [];
+      for (let i = 0; i < labels.length; i++) {
+        for (let j = i + 1; j < labels.length; j++) {
+          const a = labels[i]!;
+          const b = labels[j]!;
+          const ox = Math.min(a.box.maxX, b.box.maxX) - Math.max(a.box.minX, b.box.minX);
+          const oy = Math.min(a.box.maxY, b.box.maxY) - Math.max(a.box.minY, b.box.minY);
+          if (ox > 0.1 && oy > 0.1) {
+            overlaps.push({ a: a.text, b: b.text, overlapAreaMm2: Math.round(ox * oy * 100) / 100 });
+          }
+        }
+      }
+      return { viewId: v.id, scale: frame.scale, labels, overlaps };
+    });
   },
   /** Gives elements a keynote (its key, "P1"): a keynote tag on a view prints it and the sheet's keynote list words it. */
   keynote(ctx: ScriptContext, elementIds: readonly string[], key: string): void {
