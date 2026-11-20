@@ -1,6 +1,8 @@
+import { categoryOverridesWritable } from "../categories/feature";
 import { documentIndex, type ViewCommand } from "../commands/views";
 import type { CalloutSpec, DrawingItem, ViewProps } from "../documents";
 import type { Primitive } from "../drawing/sheet";
+import { normalizeLevelName, viewLevelNames } from "../levels";
 import type { ModelState, Vec2, ViewElement } from "../types";
 
 /**
@@ -157,16 +159,79 @@ export function drawCallout(model: Pick<ModelState, "elements" | "connections">,
   return true;
 }
 
+export interface ModelClipBounds {
+  readonly min: Vec2;
+  readonly max: Vec2;
+}
+
+function pointInRect(p: Vec2, r: ModelClipBounds, eps = 1e-3): boolean {
+  return p.x >= r.min.x - eps && p.x <= r.max.x + eps && p.y >= r.min.y - eps && p.y <= r.max.y + eps;
+}
+
+/** Liang-Barsky clip of segment (a, b) against axis-aligned rectangle `r`. */
+function clipSegmentToRect(a: Vec2, b: Vec2, r: ModelClipBounds): { a: Vec2; b: Vec2; startInside: boolean; endInside: boolean } | null {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  let t0 = 0;
+  let t1 = 1;
+  const checks: Array<[number, number]> = [
+    [-dx, a.x - r.min.x],
+    [dx, r.max.x - a.x],
+    [-dy, a.y - r.min.y],
+    [dy, r.max.y - a.y],
+  ];
+  for (const [p, q] of checks) {
+    if (Math.abs(p) < 1e-9) {
+      if (q < 0) return null;
+    } else {
+      const t = q / p;
+      if (p < 0) {
+        if (t > t1) return null;
+        if (t > t0) t0 = t;
+      } else {
+        if (t < t0) return null;
+        if (t < t1) t1 = t;
+      }
+    }
+  }
+  return {
+    a: { x: a.x + t0 * dx, y: a.y + t0 * dy },
+    b: { x: a.x + t1 * dx, y: a.y + t1 * dy },
+    startInside: t0 <= 1e-6,
+    endInside: t1 >= 1 - 1e-6,
+  };
+}
+
 /**
  * Draw a live Revit/NCS section cut mark on a plan: dashed cut line, solid
  * black 45° tangent pointer head with white-masked split bubble reading live
- * detail#/sheet# at start, and solid black tail flag at end.
+ * detail#/sheet# at start, and solid black tail flag at end. When `clipBounds`
+ * is provided, clips the cut line to the crop region and suppresses endpoints
+ * that fall outside the crop.
  */
-export function drawSectionMark(model: Pick<ModelState, "elements" | "connections">, view: ViewElement, toPaper: (p: Vec2) => Vec2, prims: Primitive[]): boolean {
+export function drawSectionMark(
+  model: Pick<ModelState, "elements" | "connections">,
+  view: ViewElement,
+  toPaper: (p: Vec2) => Vec2,
+  prims: Primitive[],
+  clipBounds?: ModelClipBounds,
+): boolean {
   const cut = view.props?.section;
   if (!cut) return false;
-  const p0 = toPaper(cut.start);
-  const p1 = toPaper(cut.end);
+  let drawStart = cut.start;
+  let drawEnd = cut.end;
+  let showHead = true;
+  let showTail = true;
+  if (clipBounds) {
+    const clipped = clipSegmentToRect(cut.start, cut.end, clipBounds);
+    if (!clipped) return false;
+    drawStart = clipped.a;
+    drawEnd = clipped.b;
+    showHead = clipped.startInside;
+    showTail = clipped.endInside;
+  }
+  const p0 = toPaper(drawStart);
+  const p1 = toPaper(drawEnd);
   const dx = p1.x - p0.x;
   const dy = p1.y - p0.y;
   const len = Math.hypot(dx, dy);
@@ -176,7 +241,7 @@ export function drawSectionMark(model: Pick<ModelState, "elements" | "connection
   const modelDy = cut.end.y - cut.start.y;
   const modelLen = Math.hypot(modelDx, modelDy) || 1;
   const lookModel = { x: -(modelDy / modelLen) * cut.direction, y: (modelDx / modelLen) * cut.direction };
-  const pLook = toPaper({ x: cut.start.x + lookModel.x * 1000, y: cut.start.y + lookModel.y * 1000 });
+  const pLook = toPaper({ x: drawStart.x + lookModel.x * 1000, y: drawStart.y + lookModel.y * 1000 });
   const lx = pLook.x - p0.x;
   const ly = pLook.y - p0.y;
   const lLen = Math.hypot(lx, ly) || 1;
@@ -186,31 +251,35 @@ export function drawSectionMark(model: Pick<ModelState, "elements" | "connection
   const tailWidth = 1.1;
   const tailLen = 5.5;
   const leadIn = 2.5;
-  const cutEnd = len > leadIn + tailWidth ? { x: p1.x - ax.x * leadIn, y: p1.y - ax.y * leadIn } : p1;
+  const cutEnd = showTail && len > leadIn + tailWidth ? { x: p1.x - ax.x * leadIn, y: p1.y - ax.y * leadIn } : p1;
   prims.push({ kind: "line", a: p0, b: cutEnd, pen: "medium", dash: SECTION_LINE_DASH });
-  if (len > leadIn + tailWidth) {
+  if (showTail && len > leadIn + tailWidth) {
     prims.push({ kind: "line", a: cutEnd, b: p1, pen: "medium" });
   }
 
   // Head bubble sits tangent to p0 along -axis with solid black pointer wedge on the look side.
-  const r = HEAD_RADIUS_MM;
-  const head = { x: p0.x - ax.x * r, y: p0.y - ax.y * r };
-  const live = calloutHead(model, { viewId: view.id });
-  drawTangentPointer(head, r, look, prims);
-  drawSplitBubble(head, r, live, prims);
+  if (showHead) {
+    const r = HEAD_RADIUS_MM;
+    const head = { x: p0.x - ax.x * r, y: p0.y - ax.y * r };
+    const live = calloutHead(model, { viewId: view.id });
+    drawTangentPointer(head, r, look, prims);
+    drawSplitBubble(head, r, live, prims);
+  }
 
   // Sleek modern Revit/NCS section tail: solid black vertical bar flush with the bottom of the 0.35 mm cut line.
-  const halfStroke = 0.175;
-  prims.push({
-    kind: "fill",
-    points: [
-      { x: p1.x - look.x * halfStroke, y: p1.y - look.y * halfStroke },
-      { x: p1.x + ax.x * tailWidth - look.x * halfStroke, y: p1.y + ax.y * tailWidth - look.y * halfStroke },
-      { x: p1.x + ax.x * tailWidth + look.x * tailLen, y: p1.y + ax.y * tailWidth + look.y * tailLen },
-      { x: p1.x + look.x * tailLen, y: p1.y + look.y * tailLen },
-    ],
-    grey: 0,
-  });
+  if (showTail) {
+    const halfStroke = 0.175;
+    prims.push({
+      kind: "fill",
+      points: [
+        { x: p1.x - look.x * halfStroke, y: p1.y - look.y * halfStroke },
+        { x: p1.x + ax.x * tailWidth - look.x * halfStroke, y: p1.y + ax.y * tailWidth - look.y * halfStroke },
+        { x: p1.x + ax.x * tailWidth + look.x * tailLen, y: p1.y + ax.y * tailWidth + look.y * tailLen },
+        { x: p1.x + look.x * tailLen, y: p1.y + look.y * tailLen },
+      ],
+      grey: 0,
+    });
+  }
   return true;
 }
 
@@ -219,10 +288,17 @@ export function drawSectionMark(model: Pick<ModelState, "elements" | "connection
  * pointer aimed along the look direction with a white-masked split bubble
  * reading live detail#/sheet#.
  */
-export function drawElevationMark(model: Pick<ModelState, "elements" | "connections">, view: ViewElement, toPaper: (p: Vec2) => Vec2, prims: Primitive[]): boolean {
+export function drawElevationMark(
+  model: Pick<ModelState, "elements" | "connections">,
+  view: ViewElement,
+  toPaper: (p: Vec2) => Vec2,
+  prims: Primitive[],
+  clipBounds?: ModelClipBounds,
+): boolean {
   const cut = view.props?.section;
   if (!cut) return false;
   const midModel = { x: (cut.start.x + cut.end.x) / 2, y: (cut.start.y + cut.end.y) / 2 };
+  if (clipBounds && !pointInRect(midModel, clipBounds)) return false;
   const modelDx = cut.end.x - cut.start.x;
   const modelDy = cut.end.y - cut.start.y;
   const modelLen = Math.hypot(modelDx, modelDy);
@@ -244,8 +320,22 @@ export function drawElevationMark(model: Pick<ModelState, "elements" | "connecti
   return true;
 }
 
-const sameLevelName = (a: string | undefined, b: string | undefined): boolean =>
-  (a ?? "").trim().toLowerCase() === (b ?? "").trim().toLowerCase();
+function sameViewFloor(model: Pick<ModelState, "elements">, planView: ViewElement, verticalView: ViewElement): boolean {
+  const planLevel = planView.props?.level;
+  const vertLevel = verticalView.props?.level;
+  if (!planLevel || !vertLevel) return true;
+  const planNames = viewLevelNames(model, planLevel, planView.props?.levelElevationMm);
+  const vertNames = viewLevelNames(model, vertLevel, verticalView.props?.levelElevationMm);
+  if (!planNames || !vertNames) return true;
+  for (const n of planNames) {
+    if (vertNames.has(n)) return true;
+  }
+  const planNorm = new Set([...planNames].map(normalizeLevelName));
+  for (const n of vertNames) {
+    if (planNorm.has(normalizeLevelName(n))) return true;
+  }
+  return false;
+}
 
 /**
  * Sections and elevations whose reference marks show on a plan view: live
@@ -254,21 +344,21 @@ const sameLevelName = (a: string | undefined, b: string | undefined): boolean =>
  */
 export function planReferenceViews(model: Pick<ModelState, "elements" | "connections">, planView: ViewElement): ViewElement[] {
   if (planView.viewType !== "floor_plan" && planView.viewType !== "ceiling_plan") return [];
-  const planLevel = planView.props?.level;
   const cropOn = planView.props?.cropView !== false;
-  const { cropMin, cropMax } = planView;
+  const bounds: ModelClipBounds = { min: planView.cropMin, max: planView.cropMax };
   const out: ViewElement[] = [];
   for (const v of documentIndex(model).views) {
     if (v.deleted || (v.viewType !== "section" && v.viewType !== "elevation")) continue;
     const cut = v.props?.section;
     if (!cut) continue;
-    if (planLevel && v.props?.level && !sameLevelName(v.props.level, planLevel)) continue;
+    if (!sameViewFloor(model, planView, v)) continue;
     if (cropOn) {
-      const minX = Math.min(cut.start.x, cut.end.x);
-      const maxX = Math.max(cut.start.x, cut.end.x);
-      const minY = Math.min(cut.start.y, cut.end.y);
-      const maxY = Math.max(cut.start.y, cut.end.y);
-      if (maxX < cropMin.x || minX > cropMax.x || maxY < cropMin.y || minY > cropMax.y) continue;
+      if (v.viewType === "elevation") {
+        const mid = { x: (cut.start.x + cut.end.x) / 2, y: (cut.start.y + cut.end.y) / 2 };
+        if (!pointInRect(mid, bounds)) continue;
+      } else if (!clipSegmentToRect(cut.start, cut.end, bounds)) {
+        continue;
+      }
     }
     out.push(v);
   }
@@ -301,13 +391,15 @@ export function referencingSheet(model: Pick<ModelState, "elements" | "connectio
   };
 
   let fallback: ReferencingSheet | null = null;
-  // 1. Explicit callout pointing at this view (enlarged plans, detail callouts).
-  for (const el of Object.values(model.elements)) {
-    if (el.kind !== "drawing_item" || el.deleted || el.shape !== "callout" || el.callout?.viewId !== view.id) continue;
-    const hit = sheetOf(el.ownerId);
-    if (!hit) continue;
-    if (hit.sheetId !== ownSheetId) return hit;
-    if (!fallback) fallback = hit;
+  // 1. Explicit callout pointing at this view (enlarged plans, detail callouts) via indexed drawing items.
+  for (const items of index.itemsByOwner.values()) {
+    for (const el of items) {
+      if (el.deleted || el.shape !== "callout" || el.callout?.viewId !== view.id) continue;
+      const hit = sheetOf(el.ownerId);
+      if (!hit) continue;
+      if (hit.sheetId !== ownSheetId) return hit;
+      if (!fallback) fallback = hit;
+    }
   }
 
   // 2. Plan reference marks (sections and elevations shown on a placed plan).
@@ -373,7 +465,8 @@ export function enlargedPlanCommands(model: Pick<ModelState, "elements">, input:
   const scale = input.scale ?? (parentScale <= 48 ? 24 : 48);
   const headOffset = 8 * parentScale;
   const head = input.head ?? { x: min.x - headOffset, y: max.y + headOffset };
-  const props: NonNullable<Extract<ViewCommand, { type: "create_view" }>["props"]> = {
+  type CreateViewProps = NonNullable<Extract<ViewCommand, { type: "create_view" }>["props"]>;
+  const props: CreateViewProps = {
     ...(parentProps.level ? { level: parentProps.level } : {}),
     ...(parentProps.levelElevationMm !== undefined ? { levelElevationMm: parentProps.levelElevationMm } : {}),
     scale,
@@ -385,6 +478,13 @@ export function enlargedPlanCommands(model: Pick<ModelState, "elements">, input:
     ...(parentProps.detailLevel ? { detailLevel: parentProps.detailLevel } : {}),
     ...(parentProps.visualStyle ? { visualStyle: parentProps.visualStyle } : {}),
     ...(parentProps.hiddenCategories ? { hiddenCategories: [...parentProps.hiddenCategories] } : {}),
+    ...(parentProps.categoryOverrides && Object.keys(parentProps.categoryOverrides).length > 0 && categoryOverridesWritable()
+      ? { categoryOverrides: { ...parentProps.categoryOverrides } as CreateViewProps["categoryOverrides"] }
+      : {}),
+    ...(parentProps.phaseId ? { phaseId: parentProps.phaseId } : {}),
+    ...(parentProps.phaseFilterId ? { phaseFilterId: parentProps.phaseFilterId } : {}),
+    ...(parentProps.groupDisplay ? { groupDisplay: { ...parentProps.groupDisplay } } : {}),
+    ...(parentProps.references ? { references: { ...parentProps.references } } : {}),
     cropView: true,
   };
   return [

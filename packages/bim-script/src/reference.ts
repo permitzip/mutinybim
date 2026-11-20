@@ -271,7 +271,11 @@ export interface WallSpec { level: string; from: PlanPoint; to: PlanPoint; typeI
 export interface ChainHandle { readonly prefix: string; element(n: number): string }
 export interface OpeningSpec { wall: string; along: Measure; width?: Measure; height?: Measure; sill?: Measure; side?: 1 | -1; typeId?: string; mark?: string; values?: Record<string, string | number | boolean>; id?: string }
 export interface PlacedPart { readonly id: string; connector(connectorId: string): RouteEnd }
-export interface PlanViewSpec { level: string; name: string; discipline?: string; scale?: number; cutHeight?: Measure; hide?: string[]; id?: string }
+export interface CropBoxSpec { min: PlanPoint; max: PlanPoint }
+export interface PlanViewSpec { level: string; name: string; discipline?: string; scale?: number; cutHeight?: Measure; hide?: string[]; crop?: CropBoxSpec; id?: string }
+export interface VerticalViewSpec { name: string; start: PlanPoint; end: PlanPoint; direction?: 1 | -1; depth?: Measure; level?: string; discipline?: string; scale?: number; hide?: string[]; id?: string }
+export interface EnlargedPlanSpec { parentViewId: string; name: string; box: CropBoxSpec; scale?: number; label?: string; head?: PlanPoint; discipline?: string; cutHeight?: Measure; id?: string; calloutId?: string }
+export interface CalloutRefSpec { parentViewId: string; targetViewId: string; box: CropBoxSpec; label?: string; head?: PlanPoint; id?: string }
 `;
 
 function member(e: KitEntry): string {

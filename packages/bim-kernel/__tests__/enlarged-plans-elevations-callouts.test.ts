@@ -8,12 +8,15 @@ import {
   DEFAULT_SETTINGS,
   buildViewScene,
   calloutHead,
+  drawSectionMark,
   enlargedPlanCommands,
   executeCommand,
   planReferenceViews,
+  referencingSheet,
   sheetDependsOn,
   type Command,
   type ModelState,
+  type Primitive,
   type Revision,
   type ViewElement,
 } from "../src";
@@ -151,5 +154,75 @@ describe("sections and elevations share vertical projection and print live sheet
     const depends = sheetDependsOn(m, "s-p101");
     expect(depends("vp-sec-a", m.elements["vp-sec-a"])).toBe(true);
     expect(depends("vp-elev-n", m.elements["vp-elev-n"])).toBe(true);
+  });
+
+  it("clips section cut marks to crop bounds, preserves parent phase/visibility, matches shared level names, and tracks incoming callouts", () => {
+    let m = baseModel();
+    m = apply(m, {
+      type: "create_view",
+      viewId: "v-plan",
+      name: "Level 1 Plan",
+      viewType: "floor_plan",
+      crop: { min: { x: 0, y: 0 }, max: { x: 10000, y: 8000 } },
+      props: {
+        level: "Level 1",
+        scale: 96,
+        phaseId: "phase-new",
+        phaseFilterId: "filter-new",
+        groupDisplay: { "grp-1": "halftone" },
+        hiddenCategories: ["rooms"],
+        references: { "ref-arch": { visible: true, halftone: true } },
+      },
+    });
+    const cmds = enlargedPlanCommands(m, {
+      parentViewId: "v-plan",
+      viewId: "v-enl",
+      calloutId: "co-enl",
+      name: "Enlarged Core",
+      box: { min: { x: 3000, y: 2000 }, max: { x: 6000, y: 5000 } },
+    });
+    expect(Array.isArray(cmds)).toBe(true);
+    for (const c of cmds as Exclude<typeof cmds, string>) m = apply(m, c);
+
+    const enlarged = m.elements["v-enl"] as ViewElement;
+    expect(enlarged.props?.phaseId).toBe("phase-new");
+    expect(enlarged.props?.phaseFilterId).toBe("filter-new");
+    expect(enlarged.props?.groupDisplay).toEqual({ "grp-1": "halftone" });
+    expect(enlarged.props?.hiddenCategories).toEqual(["rooms"]);
+    expect(enlarged.props?.references).toEqual({ "ref-arch": { visible: true, halftone: true } });
+
+    // Building-wide section whose endpoints lie outside the enlarged plan crop, using alternate level casing ("LEVEL 01")
+    m = apply(m, {
+      type: "create_view",
+      viewId: "v-sec-wide",
+      name: "Wide Section",
+      viewType: "section",
+      props: {
+        level: "LEVEL 01",
+        section: { start: { x: 0, y: 3500 }, end: { x: 10000, y: 3500 }, direction: 1, depthMm: 4000 },
+      },
+    });
+    expect(planReferenceViews(m, enlarged).map((v) => v.id)).toContain("v-sec-wide");
+
+    // Clipping suppresses both endpoint bubbles/tails and confines the cut line inside [3000..6000]
+    const prims: Primitive[] = [];
+    const secView = m.elements["v-sec-wide"] as ViewElement;
+    drawSectionMark(m, secView, (pt) => ({ x: pt.x / 100, y: pt.y / 100 }), prims, { min: { x: 3000, y: 2000 }, max: { x: 6000, y: 5000 } });
+    expect(prims.filter((p) => p.kind === "text")).toHaveLength(0);
+    const lines = prims.filter((p) => p.kind === "line");
+    expect(lines.length).toBeGreaterThan(0);
+    for (const l of lines) {
+      expect(l.a.x).toBeGreaterThanOrEqual(30 - 1e-6);
+      expect(l.b.x).toBeLessThanOrEqual(60 + 1e-6);
+    }
+
+    // Incoming callout changes are tracked by sheetDependsOn for back-referenced title bubbles
+    m = apply(m, { type: "create_sheet", sheetId: "s-101", number: "A-101", name: "Overall" });
+    m = apply(m, { type: "create_sheet", sheetId: "s-401", number: "A-401", name: "Enlarged" });
+    m = apply(m, { type: "place_viewport", viewportId: "vp-p", sheetId: "s-101", viewId: "v-plan", center: { x: 300, y: 250 }, scale: 96 });
+    m = apply(m, { type: "place_viewport", viewportId: "vp-e", sheetId: "s-401", viewId: "v-enl", center: { x: 300, y: 250 }, scale: 48 });
+    expect(referencingSheet(m, enlarged)?.sheetNumber).toBe("A-101");
+    const depends = sheetDependsOn(m, "s-401");
+    expect(depends("co-enl", m.elements["co-enl"])).toBe(true);
   });
 });

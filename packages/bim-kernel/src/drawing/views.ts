@@ -1473,9 +1473,10 @@ function drawViewBody(prims: Primitive[], tags: TagPlacement[], model: ModelStat
       const shownParts = new Map<string, PartInstance>();
       drawPlan(model, view, p, frame, display, shownParts);
       drawPlanConnections(model, view, p, shownParts);
+      const clipBounds = view.props?.cropView !== false ? { min: p.min, max: p.max } : undefined;
       for (const refView of planReferenceViews(model, view)) {
-        if (refView.viewType === "elevation") drawElevationMark(model, refView, p.toPaper, p.prims);
-        else drawSectionMark(model, refView, p.toPaper, p.prims);
+        if (refView.viewType === "elevation") drawElevationMark(model, refView, p.toPaper, p.prims, clipBounds);
+        else drawSectionMark(model, refView, p.toPaper, p.prims, clipBounds);
       }
       break;
     }
@@ -1600,6 +1601,15 @@ export function sheetDependsOn(model: ModelState, sheetId: string): (elementId: 
     for (const refView of planReferenceViews(model, view)) referenced.add(refView.id);
     const backRef = referencingSheet(model, view);
     if (backRef) referenced.add(backRef.sourceViewId);
+    // Track any incoming callout targeting this view so adding, deleting, or retargeting it invalidates the title bubble.
+    for (const items of index.itemsByOwner.values()) {
+      for (const item of items) {
+        if (!item.deleted && item.shape === "callout" && item.callout?.viewId === view.id) {
+          owned.add(item.id);
+          referenced.add(item.ownerId);
+        }
+      }
+    }
     if (view.props?.diagram) {
       // A live diagram is drawn from the whole model's connection graph.
       allLevels = true;
@@ -1624,8 +1634,8 @@ export function sheetDependsOn(model: ModelState, sheetId: string): (elementId: 
   return (elementId, el) => {
     if (owned.has(elementId)) return true;
     if (!el) return false;
-    // Something new drawn on this sheet or in one of its views.
-    if (el.kind === "drawing_item") return owned.has(el.ownerId);
+    // Something new drawn on this sheet or in one of its views, or an incoming callout pointing at one of its views.
+    if (el.kind === "drawing_item") return owned.has(el.ownerId) || (el.shape === "callout" && !!el.callout?.viewId && owned.has(el.callout.viewId));
     if (el.kind === "viewport") return owned.has(el.sheetId) || referenced.has(el.viewId);
     if (el.kind === "sheet") return sheetList || referenced.size > 0;
     if (el.kind === "view") return referenced.has(elementId);

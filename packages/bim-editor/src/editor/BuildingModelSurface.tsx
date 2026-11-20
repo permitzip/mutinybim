@@ -2356,7 +2356,14 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
   }
   const saveLabel: SaveLabel = save.retrying > 0 || save.message ? 'not_saved' : save.pending > 0 ? 'saving' : 'saved'
   const sectionsOnPlan = useMemo(
-    () => (planOpen && openView ? (index?.views ?? []).filter((v) => (v.viewType === 'section' || v.viewType === 'elevation') && (v.props?.level ?? null) === (openView.props?.level ?? null)) : []),
+    () =>
+      planOpen && openView
+        ? (index?.views ?? []).filter(
+            (v) =>
+              (v.viewType === 'section' || v.viewType === 'elevation') &&
+              (!v.props?.level || !openView.props?.level || v.props.level === openView.props.level),
+          )
+        : [],
     [planOpen, openView, index],
   )
   const backSheet = returnSheet && open.kind === 'view' ? (index?.sheets.find((s) => s.id === returnSheet) ?? null) : null

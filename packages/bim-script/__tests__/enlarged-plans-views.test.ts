@@ -6,7 +6,7 @@
  * `sectionView`, `elevationView`, `setCrop`), plus `bim_script_reference` lookup.
  */
 import { DEFAULT_SETTINGS, calloutHead, executeCommand, type Command, type ModelState, type Revision, type ViewElement } from "@permitzip/bim-kernel";
-import { defineScript, documents, runScript, searchReference, sliceModel, units } from "../src";
+import { defineScript, documents, kitDeclarations, runScript, searchReference, sliceModel, units } from "../src";
 
 const FT = 304.8;
 
@@ -113,5 +113,12 @@ describe("documents enlargedPlan, callout, sectionView, elevationView, setCrop",
     const names = searchReference("enlarged plan").map((e) => e.name);
     expect(names).toContain("documents.enlargedPlan");
     expect(names).toContain("documents.callout");
+
+    const dts = kitDeclarations();
+    expect(dts).toContain("export interface CropBoxSpec");
+    expect(dts).toContain("export interface VerticalViewSpec");
+    expect(dts).toContain("export interface EnlargedPlanSpec");
+    expect(dts).toContain("export interface CalloutRefSpec");
+    expect(dts).toContain("crop?: CropBoxSpec");
   });
 });
