@@ -11,7 +11,7 @@ import type { ModelState, PartInstance, Vec2, ViewElement } from "../types";
  *
  * Plan graphics an add-on derives for a view from the model: lines between the
  * things a network connects, load-path arrows, loop lines. Rows can draw under
- * parts (`layer: "under_parts"`, e.g. branch wiring behind fixtures and device
+ * parts (`layer: "under_parts"`, e.g. branch wiring behind parts and device
  * symbols) or over parts (`layer: "over_parts"`, the default). The view stores
  * each add-on's switches as an opaque record under the row's `hintsKey`
  * (`ViewProps[hintsKey]`); the kernel never reads inside it. Rows draw in

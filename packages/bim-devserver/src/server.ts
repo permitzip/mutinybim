@@ -163,10 +163,11 @@ async function exportPdf(res: ServerResponse) {
   // Capture an immutable snapshot at the current head; render only from it.
   const snapshot = await sequencer.exportSnapshot();
   const sha = createHash("sha256").update(snapshot.canonical).digest("hex");
-  const firstSheet = elementValues(snapshot.model.elements).find((el) => el.kind === "sheet");
+  const firstSheet = elementValues(snapshot.model.elements).find((el): el is Extract<typeof el, { kind: "sheet" }> => el.kind === "sheet" && !el.deleted);
   const scene = firstSheet ? buildSheetSceneFor(snapshot.model, firstSheet.id, { projectName: "MutinyBIM Electrical Demo" }) : buildSheetScene(snapshot.model, demoSheetDefinition());
   const title = firstSheet ? `${firstSheet.number} ${firstSheet.title}` : "M-101 Mechanical Plan";
-  const fileTag = firstSheet ? firstSheet.number : "M-101";
+  const rawFileTag = firstSheet ? firstSheet.number : "M-101";
+  const fileTag = rawFileTag.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "sheet";
   const started = performance.now();
   const pdf = (
     await renderSheetPdf(scene, {

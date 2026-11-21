@@ -26,13 +26,71 @@ import { partSymbolLines } from "../part-model/symbols";
  */
 
 export type LineFn = (a: Vec2, b: Vec2, pen: Pen, dash?: number[]) => void;
-export type TextFn = (at: Vec2, text: string, size: number) => void;
+export type TextFn = (at: Vec2, text: string, size: number, anchor?: "start" | "middle" | "end") => void;
 export type FillFn = (points: readonly Vec2[], grey: number) => void;
 
 /** A 2D axis-aligned box in model millimetres, used to keep plan labels clear of symbols and each other. */
 export interface PartLabelBox {
   readonly min: Vec2;
   readonly max: Vec2;
+}
+
+/** Spatial hash index for occupied label/symbol boxes — O(1) average lookup so large plans stay linear. */
+export class PartLabelIndex {
+  private readonly cellSize: number;
+  private readonly cells = new Map<string, PartLabelBox[]>();
+
+  constructor(viewScale = DEFAULT_SYMBOL_SCALE) {
+    this.cellSize = Math.max(20 * viewScale, 500);
+  }
+
+  private range(box: PartLabelBox): readonly [number, number, number, number] {
+    const cs = this.cellSize;
+    return [Math.floor(box.min.x / cs), Math.floor(box.max.x / cs), Math.floor(box.min.y / cs), Math.floor(box.max.y / cs)];
+  }
+
+  add(box: PartLabelBox): void {
+    const [x0, x1, y0, y1] = this.range(box);
+    // Guard against huge boxes (e.g. long perimeter walls) spanning hundreds of cells: clamp cell span.
+    const spanX = Math.min(x1 - x0, 64);
+    const spanY = Math.min(y1 - y0, 64);
+    for (let x = x0; x <= x0 + spanX; x++) {
+      for (let y = y0; y <= y0 + spanY; y++) {
+        const k = `${x},${y}`;
+        let list = this.cells.get(k);
+        if (!list) {
+          list = [];
+          this.cells.set(k, list);
+        }
+        list.push(box);
+      }
+    }
+  }
+
+  overlaps(box: PartLabelBox): boolean {
+    const [x0, x1, y0, y1] = this.range(box);
+    for (let x = x0; x <= x1; x++) {
+      for (let y = y0; y <= y1; y++) {
+        const list = this.cells.get(`${x},${y}`);
+        if (!list) continue;
+        for (const other of list) if (boxesOverlap(box, other)) return true;
+      }
+    }
+    return false;
+  }
+}
+
+export type PartLabelStore = PartLabelIndex | PartLabelBox[];
+
+function addLabelBox(store: PartLabelStore | undefined, box: PartLabelBox): void {
+  if (!store) return;
+  if (store instanceof PartLabelIndex) store.add(box);
+  else store.push(box);
+}
+
+function overlapsLabelStore(store: PartLabelStore, box: PartLabelBox): boolean {
+  if (store instanceof PartLabelIndex) return store.overlaps(box);
+  return store.some((t) => boxesOverlap(box, t));
 }
 
 /** One boundary piece of a placed part's plan representation, in model millimetres. */
@@ -43,12 +101,12 @@ export type PlanOutline =
 export interface DrawPartSymbolOptions {
   /** View scale (model mm per paper mm). Used to size paper-space symbols and smart label offsets. Default 48. */
   readonly scale?: number;
-  /** Whether to draw the part's own mark when it is not separately tagged. Default true. */
+  /** Whether to draw the part's automatic mark. Set to false when a real tag is placed on the part or tags are hidden. Default true. */
   readonly showMark?: boolean;
-  /** Optional filled-polygon callback for solid fills (`grey = 0`) and opaque white masks (`grey = 1`). */
+  /** Filled polygon callback (grey 1 = opaque white mask, 0 = solid black fill). */
   readonly fill?: FillFn;
-  /** Shared collision boxes in model mm so adjacent symbols, marks and clearance notes stay clear of each other. */
-  readonly takenBoxes?: PartLabelBox[];
+  /** Occupied label/symbol boxes in model mm so auto-placed marks avoid colliding with symbols and each other. */
+  readonly takenBoxes?: PartLabelStore;
 }
 
 const plan = (p: { x: number; y: number }): Vec2 => ({ x: p.x, y: p.y });
@@ -287,13 +345,21 @@ function scaleLocalSymbol(s: ResolvedSymbol, viewScale: number): ResolvedSymbol 
   }
 }
 
+function lineEndpoints(s: Extract<ResolvedSymbol, { kind: "line" }>, w: (q: Vec2) => Vec2): readonly [Vec2, Vec2] {
+  if (!s.upright) return [w(s.from), w(s.to)];
+  const mid = w({ x: (s.from.x + s.to.x) / 2, y: (s.from.y + s.to.y) / 2 });
+  const hx = (s.to.x - s.from.x) / 2;
+  const hy = (s.to.y - s.from.y) / 2;
+  return [{ x: mid.x - hx, y: mid.y - hy }, { x: mid.x + hx, y: mid.y + hy }];
+}
+
 function resolvePartPlan(
   model: ModelState,
   part: PartInstance,
   planSymbol: boolean | null,
   detail: DetailLevel,
   viewScale: number,
-): { readonly symbols: ResolvedSymbol[]; readonly planDisplay: "symbol" | "model" | "both"; readonly modelCorners: Vec2[] | null } | null {
+): { readonly symbols: ResolvedSymbol[]; readonly planDisplay: "symbol" | "model" | "both"; readonly bodyOutline: PlanOutline[]; readonly bodyBounds: PartLabelBox | null } | null {
   if (part.planned !== undefined) return null;
   const type = model.elements[part.typeId];
   if (type?.kind !== "part_type") return null;
@@ -303,28 +369,52 @@ function resolvePartPlan(
   const levelSymbol = !classSymbol && solidProgram ? partSymbolLines(type.definition, part.values, "plan", detail) : null;
   const symbolSource = classSymbol ? [...classSymbol.primitives] : levelSymbol;
   const rawSymbols = placedSymbol(symbolSource ? { ...type, definition: { ...type.definition, symbol: symbolSource } } : type, part);
-  const filtered = rawSymbols.filter((s) => !s.detailLevels || s.detailLevels.includes(detail));
-  const ownSymbols = (filtered.length > 0 ? filtered : rawSymbols).map((s) => scaleLocalSymbol(s, viewScale));
+  // Keep only primitives matching the requested detail level (do not restore excluded primitives).
+  const ownSymbols = rawSymbols.filter((s) => !s.detailLevels || s.detailLevels.includes(detail)).map((s) => scaleLocalSymbol(s, viewScale));
   const typeDisplay = solidProgram && !classSymbol && levelSymbol === null ? "model" : type.definition.model?.planDisplay;
   const planDisplay = planDisplayFor(planSymbol, { typeDisplay, hasSymbol: ownSymbols.length > 0, hasBody: type.definition.model !== undefined });
   const symbols = planDisplay === "model" ? [] : ownSymbols;
-  let modelCorners: Vec2[] | null = null;
+  const bodyOutline: PlanOutline[] = [];
+  let bodyBounds: PartLabelBox | null = null;
   if (planDisplay === "model" || planDisplay === "both" || symbols.length === 0) {
     const geom = placedGeometry(type, part);
     if (geom.length > 0) {
-      const b = localBounds(geom);
-      if (Number.isFinite(b.min[0]) && Number.isFinite(b.max[0])) {
-        const w = (q: Vec2) => partToWorld(part, q);
-        modelCorners = [
-          w({ x: b.min[0], y: b.min[1] }),
-          w({ x: b.max[0], y: b.min[1] }),
-          w({ x: b.max[0], y: b.max[1] }),
-          w({ x: b.min[0], y: b.max[1] }),
-        ];
+      const w = (q: Vec2) => partToWorld(part, q);
+      const bb = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+      for (const p of geom) {
+        if (p.kind === "cylinder" && p.axis === "z") {
+          const c = w({ x: p.center[0], y: p.center[1] });
+          bodyOutline.push({ kind: "circle", c, r: p.radius });
+          growBox(bb, { x: c.x - p.radius, y: c.y - p.radius });
+          growBox(bb, { x: c.x + p.radius, y: c.y + p.radius });
+        } else if (p.kind === "extrusion" && p.profile.length >= 3) {
+          const pts = p.profile.map(w);
+          for (let i = 0; i < pts.length; i++) {
+            const a = pts[i]!;
+            const b = pts[(i + 1) % pts.length]!;
+            bodyOutline.push({ kind: "seg", a, b });
+            growBox(bb, a);
+          }
+        } else {
+          const b = localBounds([p]);
+          if (Number.isFinite(b.min[0]) && Number.isFinite(b.max[0])) {
+            const corners = [
+              w({ x: b.min[0], y: b.min[1] }),
+              w({ x: b.max[0], y: b.min[1] }),
+              w({ x: b.max[0], y: b.max[1] }),
+              w({ x: b.min[0], y: b.max[1] }),
+            ];
+            for (let i = 0; i < 4; i++) {
+              bodyOutline.push({ kind: "seg", a: corners[i]!, b: corners[(i + 1) % 4]! });
+              growBox(bb, corners[i]!);
+            }
+          }
+        }
       }
+      if (Number.isFinite(bb.minX)) bodyBounds = { min: { x: bb.minX, y: bb.minY }, max: { x: bb.maxX, y: bb.maxY } };
     }
   }
-  return { symbols, planDisplay, modelCorners };
+  return { symbols, planDisplay, bodyOutline, bodyBounds };
 }
 
 function growBox(box: { minX: number; minY: number; maxX: number; maxY: number }, p: Vec2): void {
@@ -338,14 +428,15 @@ function boxesOverlap(a: PartLabelBox, b: PartLabelBox): boolean {
   return a.min.x < b.max.x && b.min.x < a.max.x && a.min.y < b.max.y && b.min.y < a.max.y;
 }
 
-function worldTextBox(at: Vec2, text: string, sizeMm: number, viewScale: number): PartLabelBox {
+function worldTextBox(at: Vec2, text: string, sizeMm: number, viewScale: number, anchor: "start" | "middle" | "end" = "middle"): PartLabelBox {
   const h = sizeMm * viewScale;
   const w = Math.max(h * 0.75, text.length * sizeMm * 0.74 * viewScale);
   const padX = 1.2 * viewScale;
   const padY = 0.55 * viewScale;
+  const minX = anchor === "start" ? at.x : anchor === "end" ? at.x - w : at.x - w / 2;
   return {
-    min: { x: at.x - w / 2 - padX, y: at.y - h / 2 - padY },
-    max: { x: at.x + w / 2 + padX, y: at.y + h / 2 + padY },
+    min: { x: minX - padX, y: at.y - h / 2 - padY },
+    max: { x: minX + w + padX, y: at.y + h / 2 + padY },
   };
 }
 
@@ -396,8 +487,7 @@ export function partPlanOutline(
         break;
       }
       case "line": {
-        const a = w(s.from);
-        const b = w(s.to);
+        const [a, b] = lineEndpoints(s, w);
         outline.push({ kind: "seg", a, b });
         growBox(bb, a);
         growBox(bb, b);
@@ -419,13 +509,11 @@ export function partPlanOutline(
       }
     }
   }
-  if (resolved.modelCorners && (resolved.planDisplay === "model" || resolved.planDisplay === "both" || outline.length === 0)) {
-    const k = resolved.modelCorners;
-    for (let i = 0; i < 4; i++) {
-      const a = k[i]!;
-      const b = k[(i + 1) % 4]!;
-      outline.push({ kind: "seg", a, b });
-      growBox(bb, a);
+  if (resolved.bodyOutline.length > 0 && (resolved.planDisplay === "model" || resolved.planDisplay === "both" || outline.length === 0)) {
+    outline.push(...resolved.bodyOutline);
+    if (resolved.bodyBounds) {
+      growBox(bb, resolved.bodyBounds.min);
+      growBox(bb, resolved.bodyBounds.max);
     }
   }
   if (outline.length === 0) {
@@ -445,7 +533,7 @@ function placePartMark(
   mark: string,
   bounds: PartLabelBox | null,
   viewScale: number,
-  taken: PartLabelBox[] | undefined,
+  taken: PartLabelStore | undefined,
   hasCenterText: boolean,
 ): Vec2 {
   const textH = MARK_SIZE_MM * viewScale;
@@ -456,7 +544,7 @@ function placePartMark(
   const cy = (box.min.y + box.max.y) / 2;
   const bw = box.max.x - box.min.x;
   const bh = box.max.y - box.min.y;
-  // Large equipment/fixtures with empty interior (e.g. wide boxes) can keep their mark centered when clear.
+  // Large parts with empty interior (e.g. wide boxes) can keep their mark centered when clear.
   const canCenter = !hasCenterText && bw >= textW * 1.6 && bh >= textH * 2.2;
   const candidates: Vec2[] = [];
   if (canCenter) candidates.push({ x: cx, y: cy });
@@ -497,13 +585,13 @@ function placePartMark(
   if (!taken) return candidates[0] ?? part.position;
   for (const at of candidates) {
     const tb = worldTextBox(at, mark, MARK_SIZE_MM, viewScale);
-    if (!taken.some((t) => boxesOverlap(tb, t))) {
-      taken.push(tb);
+    if (!overlapsLabelStore(taken, tb)) {
+      addLabelBox(taken, tb);
       return at;
     }
   }
   const fallback = candidates[0] ?? part.position;
-  taken.push(worldTextBox(fallback, mark, MARK_SIZE_MM, viewScale));
+  addLabelBox(taken, worldTextBox(fallback, mark, MARK_SIZE_MM, viewScale));
   return fallback;
 }
 
@@ -545,7 +633,7 @@ export function drawPartSymbol(
         fill(s.points.map(w), 1);
       }
     }
-    // Pass 2: solid black fills (half-filled indicators, shaded fixtures).
+    // Pass 2: solid black fills (half-filled indicators, shaded symbols).
     for (const s of symbols) {
       if (s.kind === "rect" && s.fill === "solid") {
         const hx = s.size.x / 2;
@@ -595,18 +683,7 @@ export function drawPartSymbol(
         break;
       }
       case "line": {
-        let a: Vec2;
-        let b: Vec2;
-        if (s.upright) {
-          const mid = w({ x: (s.from.x + s.to.x) / 2, y: (s.from.y + s.to.y) / 2 });
-          const hx = (s.to.x - s.from.x) / 2;
-          const hy = (s.to.y - s.from.y) / 2;
-          a = { x: mid.x - hx, y: mid.y - hy };
-          b = { x: mid.x + hx, y: mid.y + hy };
-        } else {
-          a = w(s.from);
-          b = w(s.to);
-        }
+        const [a, b] = lineEndpoints(s, w);
         line(a, b, s.pen ?? "thin");
         growBox(bb, a);
         growBox(bb, b);
@@ -630,25 +707,26 @@ export function drawPartSymbol(
         const sizeMm = s.units === "paper" ? s.heightMm : 2;
         // SVG/PDF text `y` is the baseline; shift down by 0.35em (negative world Y) so centered glyphs ("S", "J", "OS") sit dead-center.
         const at = { x: rawAt.x, y: rawAt.y - sizeMm * 0.35 * viewScale };
-        text(at, s.text, sizeMm);
-        const tb = worldTextBox(rawAt, s.text, sizeMm, viewScale);
+        text(at, s.text, sizeMm, s.anchor);
+        const tb = worldTextBox(rawAt, s.text, sizeMm, viewScale, s.anchor ?? "middle");
         growBox(bb, tb.min);
         growBox(bb, tb.max);
-        opts.takenBoxes?.push(tb);
+        addLabelBox(opts.takenBoxes, tb);
         if (Math.hypot(s.at.x, s.at.y) < 1e-3) hasCenterText = true;
         break;
       }
     }
   }
-  if (!Number.isFinite(bb.minX) && resolved.modelCorners) {
-    for (const c of resolved.modelCorners) growBox(bb, c);
+  if (!Number.isFinite(bb.minX) && resolved.bodyBounds) {
+    growBox(bb, resolved.bodyBounds.min);
+    growBox(bb, resolved.bodyBounds.max);
   }
   const symbolBox: PartLabelBox | null = Number.isFinite(bb.minX) ? { min: { x: bb.minX, y: bb.minY }, max: { x: bb.maxX, y: bb.maxY } } : null;
-  if (symbolBox && opts.takenBoxes) opts.takenBoxes.push(symbolBox);
+  if (symbolBox) addLabelBox(opts.takenBoxes, symbolBox);
   if (part.mark && opts.showMark !== false) {
     const markAt = placePartMark(part, part.mark, symbolBox, viewScale, opts.takenBoxes, hasCenterText);
     // Center the mark vertically on markAt (SVG/PDF text y is baseline).
-    text({ x: markAt.x, y: markAt.y - MARK_SIZE_MM * 0.35 * viewScale }, part.mark, MARK_SIZE_MM);
+    text({ x: markAt.x, y: markAt.y - MARK_SIZE_MM * 0.35 * viewScale }, part.mark, MARK_SIZE_MM, "middle");
   }
   drawPartClearances(model, part, line, text, viewScale, opts.takenBoxes);
 }
@@ -657,7 +735,7 @@ export function drawPartSymbol(
 export const CLEARANCE_DASH: readonly number[] = [3, 1.5];
 
 /** A placed part's clearance zones in plan: a dashed outline each, named cleanly away from the part mark. */
-export function drawPartClearances(model: ModelState, part: PartInstance, line: LineFn, text: TextFn, viewScale = DEFAULT_SYMBOL_SCALE, takenBoxes?: PartLabelBox[]): void {
+export function drawPartClearances(model: ModelState, part: PartInstance, line: LineFn, text: TextFn, viewScale = DEFAULT_SYMBOL_SCALE, takenBoxes?: PartLabelStore): void {
   for (const z of partClearances(model, part)) {
     const c = z.corners;
     for (let i = 0; i < 4; i++) line(c[i] ?? c[0], c[(i + 1) % 4] ?? c[0], "thin", [...CLEARANCE_DASH]);
@@ -673,11 +751,11 @@ export function drawPartClearances(model: ModelState, part: PartInstance, line: 
     }
     let at = mid;
     if (takenBoxes) {
-      const clear = candidates.find((p) => !takenBoxes.some((t) => boxesOverlap(worldTextBox(p, label, CLEARANCE_TEXT_MM, viewScale), t)));
+      const clear = candidates.find((p) => !overlapsLabelStore(takenBoxes, worldTextBox(p, label, CLEARANCE_TEXT_MM, viewScale)));
       at = clear ?? candidates[candidates.length - 1] ?? mid;
-      takenBoxes.push(worldTextBox(at, label, CLEARANCE_TEXT_MM, viewScale));
+      addLabelBox(takenBoxes, worldTextBox(at, label, CLEARANCE_TEXT_MM, viewScale));
     }
-    text(at, label, CLEARANCE_TEXT_MM);
+    text(at, label, CLEARANCE_TEXT_MM, "middle");
   }
 }
 

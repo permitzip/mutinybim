@@ -555,16 +555,29 @@ export const documents = {
       if (!el || el.kind !== "drawing_item" || el.shape !== "tag") throw new ScriptRunError(`No tag "${tagId}" on this model.`);
       return el;
     });
+    const nx = mm(at.x, "Tag x");
+    const ny = mm(at.y, "Tag y");
+    const oldHead = existing.points[0];
+    const translatedElbow =
+      existing.tag?.elbow && existing.tag.elbow !== "auto" && oldHead
+        ? {
+            x: Math.round((existing.tag.elbow.x + (nx - oldHead.x)) * 1000) / 1000,
+            y: Math.round((existing.tag.elbow.y + (ny - oldHead.y)) * 1000) / 1000,
+          }
+        : existing.tag?.elbow;
     ctx.edit({
       type: "update_drawing_item",
       itemId: tagId,
-      points: [{ x: mm(at.x, "Tag x"), y: mm(at.y, "Tag y") }],
-      ...(opts?.leader !== undefined && existing.tag ? { tag: { ...existing.tag, leader: opts.leader } } : {}),
+      points: [{ x: nx, y: ny }],
+      ...(opts?.leader !== undefined && existing.tag
+        ? { tag: { ...existing.tag, leader: opts.leader, ...(translatedElbow ? { elbow: translatedElbow } : {}) } }
+        : {}),
     });
   },
   /**
-   * Every text label rendered on a plan view (paper mm) plus any colliding
-   * pairs, so a script can verify legibility and move overlapping tags.
+   * Every text label rendered on a plan view (paper mm, including rotated tags
+   * and laid-out text blocks) plus any colliding pairs, so a script can verify
+   * legibility and move overlapping tags.
    */
   planLabels(ctx: ScriptContext, viewRef: string): {
     readonly viewId: string;
@@ -581,24 +594,80 @@ export const documents = {
     return onWorking(ctx, "documents.planLabels", (m) => {
       const v = viewIn(m, viewRef, "planLabels");
       const { scene, frame } = buildViewScene(m, v.id);
-      const labels = scene.primitives
+      const r2 = (n: number) => Math.round(n * 100) / 100;
+      const rotatedBounds = (
+        origin: { readonly x: number; readonly y: number },
+        x0: number,
+        y0: number,
+        x1: number,
+        y1: number,
+        deg: number,
+      ) => {
+        if (!deg) return { minX: r2(x0), minY: r2(y0), maxX: r2(x1), maxY: r2(y1) };
+        const rad = (deg * Math.PI) / 180;
+        const c = Math.cos(rad);
+        const s = Math.sin(rad);
+        const corners = [
+          [x0, y0],
+          [x1, y0],
+          [x1, y1],
+          [x0, y1],
+        ] as const;
+        let minX = Infinity;
+        let minY = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+        for (const [cx, cy] of corners) {
+          const dx = cx - origin.x;
+          const dy = cy - origin.y;
+          const rx = origin.x + dx * c - dy * s;
+          const ry = origin.y + dx * s + dy * c;
+          if (rx < minX) minX = rx;
+          if (ry < minY) minY = ry;
+          if (rx > maxX) maxX = rx;
+          if (ry > maxY) maxY = ry;
+        }
+        return { minX: r2(minX), minY: r2(minY), maxX: r2(maxX), maxY: r2(maxY) };
+      };
+      const labels: {
+        readonly text: string;
+        readonly at: { readonly xMm: number; readonly yMm: number };
+        readonly sizeMm: number;
+        readonly anchor: "start" | "middle" | "end";
+        readonly box: { readonly minX: number; readonly minY: number; readonly maxX: number; readonly maxY: number };
+      }[] = scene.primitives
         .filter((p): p is Extract<typeof p, { kind: "text" }> => p.kind === "text")
         .map((p) => {
           const w = Math.max(p.size * 0.65, p.text.length * p.size * 0.6);
-          const minX = p.anchor === "start" ? p.at.x : p.anchor === "end" ? p.at.x - w : p.at.x - w / 2;
+          const x0 = p.anchor === "start" ? p.at.x : p.anchor === "end" ? p.at.x - w : p.at.x - w / 2;
+          const y0 = p.at.y - p.size;
+          const x1 = x0 + w;
+          const y1 = p.at.y + p.size * 0.25;
           return {
             text: p.text,
-            at: { xMm: Math.round(p.at.x * 100) / 100, yMm: Math.round(p.at.y * 100) / 100 },
+            at: { xMm: r2(p.at.x), yMm: r2(p.at.y) },
             sizeMm: p.size,
             anchor: p.anchor,
-            box: {
-              minX: Math.round(minX * 100) / 100,
-              minY: Math.round((p.at.y - p.size) * 100) / 100,
-              maxX: Math.round((minX + w) * 100) / 100,
-              maxY: Math.round((p.at.y + p.size * 0.25) * 100) / 100,
-            },
+            box: rotatedBounds(p.at, x0, y0, x1, y1, p.rotate ?? 0),
           };
         });
+      for (const block of scene.textBlocks ?? []) {
+        for (const line of block.layout.lines) {
+          const text = line.pieces.map((pc) => pc.text).join("").trim();
+          if (!text) continue;
+          const x0 = block.origin.x + line.left;
+          const y0 = block.origin.y + line.top;
+          const x1 = block.origin.x + line.right;
+          const y1 = block.origin.y + line.top + line.height;
+          labels.push({
+            text,
+            at: { xMm: r2(x0), yMm: r2(block.origin.y + line.baseline) },
+            sizeMm: r2(line.height),
+            anchor: "start",
+            box: rotatedBounds(block.origin, x0, y0, x1, y1, block.rotation),
+          });
+        }
+      }
       const overlaps: { readonly a: string; readonly b: string; readonly overlapAreaMm2: number }[] = [];
       for (let i = 0; i < labels.length; i++) {
         for (let j = i + 1; j < labels.length; j++) {
@@ -607,7 +676,7 @@ export const documents = {
           const ox = Math.min(a.box.maxX, b.box.maxX) - Math.max(a.box.minX, b.box.minX);
           const oy = Math.min(a.box.maxY, b.box.maxY) - Math.max(a.box.minY, b.box.minY);
           if (ox > 0.1 && oy > 0.1) {
-            overlaps.push({ a: a.text, b: b.text, overlapAreaMm2: Math.round(ox * oy * 100) / 100 });
+            overlaps.push({ a: a.text, b: b.text, overlapAreaMm2: r2(ox * oy) });
           }
         }
       }
