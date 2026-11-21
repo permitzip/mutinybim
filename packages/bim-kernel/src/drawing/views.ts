@@ -654,9 +654,14 @@ function drawPlan(
     return startIdx;
   };
   const candidates = others.length === 0 ? own : [...own, ...others];
-  // Only pre-seed the spatial collision index when at least one visible part will place an automatic mark.
-  const hasAutoMark = tagsShown && candidates.some((el) => el.kind === "part" && Boolean(el.mark) && !taggedHere.has(el.id));
-  if (hasAutoMark) {
+  // Only pre-seed the spatial collision index when at least one visible part will place an automatic mark or clearance label.
+  const hasPartLabels = candidates.some((el) => {
+    if (el.kind !== "part") return false;
+    if (tagsShown && Boolean(el.mark) && !taggedHere.has(el.id)) return true;
+    const t = model.elements[el.typeId];
+    return t?.kind === "part_type" && (t.definition.clearances?.length ?? 0) > 0;
+  });
+  if (hasPartLabels) {
     const wallPad = 0.6 * frame.scale;
     const partPad = 0.45 * frame.scale;
     for (const el of candidates) {
@@ -670,9 +675,12 @@ function drawPlan(
       } else if (el.kind === "part") {
         const look = elementLook(model, view, el);
         if (!look.visible || !shownAs(el).visible) continue;
-        // Fast approximate seed from position when part has no mark, avoiding a redundant full symbol resolve pass.
-        if (!el.mark) {
-          const r = 2.5 * frame.scale + partPad;
+        // For unmarked paper-only symbols (e.g. hundreds of small schematic devices), use a conservative paper-space bound to avoid a redundant full resolve pass; compute exact bounds for marked or model-sized parts.
+        const t = model.elements[el.typeId];
+        const sym = t?.kind === "part_type" ? t.definition.symbol : undefined;
+        const paperOnly = !el.mark && sym !== undefined && sym.length > 0 && sym.every((s) => s.units === "paper");
+        if (paperOnly) {
+          const r = 4.5 * frame.scale + partPad;
           takenPartBoxes.add({ min: { x: el.position.x - r, y: el.position.y - r }, max: { x: el.position.x + r, y: el.position.y + r } });
         } else {
           const b = partPlanOutline(model, el, { detail: look.detailLevel ?? display.detail, scale: frame.scale, planSymbol: look.planSymbol }).bounds;

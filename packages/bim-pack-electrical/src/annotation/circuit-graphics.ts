@@ -245,22 +245,39 @@ function trimPolylineEnds(pts: readonly Vec2[], startOutline: readonly Outline[]
       }
     }
   }
-  // End trim: last crossing going backward from pts[n - 1] toward pts[0].
+  // End trim: last crossing going backward over ONLY the start-trimmed path (including startPt).
   let endIdx = n - 1;
   let endPt: Vec2 | null = null;
   if (endOutline.length > 0) {
     let bestSeg = -1;
     let bestT = 0;
-    for (let i = n - 1; i > 0; i--) {
+    let bestFrom: Vec2 | null = null;
+    let bestTo: Vec2 | null = null;
+    for (let i = n - 1; i > startIdx; i--) {
       const t = lastCrossT(endOutline, pts[i]!, pts[i - 1]!);
       if (t !== null) {
         bestSeg = i;
         bestT = t;
+        bestFrom = pts[i]!;
+        bestTo = pts[i - 1]!;
       }
     }
-    if (bestSeg > 0) {
-      const exit = lerp(pts[bestSeg]!, pts[bestSeg - 1]!, bestT);
-      if (dist(exit, pts[bestSeg - 1]!) < 0.5) {
+    if (startPt && startIdx < n) {
+      const t = lastCrossT(endOutline, pts[startIdx]!, startPt);
+      if (t !== null) {
+        bestSeg = startIdx;
+        bestT = t;
+        bestFrom = pts[startIdx]!;
+        bestTo = startPt;
+      }
+    }
+    if (bestSeg >= 0 && bestFrom && bestTo) {
+      const exit = lerp(bestFrom, bestTo, bestT);
+      if (bestSeg === startIdx && startPt) {
+        // Crossing happened on the final [startPt, pts[startIdx]] segment.
+        return dist(startPt, exit) >= 0.5 ? [startPt, exit] : [...pts];
+      }
+      if (dist(exit, bestTo) < 0.5) {
         endIdx = bestSeg - 1;
       } else {
         endIdx = bestSeg - 1;
@@ -949,12 +966,12 @@ function drawCircuitGraphicsInk(
   pass: "all" | "lines" | "labels" = "all",
 ): PaperGraphic[] {
   const detail: DetailLevel = ctx.detail ?? "medium";
-  const cached = LAST_LAID.get(shown);
-  const laid =
-    cached && cached.model === model && cached.view === view && cached.scale === ctx.scale && cached.detail === detail
-      ? cached.laid
-      : layoutCircuitGraphics(deriveCircuitGraphics(model, view, shown, ctx.scale, detail), ctx.toPaper);
+  // Only reuse the cached layout on the paired "labels" pass so every "lines" or standalone "all" render recomputes with its own `ctx.toPaper`.
+  const cached = pass === "labels" ? LAST_LAID.get(shown) : undefined;
+  const hit = cached && cached.model === model && cached.view === view && cached.scale === ctx.scale && cached.detail === detail;
+  const laid = hit ? cached.laid : layoutCircuitGraphics(deriveCircuitGraphics(model, view, shown, ctx.scale, detail), ctx.toPaper);
   if (pass === "lines") LAST_LAID.set(shown, { model, view, scale: ctx.scale, detail, laid });
+  else if (hit) LAST_LAID.delete(shown);
   const marks = resolveCircuitGraphics(view).hashMarks;
   const { min, max } = ctx.window;
   const fits = (p: Vec2, w: number, anchor: TextAnchor) => {
