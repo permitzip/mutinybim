@@ -70,6 +70,7 @@ import { UNIT_CODES, type UnitCode } from "../registry/units";
 import { diagramDefinitionSchema } from "../diagrams/definition";
 import { SYSTEM_LINE_PATTERNS } from "../routing/system-graphics";
 import { categoryOverridesWritable } from "../categories/feature";
+import { VIEW_SCHEMATIC_DETAIL_FEATURE } from "../categories/types";
 import { isRegistryIdShape } from "../ids";
 import { diagramItemsOf } from "../diagrams/evaluate";
 import { diagramKindStoreRefusal } from "../diagrams/kinds";
@@ -214,6 +215,8 @@ const categoryOverrideSchema = z
     planSymbol: z.boolean(),
     maskBeneath: z.boolean(),
     transparency: z.number().finite().min(0).max(1),
+    detailLevel: z.enum(["coarse", "medium", "fine"]),
+    singleLineBelowMm: z.number().finite().min(0).max(3000),
   })
   .partial()
   .strict();
@@ -238,6 +241,7 @@ const viewPropsPatchObject = z
     linkedHiddenLines: z.boolean(),
     linkedMinObjectMm: z.number().finite().min(0).max(3000),
     detailLevel: z.enum(["coarse", "medium", "fine"]),
+    showLineCodes: z.boolean(),
     visualStyle: z.enum(VISUAL_STYLES),
     showHiddenLines: z.boolean(),
     hiddenLineCategories: z.array(z.enum(VIEW_CATEGORIES)).max(VIEW_CATEGORIES.length),
@@ -310,7 +314,7 @@ const documentRecord = z.discriminatedUnion("kind", [
     ...base,
     kind: z.literal("view"),
     name,
-    viewType: z.enum(["floor_plan", "ceiling_plan", "section", "three_d", "schedule", "detail"]),
+    viewType: z.enum(["floor_plan", "ceiling_plan", "section", "elevation", "three_d", "schedule", "detail"]),
     cropMin: vec2,
     cropMax: vec2,
     props: viewPropsPatchObject.extend({ discipline: disciplineSchema, workingAngleDeg: z.number().finite().min(-45).max(45), viewBottomMm: z.number().finite().min(-30000).max(30000), viewTopMm: z.number().finite().min(0).max(60000), ...view3dPropsShape }).partial().optional(),
@@ -363,7 +367,7 @@ export const viewCommandSchemas = [
     type: z.literal("create_view"),
     viewId: id,
     name,
-    viewType: z.enum(["floor_plan", "ceiling_plan", "section", "three_d", "detail", "schedule"]),
+    viewType: z.enum(["floor_plan", "ceiling_plan", "section", "elevation", "three_d", "detail", "schedule"]),
     crop: crop.optional(),
     props: viewPropsPatch.optional(),
   }),
@@ -791,6 +795,8 @@ function checkCategoryOverridesPatch(patch: z.infer<typeof viewPropsPatch> | und
   const overrides = patch?.categoryOverrides;
   if (overrides === undefined || Object.keys(overrides).length === 0) return;
   if (!categoryOverridesWritable()) fail("This model server can't save per-category graphics yet, so the change wasn't made. Showing, hiding and pens for the standard categories (Duct, Electrical devices…) still save; an administrator can update the model server.", [viewId]);
+  const usesSchematicDetail = Object.values(overrides).some((ov) => ov.detailLevel !== undefined || ov.singleLineBelowMm !== undefined);
+  if (usesSchematicDetail && !peerReads(VIEW_SCHEMATIC_DETAIL_FEATURE)) fail("Per-category detail levels and single-line size thresholds can't be saved yet: the model server this model is open on is an older version. Try again once it is updated.", [viewId]);
 }
 
 /** A diagram kind is written only when a row in force draws it and the peers read it; a view already holding one keeps it untouched. */
@@ -803,14 +809,15 @@ function checkDiagramKindPatch(patch: z.infer<typeof viewPropsPatch> | undefined
 
 function checkProps(viewType: ViewElement["viewType"], props: ViewProps, viewId: string): void {
   if ((viewType === "floor_plan" || viewType === "ceiling_plan") && !props.level) fail("A plan needs a level. Pick the level it shows.", [viewId]);
-  if (viewType === "section") {
+  if (viewType === "section" || viewType === "elevation") {
     const cut = props.section;
-    if (!cut) fail("A section needs a cut line. Draw it in a plan view.", [viewId]);
-    if (sectionLength(cut) < MIN_SECTION_MM) fail("The section cut line is too short. Draw it at least 1 ft long.", [viewId]);
+    if (!cut) fail(`A ${viewType} needs a cut line. Draw it in a plan view.`, [viewId]);
+    if (sectionLength(cut) < MIN_SECTION_MM) fail(`The ${viewType} line is too short. Draw it at least 1 ft long.`, [viewId]);
   }
-  if (viewType !== "section" && props.section) fail("Only section views have a cut line.", [viewId]);
+  if (viewType !== "section" && viewType !== "elevation" && props.section) fail("Only section and elevation views have a cut line.", [viewId]);
   const isPlan = viewType === "floor_plan" || viewType === "ceiling_plan";
   if (props.diagram?.hints?.faultCurrent !== undefined && !peerReads(DIAGRAM_FAULT_CURRENT_FEATURE)) fail("Show fault current can't be saved yet: the model server this model is open on is an older version. Try again once it is updated.", [viewId]);
+  if (props.showLineCodes !== undefined && !peerReads(VIEW_SCHEMATIC_DETAIL_FEATURE)) fail("Inline service code settings can't be saved yet: the model server this model is open on is an older version. Try again once it is updated.", [viewId]);
   if (!isPlan && (props.viewBottomMm !== undefined || props.viewTopMm !== undefined)) fail("Only plans have a top and bottom to what they show. A section's reach is its far clip depth.", [viewId]);
   if (isPlan && props.viewTopMm !== undefined && props.viewTopMm < (props.cutHeightMm ?? DEFAULT_CUT_HEIGHT_MM)) fail(`The top of the view must be at or above the cut height (${Math.round((props.cutHeightMm ?? DEFAULT_CUT_HEIGHT_MM) / 30.48) / 10} ft).`, [viewId]);
   if (isPlan && viewType === "floor_plan" && props.viewBottomMm !== undefined && props.viewBottomMm > (props.cutHeightMm ?? DEFAULT_CUT_HEIGHT_MM)) fail(`The bottom of the view must be at or below the cut height (${Math.round((props.cutHeightMm ?? DEFAULT_CUT_HEIGHT_MM) / 30.48) / 10} ft).`, [viewId]);
@@ -1004,7 +1011,7 @@ function checkPoints(shape: DrawingItem["shape"], points: readonly Vec2[], text:
   if (need === 2 && a && b && distance(a, b) < 0.5) fail(`The ${shape} is too small to see. Drag it out further.`, [itemId]);
 }
 
-const MODEL_VIEW_TYPES: ReadonlySet<string> = new Set(["floor_plan", "ceiling_plan", "section"]);
+const MODEL_VIEW_TYPES: ReadonlySet<string> = new Set(["floor_plan", "ceiling_plan", "section", "elevation"]);
 
 /** A callout names a live plan, section or detail view other than the one it is drawn in, and its box has some size. */
 function checkCallout(reader: TrackedReader, shape: DrawingItem["shape"], spec: DrawingItem["callout"], ownerId: string, itemId: string, points: readonly Vec2[]): void {
@@ -1240,7 +1247,7 @@ export function executeViewCommand(model: ModelState, command: ViewCommand): Exe
           cropMin = roundVec(command.crop.min);
           cropMax = roundVec(command.crop.max);
           authored.push({ elementId: view.id, field: F.crop, value: canonicalJson({ min: cropMin, max: cropMax }) });
-        } else if (view.viewType === "section" && command.props.section) {
+        } else if ((view.viewType === "section" || view.viewType === "elevation") && command.props.section) {
           // A moved cut line re-crops along its new length.
           const c = sectionDefaultCrop({ props });
           cropMin = c.min;
@@ -1262,7 +1269,7 @@ export function executeViewCommand(model: ModelState, command: ViewCommand): Exe
         const view = live(reader, command.viewId, "view", "The view");
         if (view.viewType === "schedule") fail("A schedule is always as big as its rows; it has no crop box. Change its columns or filters instead.", [view.id]);
         if (command.crop && command.fit) fail("Send a crop box or ask to fit it to the content, not both.", [view.id]);
-        if (command.farClipMm !== undefined && view.viewType !== "section") fail("Only sections have a far clip depth.", [view.id]);
+        if (command.farClipMm !== undefined && view.viewType !== "section" && view.viewType !== "elevation") fail("Only sections and elevations have a far clip depth.", [view.id]);
         const items = viewContentItems(model, view);
         let props: ViewProps = view.props ?? {};
         const setProp = <K extends "cropView" | "showCropBox" | "annotationCrop" | "annotationCropOffsetMm">(key: K, value: ViewProps[K] | undefined) => {
@@ -1483,7 +1490,7 @@ export function executeViewCommand(model: ModelState, command: ViewCommand): Exe
         if (command.shape === "figure" && (!onSheet || !command.figure)) fail(onSheet ? "A figure needs its chart or picture." : "Charts and pictures go on a sheet.", [command.ownerId], onSheet ? "invalid_value" : "wrong_kind");
         if (command.figure && command.shape !== "figure") fail("Only a figure takes a chart or picture.", [command.itemId]);
         if (command.shape === "field_block") fail("Place a live field block with add_field_block; it checks the template.", [command.itemId]);
-        if (command.shape === "callout" && !(owner.kind === "view" && (owner.viewType === "floor_plan" || owner.viewType === "ceiling_plan" || owner.viewType === "section"))) fail("Callouts mark part of a plan or a section, so they go in one.", [command.ownerId], "wrong_kind");
+        if (command.shape === "callout" && !(owner.kind === "view" && (owner.viewType === "floor_plan" || owner.viewType === "ceiling_plan" || owner.viewType === "section" || owner.viewType === "elevation"))) fail("Callouts mark part of a plan, section or elevation, so they go in one.", [command.ownerId], "wrong_kind");
         const points = command.points.map(roundVec);
         checkPoints(command.shape, points, command.text, command.itemId, command.dim, command.tag);
         checkCallout(reader, command.shape, command.callout, owner.id, command.itemId, points);
