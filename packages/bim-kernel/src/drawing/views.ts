@@ -654,26 +654,35 @@ function drawPlan(
     return startIdx;
   };
   const candidates = others.length === 0 ? own : [...own, ...others];
-  // Pre-seed spatial index with walls and every visible part's symbol bounds so auto-placed marks never land on walls or neighboring symbols.
-  const wallPad = 0.6 * frame.scale;
-  const partPad = 0.45 * frame.scale;
-  for (const el of candidates) {
-    if (!nearWindow(p, el) || leftOutOfDisciplineView(view, el)) continue;
-    if (el.kind === "wall") {
-      const half = el.thickness / 2 + wallPad;
-      takenPartBoxes.add({
-        min: { x: Math.min(el.start.x, el.end.x) - half, y: Math.min(el.start.y, el.end.y) - half },
-        max: { x: Math.max(el.start.x, el.end.x) + half, y: Math.max(el.start.y, el.end.y) + half },
-      });
-    } else if (el.kind === "part") {
-      const look = elementLook(model, view, el);
-      if (!look.visible || !shownAs(el).visible) continue;
-      const b = partPlanOutline(model, el, { detail: look.detailLevel ?? display.detail, scale: frame.scale, planSymbol: look.planSymbol }).bounds;
-      if (b) {
+  // Only pre-seed the spatial collision index when at least one visible part will place an automatic mark.
+  const hasAutoMark = tagsShown && candidates.some((el) => el.kind === "part" && Boolean(el.mark) && !taggedHere.has(el.id));
+  if (hasAutoMark) {
+    const wallPad = 0.6 * frame.scale;
+    const partPad = 0.45 * frame.scale;
+    for (const el of candidates) {
+      if (!nearWindow(p, el) || leftOutOfDisciplineView(view, el)) continue;
+      if (el.kind === "wall") {
+        const half = el.thickness / 2 + wallPad;
         takenPartBoxes.add({
-          min: { x: b.min.x - partPad, y: b.min.y - partPad },
-          max: { x: b.max.x + partPad, y: b.max.y + partPad },
+          min: { x: Math.min(el.start.x, el.end.x) - half, y: Math.min(el.start.y, el.end.y) - half },
+          max: { x: Math.max(el.start.x, el.end.x) + half, y: Math.max(el.start.y, el.end.y) + half },
         });
+      } else if (el.kind === "part") {
+        const look = elementLook(model, view, el);
+        if (!look.visible || !shownAs(el).visible) continue;
+        // Fast approximate seed from position when part has no mark, avoiding a redundant full symbol resolve pass.
+        if (!el.mark) {
+          const r = 2.5 * frame.scale + partPad;
+          takenPartBoxes.add({ min: { x: el.position.x - r, y: el.position.y - r }, max: { x: el.position.x + r, y: el.position.y + r } });
+        } else {
+          const b = partPlanOutline(model, el, { detail: look.detailLevel ?? display.detail, scale: frame.scale, planSymbol: look.planSymbol }).bounds;
+          if (b) {
+            takenPartBoxes.add({
+              min: { x: b.min.x - partPad, y: b.min.y - partPad },
+              max: { x: b.max.x + partPad, y: b.max.y + partPad },
+            });
+          }
+        }
       }
     }
   }
@@ -1001,7 +1010,14 @@ function drawPlanConnections(
   drawViewGraphics({ model, view, shown: shownParts, toPaper: p.toPaper, scale: p.scale, detail: display.detail, window, prims: underPrims }, "under_parts");
   if (underPrims.length > 0) {
     const insertAt = firstPartIdx >= 0 ? firstPartIdx : p.prims.length;
-    p.prims.splice(insertAt, 0, ...underPrims);
+    if (insertAt >= p.prims.length) {
+      for (let i = 0; i < underPrims.length; i++) p.prims.push(underPrims[i]!);
+    } else {
+      const tail = p.prims.slice(insertAt);
+      p.prims.length = insertAt;
+      for (let i = 0; i < underPrims.length; i++) p.prims.push(underPrims[i]!);
+      for (let i = 0; i < tail.length; i++) p.prims.push(tail[i]!);
+    }
   }
   drawViewGraphics({ model, view, shown: shownParts, toPaper: p.toPaper, scale: p.scale, detail: display.detail, window, prims: p.prims }, "over_parts");
 }
