@@ -1,7 +1,8 @@
 import type { Rect } from "../crop";
 import { otherLevelElementsInRange, viewCropAndWindow } from "../drawing/views";
 import { elementSolid, hull2 } from "../drawing/solids";
-import { modelLevels, viewLevelNames } from "../levels";
+import { spaceOutlines, outlineAreaMm2 } from "../spaces/space-geometry";
+import { modelLevels, viewLevelNames, viewModelLevel } from "../levels";
 import { displayContextOf, displayResolver } from "../organization/model";
 import { sizeHeight, sizeWidth } from "../routing/rules";
 import { straightPiece } from "../routing/fittings/geometry";
@@ -28,11 +29,11 @@ import { kindRowOf } from "../kinds/rows";
  */
 
 /** Kinds a person can select in a drawing (annotations belong to the drafting tools). */
-const PICKABLE = new Set<BimElement["kind"]>(["run_segment", "run_fitting", "part", "wall", "column", "opening", "room", "grid"]);
+const PICKABLE = new Set<BimElement["kind"]>(["run_segment", "run_fitting", "part", "wall", "column", "opening", "room", "space", "grid"]);
 /** Drawn only in plans (a section draws their cut through solids, which these don't have). */
-const PLAN_ONLY = new Set<BimElement["kind"]>(["opening", "room", "grid"]);
+const PLAN_ONLY = new Set<BimElement["kind"]>(["opening", "room", "space", "grid"]);
 /** Picked only when nothing else is under the pointer (they cover whole rooms and floors). */
-const BACKGROUND = new Set<BimElement["kind"]>(["room", "grid"]);
+const BACKGROUND = new Set<BimElement["kind"]>(["room", "space", "grid"]);
 /** Changes to these never change what a drawing can pick. */
 const INERT = new Set<BimElement["kind"]>(["view", "viewport", "sheet", "drawing_item", "mep_system", "tag", "dimension"]);
 
@@ -227,12 +228,29 @@ function footprintOf(b: Build, el: BimElement): Footprint | null {
       return make(stripBox(a, bb, 0), pa.depth, pa.depth, { a, b: bb, half: 0 });
     }
     case "opening": {
-      const half = el.width / 2;
-      const pa = at(el.position.x - half, el.position.y, mapping.floorMm);
-      const pb = at(el.position.x + half, el.position.y, mapping.floorMm);
+      const half = Math.max(el.width / 2, 180);
+      const host = b.model.elements[el.hostId];
+      let ux = 1;
+      let uy = 0;
+      let wallHalfT = 100;
+      let zTop = mapping.floorMm + el.height;
+      if (host?.kind === "wall") {
+        const dx = host.end.x - host.start.x;
+        const dy = host.end.y - host.start.y;
+        const len = Math.hypot(dx, dy);
+        if (len > 1e-6) {
+          ux = dx / len;
+          uy = dy / len;
+        }
+        wallHalfT = host.thickness / 2;
+        zTop = mapping.floorMm + host.height + 60;
+      }
+      const pa = at(el.position.x - ux * half, el.position.y - uy * half, zTop);
+      const pb = at(el.position.x + ux * half, el.position.y + uy * half, zTop);
       const a = { x: pa.u, y: pa.v };
       const bb = { x: pb.u, y: pb.v };
-      return make(stripBox(a, bb, 100), pa.depth, pa.depth, { a, b: bb, half: 100 });
+      const pickHalf = Math.max(wallHalfT + 80, 180);
+      return make(stripBox(a, bb, pickHalf), Math.max(pa.depth, pb.depth) + 60, Math.min(pa.depth, pb.depth), { a, b: bb, half: pickHalf });
     }
     case "room": {
       if (el.outline.length < 3) return null;
@@ -242,6 +260,54 @@ function footprintOf(b: Build, el: BimElement): Footprint | null {
         mapping.floorMm,
         mapping.floorMm,
       );
+    }
+    case "space": {
+      let best: readonly Vec2[] | null = null;
+      let bestArea = -1;
+      for (const o of spaceOutlines(b.model.elements, el)) {
+        const a = outlineAreaMm2(o);
+        if (a > bestArea) {
+          best = o;
+          bestArea = a;
+        }
+      }
+      if (!best || best.length < 3) return null;
+      const pts = best.map((q) => at(q.x, q.y, mapping.floorMm));
+      return make(
+        hull2(pts.map((q) => ({ x: q.u, y: q.v }))),
+        mapping.floorMm,
+        mapping.floorMm,
+      );
+    }
+    case "part": {
+      const solid = elementSolid(b.model, el, mapping.floorMm);
+      const pts: Vec2[] = [];
+      let depth = mapping.floorMm;
+      let far = mapping.floorMm;
+      if (solid && solid.pieces.length > 0) {
+        depth = -Infinity;
+        far = Infinity;
+        for (const piece of solid.pieces) {
+          for (const q of [...piece.r0, ...piece.r1]) {
+            const d = mapping.toDrawing(q);
+            pts.push({ x: d.u, y: d.v });
+            if (d.depth > depth) depth = d.depth;
+            if (d.depth < far) far = d.depth;
+          }
+        }
+      }
+      // Small schematic parts print in paper space larger than their 100 mm physical box;
+      // guarantee a minimum pick footprint so background areas don't steal clicks.
+      const c = at(el.position.x, el.position.y, mapping.floorMm);
+      const minHalf = 180;
+      pts.push(
+        { x: c.u - minHalf, y: c.v - minHalf },
+        { x: c.u + minHalf, y: c.v - minHalf },
+        { x: c.u + minHalf, y: c.v + minHalf },
+        { x: c.u - minHalf, y: c.v + minHalf },
+      );
+      const poly = hull2(pts);
+      return poly.length >= 3 ? make(poly, depth, far) : null;
     }
     default: {
       const solid = elementSolid(b.model, el, mapping.floorMm);
@@ -266,11 +332,16 @@ function footprintOf(b: Build, el: BimElement): Footprint | null {
 /** What the drawing shows of the element (the same filter `drawing/views.ts` draws by). */
 function shownFilter(model: ModelState, view: ViewElement): (el: BimElement) => boolean {
   const names = viewLevelNames(model, view.props?.level, view.props?.levelElevationMm);
+  const level = viewModelLevel(model, view.props?.level, view.props?.levelElevationMm);
   const reached = names ? new Set(otherLevelElementsInRange(model, view).map((el) => el.id)) : null;
   const display = displayResolver(model, displayContextOf(view));
   return (el) => {
     if (!PICKABLE.has(el.kind) && !rowPicks(el.kind)) return false;
-    if (names && !names.has((el.partition ?? DEFAULT_PARTITION).level) && !reached?.has(el.id)) return false;
+    if (el.kind === "space") {
+      if (level && el.levelId !== level.id) return false;
+    } else if (names && !names.has((el.partition ?? DEFAULT_PARTITION).level) && !reached?.has(el.id)) {
+      return false;
+    }
     if (!elementLook(model, view, el).visible) return false;
     return display(el).visible;
   };

@@ -187,6 +187,14 @@ export interface TagSpec {
   readonly fields?: readonly string[];
   /** A leader line to the element (default yes). */
   readonly leader?: boolean;
+  /** Elbow bend on the leader: `"auto"` or a plan point. */
+  readonly elbow?: "auto" | { readonly x: Measure; readonly y: Measure };
+  /** Opaque white mask behind the tag text. */
+  readonly mask?: boolean;
+  /** Paper text height in mm. */
+  readonly textSizeMm?: number;
+  /** Optional saved tag style id. */
+  readonly styleId?: string;
   readonly id?: string;
 }
 
@@ -297,6 +305,18 @@ export interface VerticalViewSpec {
   readonly direction?: 1 | -1;
   /** Far clip depth beyond the plane (default 20 ft). */
   readonly depth?: Measure;
+  /** Optional explicit section crop box (along-cut x and elevation y). */
+  readonly crop?: { readonly from: { readonly x: Measure; readonly y: Measure }; readonly to: { readonly x: Measure; readonly y: Measure } };
+  /** Extra annotative extension of the section head past `from` (independent of cut range). */
+  readonly headExt?: Measure;
+  /** Extra annotative extension of the section tail past `to` (independent of cut range). */
+  readonly tailExt?: Measure;
+  /** Split/broken section line across the middle of the plan (Revit break). */
+  readonly splitGap?: boolean;
+  /** Left paper-mm extension of level datum lines past the crop box. */
+  readonly levelLeftExtMm?: number;
+  /** Right paper-mm extension of level datum heads past the crop box. */
+  readonly levelRightExtMm?: number;
   /** Drawing scale as a ratio (default 48 = 1/4" = 1'-0"). */
   readonly scale?: number;
   /** Optional level whose plan shows this marker; absent: shown on every level's plan it overlaps. */
@@ -342,14 +362,24 @@ export interface CalloutRefSpec {
   readonly id?: string;
 }
 
-/** Changes a view's crop box (and optionally far clip depth for sections/elevations). */
+/** Changes a view's crop box (and optionally far clip depth, level datum extensions, or annotative section head/tail/split for sections/elevations). */
 export interface CropBoxSpec {
   readonly from?: { readonly x: Measure; readonly y: Measure };
   readonly to?: { readonly x: Measure; readonly y: Measure };
   readonly cropView?: boolean;
   readonly showCropBox?: boolean;
+  /** Toggle annotation crop boundary and its paper-mm offset outside the model crop box (for section/grid/level bubbles & tags). */
+  readonly annotationCrop?: boolean;
+  readonly annotationCropOffsetMm?: number;
   /** Sections and elevations only: far clip depth beyond the cut/view plane. */
   readonly depth?: Measure;
+  /** Sections and elevations: left/right paper-mm extension of level datum lines past crop. */
+  readonly levelLeftExtMm?: number;
+  readonly levelRightExtMm?: number;
+  /** Sections: annotative head/tail extensions (model units) and middle split-gap toggle. */
+  readonly headExt?: Measure;
+  readonly tailExt?: Measure;
+  readonly splitGap?: boolean;
 }
 
 /** Where a view sits on its sheet: its centre, from the sheet's lower-left corner. */
@@ -392,13 +422,29 @@ function verticalView(ctx: ScriptContext, viewType: "section" | "elevation", spe
   const start = { x: mm(spec.from.x, `${viewType} start x`), y: mm(spec.from.y, `${viewType} start y`) };
   const end = { x: mm(spec.to.x, `${viewType} end x`), y: mm(spec.to.y, `${viewType} end y`) };
   const depthMm = spec.depth ? mm(spec.depth, `${viewType} depth`) : 20 * 304.8;
+  const crop = spec.crop
+    ? {
+        min: { x: Math.min(mm(spec.crop.from.x, "Crop x"), mm(spec.crop.to.x, "Crop x")), y: Math.min(mm(spec.crop.from.y, "Crop y"), mm(spec.crop.to.y, "Crop y")) },
+        max: { x: Math.max(mm(spec.crop.from.x, "Crop x"), mm(spec.crop.to.x, "Crop x")), y: Math.max(mm(spec.crop.from.y, "Crop y"), mm(spec.crop.to.y, "Crop y")) },
+      }
+    : undefined;
   const props: ViewProps = {
     ...(spec.level ? { level: levelName(ctx, spec.level) } : {}),
     ...(spec.discipline ? { discipline: spec.discipline } : {}),
     ...(spec.scale ? { scale: spec.scale } : {}),
-    section: { start, end, direction: spec.direction ?? 1, depthMm },
+    ...(spec.levelLeftExtMm !== undefined ? { levelLeftExtMm: spec.levelLeftExtMm } : {}),
+    ...(spec.levelRightExtMm !== undefined ? { levelRightExtMm: spec.levelRightExtMm } : {}),
+    section: {
+      start,
+      end,
+      direction: spec.direction ?? 1,
+      depthMm,
+      ...(spec.headExt !== undefined ? { headExtMm: mm(spec.headExt, "Section head extension") } : {}),
+      ...(spec.tailExt !== undefined ? { tailExtMm: mm(spec.tailExt, "Section tail extension") } : {}),
+      ...(spec.splitGap !== undefined ? { splitGap: spec.splitGap } : {}),
+    },
   };
-  ctx.edit({ type: "create_view", viewId, name: spec.name, viewType, props });
+  ctx.edit({ type: "create_view", viewId, name: spec.name, viewType, ...(crop ? { crop } : {}), props });
   return viewId;
 }
 
@@ -575,14 +621,26 @@ export const documents = {
     });
     return itemId;
   },
-  /** Sets a view's crop box (and optionally crop on/off or far clip depth for sections/elevations). */
+  /** Sets a view's crop box (and optionally crop on/off, far clip depth, level datum extensions, or section head/tail/split). */
   setCrop(ctx: ScriptContext, viewRef: string, spec: CropBoxSpec): void {
-    const viewId = onWorking(ctx, "documents.setCrop", (model) => viewIn(model, viewRef, "view").id);
+    const { viewId, existingSection } = onWorking(ctx, "documents.setCrop", (model) => {
+      const v = viewIn(model, viewRef, "view");
+      return { viewId: v.id, existingSection: v.props?.section };
+    });
     const crop =
       spec.from && spec.to
         ? {
             min: { x: Math.min(mm(spec.from.x, "Crop x"), mm(spec.to.x, "Crop x")), y: Math.min(mm(spec.from.y, "Crop y"), mm(spec.to.y, "Crop y")) },
             max: { x: Math.max(mm(spec.from.x, "Crop x"), mm(spec.to.x, "Crop x")), y: Math.max(mm(spec.from.y, "Crop y"), mm(spec.to.y, "Crop y")) },
+          }
+        : undefined;
+    const sectionUpdate =
+      existingSection && (spec.headExt !== undefined || spec.tailExt !== undefined || spec.splitGap !== undefined)
+        ? {
+            ...existingSection,
+            ...(spec.headExt !== undefined ? { headExtMm: mm(spec.headExt, "Section head extension") } : {}),
+            ...(spec.tailExt !== undefined ? { tailExtMm: mm(spec.tailExt, "Section tail extension") } : {}),
+            ...(spec.splitGap !== undefined ? { splitGap: spec.splitGap } : {}),
           }
         : undefined;
     ctx.edit({
@@ -591,7 +649,12 @@ export const documents = {
       ...(crop ? { crop } : {}),
       ...(spec.cropView !== undefined ? { cropView: spec.cropView } : {}),
       ...(spec.showCropBox !== undefined ? { showCropBox: spec.showCropBox } : {}),
+      ...(spec.annotationCrop !== undefined ? { annotationCrop: spec.annotationCrop } : {}),
+      ...(spec.annotationCropOffsetMm !== undefined ? { annotationCropOffsetMm: spec.annotationCropOffsetMm } : {}),
       ...(spec.depth ? { farClipMm: mm(spec.depth, "Far clip depth") } : {}),
+      ...(spec.levelLeftExtMm !== undefined ? { levelLeftExtMm: spec.levelLeftExtMm } : {}),
+      ...(spec.levelRightExtMm !== undefined ? { levelRightExtMm: spec.levelRightExtMm } : {}),
+      ...(sectionUpdate ? { section: sectionUpdate } : {}),
     });
   },
   /** Changes a view's detail level, visual style, inline service codes, scale, discipline, or per-category/service graphics overrides. */
@@ -618,10 +681,39 @@ export const documents = {
     return newViewId;
   },
   /** Puts a view (a plan, a schedule, a detail) on a sheet; returns the viewport's id. */
-  place(ctx: ScriptContext, sheetId: string, viewId: string, at: SheetPoint, scale?: number): string {
+  place(
+    ctx: ScriptContext,
+    sheetId: string,
+    viewId: string,
+    at: SheetPoint,
+    scale?: number,
+    title?: { readonly offset?: { readonly x: Measure; readonly y: Measure }; readonly ruleLength?: Measure },
+  ): string {
     const viewportId = ctx.id("vp");
-    ctx.edit({ type: "place_viewport", viewportId, sheetId, viewId, center: { x: mm(at.x, "Viewport x"), y: mm(at.y, "Viewport y") }, ...(scale ? { scale } : {}) });
+    ctx.edit({
+      type: "place_viewport",
+      viewportId,
+      sheetId,
+      viewId,
+      center: { x: mm(at.x, "Viewport x"), y: mm(at.y, "Viewport y") },
+      ...(scale ? { scale } : {}),
+      ...(title?.offset ? { titleOffsetMm: { x: mm(title.offset.x, "Title offset x"), y: mm(title.offset.y, "Title offset y") } } : {}),
+      ...(title?.ruleLength ? { titleRuleMm: mm(title.ruleLength, "Title rule length") } : {}),
+    });
     return viewportId;
+  },
+  /** Moves a placed viewport's title block on its sheet and/or changes its title horizontal rule length (Revit viewport title grips). */
+  setViewportTitle(
+    ctx: ScriptContext,
+    viewportId: string,
+    spec: { readonly offset?: { readonly x: Measure; readonly y: Measure }; readonly ruleLength?: Measure | null },
+  ): void {
+    ctx.edit({
+      type: "set_viewport_title",
+      viewportId,
+      ...(spec.offset ? { titleOffsetMm: { x: mm(spec.offset.x, "Title offset x"), y: mm(spec.offset.y, "Title offset y") } } : {}),
+      ...(spec.ruleLength !== undefined ? { titleRuleMm: spec.ruleLength === null ? null : mm(spec.ruleLength, "Title rule length") } : {}),
+    });
   },
   /** Edits a schedule view, one undo step per call: add / move / remove columns, filter, sort, group, totals. */
   editSchedule(ctx: ScriptContext, viewId: string, steps: EditSchedule["steps"]): void {
@@ -750,13 +842,28 @@ export const documents = {
   /** A tag on one element in a plan view; returns the tag's id. */
   tag(ctx: ScriptContext, spec: TagSpec): string {
     const itemId = spec.id ?? ctx.id("tag");
+    const elbow =
+      spec.elbow === "auto"
+        ? ("auto" as const)
+        : spec.elbow
+          ? { x: mm(spec.elbow.x, "Elbow x"), y: mm(spec.elbow.y, "Elbow y") }
+          : undefined;
     ctx.edit({
       type: "add_drawing_item",
       itemId,
       ownerId: spec.view,
       shape: "tag",
       points: [{ x: mm(spec.at.x, "Tag x"), y: mm(spec.at.y, "Tag y") }],
-      tag: { elementId: spec.element, template: spec.template ?? (spec.fields ? "fields" : "auto"), leader: spec.leader ?? true, ...(spec.fields ? { fields: [...spec.fields] } : {}) },
+      tag: {
+        elementId: spec.element,
+        template: spec.template ?? (spec.fields ? "fields" : "auto"),
+        leader: spec.leader ?? true,
+        ...(spec.fields ? { fields: [...spec.fields] } : {}),
+        ...(elbow !== undefined ? { elbow } : {}),
+        ...(spec.mask !== undefined ? { mask: spec.mask } : {}),
+        ...(spec.textSizeMm !== undefined ? { textSizeMm: spec.textSizeMm } : {}),
+        ...(spec.styleId !== undefined ? { styleId: spec.styleId } : {}),
+      },
     });
     return itemId;
   },

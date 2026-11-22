@@ -372,7 +372,9 @@ function draw(d: Draft, id: string, level: Level, input: Common, placement: Draw
     );
     if ("refused" in made) refuse("invalid_value", made.refused);
     if (made.kind !== input.kind) refuse("invalid_value", `The add-on that defines ${words(input.kind).toLowerCase()}s made a ${made.kind.replace(/_/g, " ")} instead; nothing was drawn`);
-    el = { ...made, id: eid, version: 0, authoredRev: {} };
+    const dot = input.kind.indexOf(".");
+    const kindDiscipline = dot > 0 ? input.kind.slice(0, dot) : "general";
+    el = { ...made, id: eid, version: 0, authoredRev: {}, partition: made.partition ?? { level: level.name, zone: "*", discipline: kindDiscipline } };
   } else if (placement.kind === "line") {
     const start = roundVec(placement.start);
     const end = roundVec(placement.end);

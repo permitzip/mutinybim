@@ -3,6 +3,8 @@ import type { TrackedReader } from "../model";
 import { networkOf } from "../network";
 import { activePackSet } from "../packs/scope";
 import type { PackSet } from "../packs/set";
+import { elementKindTable } from "../registry/element-kind-point";
+import { elementsOfKind } from "../store";
 import { asElementId, type BimElement, type ElementId, type ModelState, type Vec2 } from "../types";
 import { LINE_JOIN_POINT, type LineJoinRow } from "./contract";
 import { lineMeetingsOf } from "./solve";
@@ -183,6 +185,95 @@ const isPoint = (v: unknown): v is Vec2 => typeof v === "object" && v !== null &
  */
 export function carryJoinedEndsOfMove(model: ModelState, reader: TrackedReader, working: Record<string, BimElement>, touched: { add(id: ElementId): unknown }, authored: AuthoredWrite[], moved: ReadonlyMap<string, Vec2>): void {
   recordCarried(model, reader, working, touched, authored, carryJoinedEnds(model.elements, working, moved));
+  recordCarried(model, reader, working, touched, authored, carryBoundaryOutlines(model.elements, working, moved));
+}
+
+/**
+ * Revit-style boundary carry: when a wall translates, any floor slab, ceiling, or roof
+ * whose outline edge lies collinear with that wall's centerline or face shifts its edge
+ * along with the wall so floors, ceilings, and roofs stay locked to exterior/interior walls.
+ */
+function carryBoundaryOutlines(before: Elements, working: Record<string, BimElement>, moved: ReadonlyMap<string, Vec2>): readonly ElementId[] {
+  const wallMoves: { readonly start: Vec2; readonly end: Vec2; readonly ux: number; readonly uy: number; readonly nx: number; readonly ny: number; readonly len: number; readonly halfT: number; readonly dn: number }[] = [];
+  for (const [id, d] of moved) {
+    if (d.x === 0 && d.y === 0) continue;
+    const el = before[id];
+    if (el?.kind !== "wall") continue;
+    const dx = el.end.x - el.start.x;
+    const dy = el.end.y - el.start.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-6) continue;
+    const ux = dx / len;
+    const uy = dy / len;
+    const nx = -uy;
+    const ny = ux;
+    const dn = d.x * nx + d.y * ny;
+    if (Math.abs(dn) < 0.5) continue;
+    wallMoves.push({ start: el.start, end: el.end, ux, uy, nx, ny, len, halfT: el.thickness / 2, dn });
+  }
+  if (wallMoves.length === 0) return [];
+
+  const kindTable = elementKindTable();
+  const extraAreaKinds = kindTable.kinds.filter((k) => kindTable.row(k)?.create?.placements.includes("area"));
+  const candidates: BimElement[] = [
+    ...elementsOfKind(before, "slab"),
+    ...elementsOfKind(before, "ceiling"),
+    ...extraAreaKinds.flatMap((k) => elementsOfKind(before, k as "slab")),
+  ];
+  const out: ElementId[] = [];
+  for (const el of candidates) {
+    if (moved.has(el.id)) continue;
+    const rec = working[el.id] as (BimElement & { readonly outline?: readonly Vec2[]; readonly placement?: { readonly kind: string; readonly outline?: readonly Vec2[] } }) | undefined;
+    if (!rec) continue;
+    const rawOutline: readonly Vec2[] | undefined =
+      Array.isArray(rec.outline) && rec.outline.length >= 3
+        ? rec.outline
+        : rec.placement?.kind === "area" && Array.isArray(rec.placement.outline) && rec.placement.outline.length >= 3
+          ? rec.placement.outline
+          : undefined;
+    if (!rawOutline) continue;
+
+    const pts = rawOutline.map((p) => ({ x: p.x, y: p.y }));
+    const n = pts.length;
+    let changed = false;
+    for (const w of wallMoves) {
+      const tol = w.halfT + 30;
+      for (let i = 0; i < n; i++) {
+        const a = pts[i]!;
+        const b = pts[(i + 1) % n]!;
+        const edx = b.x - a.x;
+        const edy = b.y - a.y;
+        const elen = Math.hypot(edx, edy);
+        if (elen < 1e-3) continue;
+        // Edge must be parallel to the moved wall (within ~2 degrees)
+        const cross = Math.abs((edx / elen) * w.uy - (edy / elen) * w.ux);
+        if (cross > 0.035) continue;
+        // Both endpoints must sit on the wall's centerline or face band
+        const da = (a.x - w.start.x) * w.nx + (a.y - w.start.y) * w.ny;
+        const db = (b.x - w.start.x) * w.nx + (b.y - w.start.y) * w.ny;
+        if (Math.abs(da) > tol || Math.abs(db) > tol || Math.abs(da - db) > 25) continue;
+        // And the edge must overlap the wall's longitudinal span
+        const ta = (a.x - w.start.x) * w.ux + (a.y - w.start.y) * w.uy;
+        const tb = (b.x - w.start.x) * w.ux + (b.y - w.start.y) * w.uy;
+        if (Math.max(ta, tb) < -tol || Math.min(ta, tb) > w.len + tol) continue;
+        // Shift both vertices of this boundary edge by the wall's normal translation
+        const sx = w.nx * w.dn;
+        const sy = w.ny * w.dn;
+        pts[i] = { x: Math.round((a.x + sx) * 1000) / 1000, y: Math.round((a.y + sy) * 1000) / 1000 };
+        pts[(i + 1) % n] = { x: Math.round((b.x + sx) * 1000) / 1000, y: Math.round((b.y + sy) * 1000) / 1000 };
+        changed = true;
+      }
+    }
+    if (!changed) continue;
+    const nextRec = {
+      ...rec,
+      ...(Array.isArray(rec.outline) ? { outline: pts } : {}),
+      ...(rec.placement?.kind === "area" ? { placement: { ...rec.placement, outline: pts } } : {}),
+    } as BimElement;
+    working[el.id] = nextRec;
+    out.push(asElementId(el.id));
+  }
+  return out;
 }
 
 /** `carryJoinedEndsOfMove` for lines whose ends were moved one at a time (`carryJoinedEndsOfReshape`). Returns the ids that followed. */
