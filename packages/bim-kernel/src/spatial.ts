@@ -1,11 +1,12 @@
 import { z } from "zod";
+import { round, roundVec } from "./geometry";
 import { viewFloorMm } from "./levels";
-import { localBounds, resolveDim, resolveGeometry } from "./parts";
+import { localBounds, resolveDim, resolveGeometry, resolveSymbol, type PartTypeDefinition } from "./parts";
 import { placeClearance, resolveClearances, resolvePositionEnvelopes, type PlacedClearance } from "./part-model/clearance";
 import type { Dim } from "./part-dim";
 import { pathLength, profileElevationAt } from "./placement/geometric-math";
 import { elementsOfKind } from "./store";
-import type { BimElement, ElementId, ModelState, PartInstance } from "./types";
+import type { BimElement, ElementId, ModelState, PartInstance, Vec2, Wall } from "./types";
 
 /**
  * Where equipment sits and the space it needs, read from the model: the
@@ -50,8 +51,206 @@ export const partHostSchema = z.discriminatedUnion("kind", [
    * advertising `parts:line_host` (part-model/unit-gate.ts).
    */
   z.object({ kind: z.literal("element"), elementId: idSchema, stationMm: z.number().finite().min(0).max(10_000_000) }).strict(),
+  /**
+   * Mounted flush on one vertical finish face of a wall at a station along its
+   * start → end axis. `side: 1` is the left face (+normal) and `side: -1` is
+   * the right face (-normal), matching `Opening.side`. Local +Y points out of
+   * the finish face into the room. Written only to peers advertising
+   * `parts:wall_face_host` (part-model/unit-gate.ts).
+   */
+  z
+    .object({
+      kind: z.literal("wall_face"),
+      elementId: idSchema,
+      stationMm: z.number().finite().min(0).max(10_000_000),
+      side: z.union([z.literal(1), z.literal(-1)]),
+      faceOffsetMm: z.number().finite().min(-1000).max(1000).optional(),
+    })
+    .strict(),
 ]);
 export type PartHost = z.infer<typeof partHostSchema>;
+
+/** The protocol feature for a part mounted on a wall's finish face (`PartHost` kind `wall_face`). */
+export const PARTS_WALL_FACE_HOST_FEATURE = "parts:wall_face_host";
+
+export interface WallFaceFrame {
+  readonly position: Vec2;
+  /** Counter-clockwise degrees from east so local +X runs along the wall and local +Y points out of the face into the room. */
+  readonly rotationDeg: number;
+  readonly normal: Vec2;
+  readonly tangent: Vec2;
+  readonly clampedStationMm: number;
+  readonly wallLengthMm: number;
+}
+
+function normalizeAngleDeg(deg: number): number {
+  const r = round(((deg % 360) + 360) % 360, 6);
+  return r === 360 ? 0 : r;
+}
+
+/**
+ * Exact plan insertion point and outward-facing rotation on one finish face of
+ * `wall` at `stationMm` along `wall.start -> wall.end`. Local +Y points straight
+ * out of the chosen finish face so a wall-mounted part's origin sits flush at
+ * the finish face (`y = 0`) and its graphic extends outward into the room.
+ */
+export function wallFaceFrame(
+  wall: Pick<Wall, "start" | "end" | "thickness">,
+  stationMm: number,
+  side: 1 | -1,
+  faceOffsetMm = 0,
+): WallFaceFrame {
+  const dx = wall.end.x - wall.start.x;
+  const dy = wall.end.y - wall.start.y;
+  const len = Math.hypot(dx, dy);
+  const ux = len > 1e-6 ? dx / len : 1;
+  const uy = len > 1e-6 ? dy / len : 0;
+  const nx = side === 1 ? -uy : uy;
+  const ny = side === 1 ? ux : -ux;
+  const clamped = len > 1e-6 ? Math.min(len, Math.max(0, stationMm)) : 0;
+  const out = wall.thickness / 2 + faceOffsetMm;
+  const position = roundVec({
+    x: wall.start.x + ux * clamped + nx * out,
+    y: wall.start.y + uy * clamped + ny * out,
+  });
+  const baseDeg = (Math.atan2(uy, ux) * 180) / Math.PI;
+  const rotationDeg = normalizeAngleDeg(baseDeg + (side === 1 ? 0 : 180));
+  return {
+    position,
+    rotationDeg,
+    normal: { x: nx, y: ny },
+    tangent: { x: ux, y: uy },
+    clampedStationMm: round(clamped),
+    wallLengthMm: round(len),
+  };
+}
+
+/** Which face of `wall` (`1` = left/+normal, `-1` = right/-normal) faces toward `point`. */
+export function wallFaceSideToward(wall: Pick<Wall, "start" | "end">, point: Vec2): 1 | -1 {
+  const dx = wall.end.x - wall.start.x;
+  const dy = wall.end.y - wall.start.y;
+  const cross = dx * (point.y - wall.start.y) - dy * (point.x - wall.start.x);
+  return cross >= 0 ? 1 : -1;
+}
+
+/** Project `point` onto `wall`: clamped station from `wall.start`, facing side, and distance to that finish face. */
+export function wallStationOf(
+  wall: Pick<Wall, "start" | "end" | "thickness">,
+  point: Vec2,
+): { readonly stationMm: number; readonly side: 1 | -1; readonly distanceMm: number; readonly frame: WallFaceFrame } {
+  const dx = wall.end.x - wall.start.x;
+  const dy = wall.end.y - wall.start.y;
+  const len = Math.hypot(dx, dy);
+  const proj = len > 1e-6 ? ((point.x - wall.start.x) * dx + (point.y - wall.start.y) * dy) / len : 0;
+  const stationMm = len > 1e-6 ? Math.min(len, Math.max(0, proj)) : 0;
+  const side = wallFaceSideToward(wall, point);
+  const frame = wallFaceFrame(wall, stationMm, side);
+  const distanceMm = Math.hypot(point.x - frame.position.x, point.y - frame.position.y);
+  return { stationMm: round(stationMm), side, distanceMm, frame };
+}
+
+export interface NearestWallFace {
+  readonly wallId: ElementId;
+  readonly stationMm: number;
+  readonly side: 1 | -1;
+  readonly position: Vec2;
+  readonly rotationDeg: number;
+  readonly distanceMm: number;
+  readonly label: string;
+}
+
+/**
+ * Nearest wall finish face to `point` on `levelId`'s level within `maxDistanceMm`
+ * (default 450 mm). Shared by interactive plan placement and scripting helpers.
+ */
+export function nearestWallFace(
+  model: ModelState,
+  levelId: string,
+  point: Vec2,
+  opts: { readonly maxDistanceMm?: number; readonly excludeIds?: ReadonlySet<string> } = {},
+): NearestWallFace | null {
+  const maxDist = opts.maxDistanceMm ?? 450;
+  const levelEl = model.elements[levelId];
+  const levelName = levelEl?.kind === "level" ? levelEl.name : undefined;
+  let best: NearestWallFace | null = null;
+  for (const wall of elementsOfKind(model.elements, "wall")) {
+    if (opts.excludeIds?.has(wall.id)) continue;
+    if (levelName && wall.partition?.level && wall.partition.level !== levelName) continue;
+    const hit = wallStationOf(wall, point);
+    if (hit.distanceMm > maxDist) continue;
+    if (!best || hit.distanceMm < best.distanceMm) {
+      best = {
+        wallId: wall.id,
+        stationMm: hit.stationMm,
+        side: hit.side,
+        position: hit.frame.position,
+        rotationDeg: hit.frame.rotationDeg,
+        distanceMm: hit.distanceMm,
+        label: `wall ${wall.id} ${hit.side === 1 ? "left" : "right"} face`,
+      };
+    }
+  }
+  return best;
+}
+
+/**
+ * Discipline-neutral check for whether a part type mounts flush onto a wall
+ * finish face (local +Y pointing into the room):
+ * 1. Explicit `definition.hosting` (`"wall_face"` vs `"ceiling"`/`"floor"`/`"free"`).
+ * 2. Explicit `typeValues.mounting` hint (`wall`/`counter` vs `ceiling`/`floor`).
+ * 3. Geometric self-description: plan symbol anchored on `y = 0` extending strictly
+ *    into `+Y`, or 3D box geometry whose back face sits flush/recessed at `y = 0`.
+ */
+export function isWallFaceMountable(definition: PartTypeDefinition | null | undefined): boolean {
+  if (!definition) return false;
+  if (definition.hosting !== undefined) return definition.hosting === "wall_face";
+  const mounting = definition.typeValues?.mounting;
+  if (typeof mounting === "string") {
+    const m = mounting.toLowerCase();
+    if (m.includes("floor") || m.includes("ceiling")) return false;
+    if (m.includes("wall") || m.includes("counter")) return true;
+  }
+  const family = definition.familyName.toLowerCase();
+  if (family.includes("ceiling") || family.includes("floor") || family.includes("pendant")) return false;
+  // Geometric check on plan symbol: wall-anchored symbols start at y = 0 and extend outward into +Y.
+  const syms = resolveSymbol(definition);
+  if (syms.length > 0) {
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const s of syms) {
+      if (s.kind === "line") {
+        minY = Math.min(minY, s.from.y, s.to.y);
+        maxY = Math.max(maxY, s.from.y, s.to.y);
+      } else if (s.kind === "rect") {
+        minY = Math.min(minY, s.center.y - s.size.y / 2);
+        maxY = Math.max(maxY, s.center.y + s.size.y / 2);
+      } else if (s.kind === "circle" || s.kind === "arc") {
+        minY = Math.min(minY, s.center.y - s.radius);
+        maxY = Math.max(maxY, s.center.y + s.radius);
+      } else if (s.kind === "polyline") {
+        for (const pt of s.points) {
+          minY = Math.min(minY, pt.y);
+          maxY = Math.max(maxY, pt.y);
+        }
+      }
+    }
+    if (Number.isFinite(minY) && Number.isFinite(maxY)) {
+      // Strictly one-sided into +Y anchored near the wall face (y = 0).
+      if (minY >= -0.25 && maxY > 0.5 && minY <= maxY * 0.25) return true;
+      // Symmetric around y = 0 (free-standing / ceiling-centered) -> not wall-face mounted.
+      if (minY < -0.5 && maxY > 0.5) return false;
+    }
+  }
+  // Fallback geometric check on 3D body bounds: flush on y = 0 (+Y) or shallow recessed back-box (maxY <= 20 mm).
+  const bounds = localBounds(resolveGeometry(definition));
+  if (bounds) {
+    const minY = bounds.min[1];
+    const maxY = bounds.max[1];
+    if (minY >= -5 && minY <= 5 && maxY > 25) return true;
+    if (minY < 0 && maxY >= -5 && maxY <= 20) return true;
+  }
+  return false;
+}
 
 /** Curbs and rails taller than this are not curbs (a typo for millimetres or a raised platform). */
 export const MAX_CURB_MM = 3048;
@@ -119,6 +318,12 @@ export function lineHostTopMm(model: ModelState, elementId: string, stationMm: n
 export function hostTopMm(model: ModelState, host: PartHost): number | null {
   if (host.kind === "linked") return host.topMm;
   if (host.kind === "element") return lineHostTopMm(model, host.elementId, host.stationMm);
+  if (host.kind === "wall_face") {
+    const wall = model.elements[host.elementId];
+    if (wall?.kind !== "wall") return null;
+    const levelId = wall.placement?.kind === "line" ? wall.placement.levelId : undefined;
+    return levelElevation(model, levelId, wall.partition?.level);
+  }
   const slab = model.elements[host.elementId];
   if (slab?.kind !== "slab") return null;
   return viewFloorMm(model, slab.partition?.level) ?? 0;
@@ -126,6 +331,12 @@ export function hostTopMm(model: ModelState, host: PartHost): number | null {
 
 export function hostName(model: ModelState, host: PartHost): string {
   if (host.kind === "linked") return `${host.name} (linked)`;
+  if (host.kind === "wall_face") {
+    const wall = model.elements[host.elementId];
+    const station = `${Math.round((host.stationMm / 304.8) * 100) / 100} ft along`;
+    const face = host.side === 1 ? "left face" : "right face";
+    return wall?.kind === "wall" ? `wall ${wall.id} ${face}, ${station}` : `wall ${host.elementId} (deleted)`;
+  }
   if (host.kind === "element") {
     const el = model.elements[host.elementId];
     const station = `${Math.round((host.stationMm / 304.8) * 100) / 100} ft along it`;
@@ -144,8 +355,17 @@ export function hostState(model: ModelState, part: PartInstance): HostState {
   const curbMm = part.curbMm ?? 0;
   if (part.planned !== undefined) return { status: "none", label: "Not placed yet", topMm: null, curbMm, gapMm: null };
   if (!part.host) return { status: "none", label: "No host", topMm: null, curbMm, gapMm: null };
-  const top = hostTopMm(model, part.host);
   const name = hostName(model, part.host);
+  if (part.host.kind === "wall_face") {
+    const wall = model.elements[part.host.elementId];
+    if (wall?.kind !== "wall") return { status: "missing", label: `Its host ${name} is gone`, topMm: null, curbMm, gapMm: null };
+    const top = hostTopMm(model, part.host);
+    const expected = wallFaceFrame(wall, part.host.stationMm, part.host.side, part.host.faceOffsetMm ?? 0);
+    const gap = round(Math.hypot(part.position.x - expected.position.x, part.position.y - expected.position.y));
+    if (gap > SEATED_TOLERANCE_MM) return { status: "floating", label: `${inches(gap)} off ${name}`, topMm: top, curbMm, gapMm: gap };
+    return { status: "seated", label: `Mounted on ${name}`, topMm: top, curbMm, gapMm: gap };
+  }
+  const top = hostTopMm(model, part.host);
   if (top === null) return { status: "missing", label: `Its host ${name} is gone`, topMm: null, curbMm, gapMm: null };
   const gap = partBaseMm(model, part) - (top + curbMm);
   const on = `${name}${curbMm > 0 ? ` on a ${inches(curbMm)} curb` : ""}`;
@@ -195,7 +415,7 @@ export function partsHostedOn(model: ModelState, removed: ReadonlySet<string>): 
   }
   if (!hostGone) return [];
   return elementsOfKind(model.elements, "part")
-    .filter((el) => (el.host?.kind === "slab" || el.host?.kind === "element") && removed.has(el.host.elementId) && !removed.has(el.id))
+    .filter((el) => (el.host?.kind === "slab" || el.host?.kind === "element" || el.host?.kind === "wall_face") && removed.has(el.host.elementId) && !removed.has(el.id))
     .map((el) => el.id);
 }
 

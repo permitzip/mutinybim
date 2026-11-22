@@ -44,7 +44,7 @@ import { serviceLinkName, translateThroughNetworks } from "./connections/model";
 import { catalogEntryName } from "./catalog/model";
 import { adoptPartStarterConnectionType } from "./load-points/adopt-starter";
 import { isKernelElementKind } from "./registry/element-kinds";
-import { MAX_CURB_MM, partHostSchema, partsHostedOn } from "./spatial";
+import { MAX_CURB_MM, partHostSchema, partsHostedOn, wallFaceFrame } from "./spatial";
 import { documentIndex } from "./commands/views";
 import { PART_MOUNTS, type PartMount } from "./part-mount";
 import { INTAKE_KINDS, INTAKE_LABELS, takesIntake, type IntakeChoice } from "./part-model/intake-hood";
@@ -345,7 +345,16 @@ function placePart(model: ModelState, command: Extract<PartCommand, { type: "pla
   const values = command.values ?? {};
   const bad = instanceValueIssues(type.definition, values)[0];
   if (bad) refuse("invalid_value", `${type.definition.typeName}: ${bad.message}`, [partId]);
-  const offsetMm = placedHeight(reader, level, command.position, command.offsetMm, command.planeId);
+  let position = roundVec(command.position);
+  let rotationDeg = normalizeDeg(command.rotationDeg ?? 0);
+  if (command.host?.kind === "wall_face") {
+    const wall = reader.find(asElementId(command.host.elementId));
+    if (wall?.kind !== "wall") refuse("element_not_found", `There is no wall ${command.host.elementId} to mount ${command.mark || "the part"} on`, [partId]);
+    const frame = wallFaceFrame(wall, command.host.stationMm, command.host.side, command.host.faceOffsetMm ?? 0);
+    position = frame.position;
+    rotationDeg = frame.rotationDeg;
+  }
+  const offsetMm = placedHeight(reader, level, position, command.offsetMm, command.planeId);
   const intakes = intakeChoices(type, command.intakes ?? {}, partId);
   const part: PartInstance = {
     id: partId,
@@ -355,9 +364,9 @@ function placePart(model: ModelState, command: Extract<PartCommand, { type: "pla
     partition: { level: level.name, zone: command.zone ?? "Z1", discipline: command.discipline ?? disciplineOfCategory(type.definition.category) },
     typeId,
     levelId: level.id,
-    position: roundVec(command.position),
+    position,
     offsetMm: round(offsetMm),
-    rotationDeg: normalizeDeg(command.rotationDeg ?? 0),
+    rotationDeg,
     mark: command.mark ?? "",
     values,
     ...(command.host ? { host: command.host } : {}),
@@ -791,7 +800,16 @@ function placePlannedPart(model: ModelState, command: Extract<PartCommand, { typ
   const part = requireKind(reader.get(asElementId(command.partId)), "part");
   if (part.planned === undefined) refuse("invalid_value", `${label(part)} is already placed; move it instead`, [part.id]);
   const level = requireKind(reader.get(asElementId(command.levelId)), "level");
-  const offsetMm = placedHeight(reader, level, command.position, command.offsetMm, command.planeId);
+  let position = roundVec(command.position);
+  let rotationDeg = normalizeDeg(command.rotationDeg ?? 0);
+  if (command.host?.kind === "wall_face") {
+    const wall = reader.find(asElementId(command.host.elementId));
+    if (wall?.kind !== "wall") refuse("element_not_found", `There is no wall ${command.host.elementId} to mount ${part.mark || "the part"} on`, [part.id]);
+    const frame = wallFaceFrame(wall, command.host.stationMm, command.host.side, command.host.faceOffsetMm ?? 0);
+    position = frame.position;
+    rotationDeg = frame.rotationDeg;
+  }
+  const offsetMm = placedHeight(reader, level, position, command.offsetMm, command.planeId);
   if (command.host?.kind === "slab" && reader.find(asElementId(command.host.elementId))?.kind !== "slab") refuse("element_not_found", `There is no slab ${command.host.elementId} to stand ${part.mark || "the part"} on`, [part.id]);
   // Everything that points at it (circuits, served-from links, schedules) keeps working: same id, same links.
   const { planned: _planned, host: _host, planeId: _plane, curbMm: _curb, ...kept } = part;
@@ -800,9 +818,9 @@ function placePlannedPart(model: ModelState, command: Extract<PartCommand, { typ
     ...kept,
     partition: { level: level.name, zone: command.zone ?? part.partition?.zone ?? "Z1", discipline: part.partition?.discipline ?? disciplineOfCategory(requireKind(reader.get(part.typeId), "part_type").definition.category) },
     levelId: level.id,
-    position: roundVec(command.position),
+    position,
     offsetMm: round(offsetMm),
-    rotationDeg: normalizeDeg(command.rotationDeg ?? 0),
+    rotationDeg,
     ...(command.host ? { host: command.host } : {}),
     ...(curbMm ? { curbMm: round(curbMm) } : {}),
     ...(command.planeId !== undefined ? { planeId: asElementId(command.planeId) } : {}),
