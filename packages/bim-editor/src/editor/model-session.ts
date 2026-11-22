@@ -2213,7 +2213,14 @@ export class ModelSession {
     }
     if (outcome.status === 'rejected') {
       const notUnderstood = this.notUnderstood.delete(request.idempotencyKey)
-      const kernelWords = outcome.error.code === 'has_dependents' || outcome.error.code === 'undo_refused' || outcome.error.code === 'conflict' || outcome.error.code === 'already_exists' || outcome.error.code === 'in_use' || outcome.error.code === 'locked'
+      const kernelWords =
+        outcome.error.code === 'has_dependents' ||
+        outcome.error.code === 'undo_refused' ||
+        outcome.error.code === 'conflict' ||
+        outcome.error.code === 'already_exists' ||
+        outcome.error.code === 'in_use' ||
+        outcome.error.code === 'locked' ||
+        (outcome.error.code === 'invalid_value' && outcome.error.message.trim().length > 0)
       const message = notUnderstood || kernelWords ? outcome.error.message : operatorMessage(outcome.error.code)
       this.events.onActivity(notUnderstood ? message : `Your change wasn't saved. ${message}`)
       this.events.onRefused?.(message)

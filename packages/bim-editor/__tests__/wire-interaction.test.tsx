@@ -1,8 +1,18 @@
 import { fireEvent, render, screen } from '@testing-library/react'
-import { buildViewScene, modelToPaperPoint, viewLevelElements, viewOnPaper, type Command, type PartInstance } from '@permitzip/bim-kernel'
+import {
+  buildViewScene,
+  modelToPaperPoint,
+  viewLevelElements,
+  viewOnPaper,
+  viewportOnPaper,
+  type Command,
+  type PartInstance,
+  type ViewElement,
+  type Viewport,
+} from '@permitzip/bim-kernel'
 import { installFirstPartyAddOns } from '@permitzip/bim-first-party'
 import { circuitHomeRunsOnPaper, circuitJoinsOnPaper, type CircuitGraphicsProps } from '@permitzip/bim-pack-electrical'
-import { SERVER_FEATURES } from '@permitzip/bim-sync'
+import { InMemoryCommitStore, SERVER_FEATURES, Sequencer, SyncClient, SyncHub, type CommitOutcome } from '@permitzip/bim-sync'
 import { createElectricalDemoModel } from '@permitzip/bim-devserver/src/electrical-demo'
 import { ModelDrawingLayer } from '../src/editor/view-input/ModelDrawingLayer'
 import { EditControlsDialog } from '../src/editor/electrical/EditControlsDialog'
@@ -194,5 +204,112 @@ describe('ModelDrawingLayer electrical wire and home-run interactions inside roo
       scope: 'instance',
       values: { switch_leg: 'z', control_type: 'dali', emergency: true, emergency_mode: 'switched' },
     })
+  })
+
+  it('drags Circuit LP-1-3 on Sheet E101 in-place editing and commits cleanly through SyncHub + SyncClient', async () => {
+    const model = createElectricalDemoModel('electrical-plan-demo')
+    const hub = new SyncHub(await Sequencer.start(new InMemoryCommitStore(model)))
+    const outcomes: CommitOutcome[] = []
+    let client!: SyncClient
+    const conn = { id: 'c1', send: (raw: string) => client.receive(raw) }
+    client = new SyncClient(
+      {
+        send: (raw) => {
+          void hub.handle(conn, raw)
+        },
+        close: () => {},
+      },
+      { id: 'dev', name: 'Dev', kind: 'human' },
+      { onOutcome: (_req, out) => outcomes.push(out) },
+      0,
+      { modelId: 'electrical-plan-demo', clientSessionId: 'c1' },
+    )
+    hub.join(conn)
+    client.opened()
+    await new Promise((r) => setTimeout(r, 25))
+
+    const live = client.view()
+    expect(live).not.toBeNull()
+    const vp = live!.elements['vp-e101-pwr'] as Viewport
+    const viewEl = live!.elements['v-e101'] as ViewElement
+    const vop = viewportOnPaper(live!, vp, viewEl)
+    const shown = new Map<string, PartInstance>()
+    for (const el of viewLevelElements(live!, viewEl)) if (el.kind === 'part' && el.planned === undefined) shown.set(el.id, el)
+    const toPaper = (q: { x: number; y: number }) => modelToPaperPoint(vop, { x: q.x, y: q.y, z: 0 })
+    const joins = circuitJoinsOnPaper(live!, viewEl, shown, vop.frame.scale, toPaper)
+    const wire = joins.find((j) => j.linkId === 'ckt-lp-3')
+    expect(wire).toBeDefined()
+
+    const bridge: ModelEditBridge = {
+      selectedIds: [],
+      canEdit: true,
+      blockedReason: '',
+      tool: 'select',
+      serverFeatures: client.serverProtocolOf()?.features ?? SERVER_FEATURES,
+      hover: () => null,
+      highlighted: () => null,
+      tab: () => null,
+      select: () => {},
+      selectBox: () => '',
+      moveBy: () => null,
+      submit: (command) => {
+        const res = client.submit(command)
+        return res.ok ? null : res.error.message
+      },
+      hint: () => {},
+      runDrag: { begin: () => null, preview: () => null, previewModel: () => null, toLength: () => null, end: () => null },
+      tools: {
+        previewSplit: () => '',
+        split: () => '',
+        previewRoute: () => null,
+        clickRoute: () => null,
+        finishRoute: () => null,
+        cancelRoute: () => false,
+        routeLastPoint: () => null,
+        routePreviewModel: () => null,
+      },
+    }
+    render(
+      <svg>
+        <ModelDrawingLayer model={live!} view={vop} bridge={bridge} paperOf={(e) => ({ x: e.clientX, y: e.clientY })} paperMmPerPx={0.3} />
+      </svg>,
+    )
+    const hit = screen.getByTestId('model-drawing-hit')
+    Object.defineProperty(hit, 'setPointerCapture', { value: () => {}, configurable: true })
+    const mid = wire!.points[Math.floor(wire!.points.length / 2)]!
+    fireEvent.pointerDown(hit, { button: 0, pointerId: 9, clientX: mid.x, clientY: mid.y })
+    fireEvent.pointerMove(hit, { pointerId: 9, clientX: mid.x + 10, clientY: mid.y + 10 })
+    fireEvent.pointerUp(hit, { button: 0, pointerId: 9, clientX: mid.x + 10, clientY: mid.y + 10 })
+    await new Promise((r) => setTimeout(r, 25))
+
+    expect(outcomes).toHaveLength(1)
+    expect(outcomes[0]?.status).toBe('committed')
+
+    // With a stale peer lacking graphics:link_routing connected to the same hub,
+    // the server rejects with the plain-English reload message (not a cryptic code).
+    const staleConn = { id: 'stale', send: () => {} }
+    hub.join(staleConn)
+    await hub.handle(
+      staleConn,
+      JSON.stringify({
+        type: 'hello',
+        modelId: 'electrical-plan-demo',
+        actor: { id: 'dev', name: 'Dev', kind: 'human' },
+        clientSessionId: 'stale-tab',
+        lastRevision: 0,
+        protocol: { version: 1, features: ['views:hash_marks'] },
+      }),
+    )
+    fireEvent.pointerDown(hit, { button: 0, pointerId: 10, clientX: mid.x, clientY: mid.y })
+    fireEvent.pointerMove(hit, { pointerId: 10, clientX: mid.x + 16, clientY: mid.y + 16 })
+    fireEvent.pointerUp(hit, { button: 0, pointerId: 10, clientX: mid.x + 16, clientY: mid.y + 16 })
+    await new Promise((r) => setTimeout(r, 25))
+
+    expect(outcomes).toHaveLength(2)
+    expect(outcomes[1]?.status).toBe('rejected')
+    if (outcomes[1]?.status === 'rejected') {
+      expect(outcomes[1].error.message).toMatch(/older version|reload any older tabs/i)
+    }
+    client.dispose()
   })
 })

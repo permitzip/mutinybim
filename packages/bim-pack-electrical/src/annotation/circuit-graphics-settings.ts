@@ -126,7 +126,7 @@ export const circuitGraphicsSchema = z
   })
   .strict();
 
-const OLDER_SERVER = "the model server this model is open on is an older version. Try again once the server is updated.";
+const OLDER_SERVER = "the model server or another open browser tab is on an older version — reload any older tabs and try again.";
 
 function usesRoutingHints(p: CircuitGraphicsProps): boolean {
   if (p.showCircuits !== undefined || p.hashMarksOn !== undefined || p.switchLegLabels !== undefined) return true;

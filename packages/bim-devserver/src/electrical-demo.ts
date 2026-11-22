@@ -509,7 +509,7 @@ export function createElectricalDemoModel(modelId = "electrical-plan-demo"): Mod
       parentViewId: "v-e101",
       viewId: "v-e102",
       calloutId: "co-elec-rm",
-      name: "E102 Enlarged Electrical Room 101 (1/2\" = 1'-0\")",
+      name: "E102 Enlarged Electrical Room",
       box: { min: { x: -1 * FT, y: 15 * FT }, max: { x: 11 * FT, y: 29 * FT } },
       scale: 24,
     });
@@ -540,10 +540,13 @@ export function createElectricalDemoModel(modelId = "electrical-plan-demo"): Mod
     ];
     for (const step of sheetCmds) run(step);
 
-    // Pack each sheet cleanly inside its drawing area so zero viewports overlap or overhang the border.
+    // Pack each sheet cleanly inside its drawing area, then nudge viewports slightly down (+14 mm) so schedule headers never crowd the top sheet border.
     for (const sheetId of ["sh-e101", "sh-e201", "sh-e501"]) {
-      const packed = sheetLayoutCommand(m, sheetId, { mode: "pack", gapMm: 14 });
+      const packed = sheetLayoutCommand(m, sheetId, { mode: "pack", gapMm: 16 });
       if (packed.command) run(packed.command);
+      for (const move of packed.layout.moves) {
+        run({ type: "move_viewport", viewportId: move.viewportId, center: { x: move.center.x, y: move.center.y + 14 } });
+      }
     }
 
     return m;
