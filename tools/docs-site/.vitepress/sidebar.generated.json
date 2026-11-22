@@ -1,0 +1,173 @@
+[
+  {
+    "text": "Guide",
+    "items": [
+      {
+        "text": "MutinyBIM user guide",
+        "link": "/guide/"
+      },
+      {
+        "text": "Getting started",
+        "link": "/guide/getting-started"
+      },
+      {
+        "text": "A tour of the editor",
+        "link": "/guide/editor-tour"
+      },
+      {
+        "text": "Connect Claude or another assistant",
+        "link": "/guide/connect-claude"
+      }
+    ]
+  },
+  {
+    "text": "Building on MutinyBIM",
+    "items": [
+      {
+        "text": "Architecture",
+        "link": "/ARCHITECTURE"
+      },
+      {
+        "text": "Scripting",
+        "link": "/SCRIPTING"
+      },
+      {
+        "text": "Connect an AI assistant",
+        "link": "/CONNECT-AN-AGENT"
+      },
+      {
+        "text": "Writing an add-on",
+        "link": "/ADD-ON-CONTRACT"
+      },
+      {
+        "text": "Your first add-on: a planter",
+        "link": "/YOUR-FIRST-ADD-ON"
+      },
+      {
+        "text": "Linked hosts",
+        "link": "/LINKED-HOSTS"
+      },
+      {
+        "text": "Performance",
+        "link": "/PERFORMANCE"
+      },
+      {
+        "text": "Releasing MutinyBIM",
+        "link": "/RELEASING"
+      },
+      {
+        "text": "Scripting coverage: what a script does of each tool",
+        "link": "/SCRIPTING-COVERAGE"
+      }
+    ]
+  },
+  {
+    "text": "Reference",
+    "items": [
+      {
+        "text": "MutinyBIM reference",
+        "link": "/reference/"
+      },
+      {
+        "text": "Example scripts",
+        "link": "/reference/examples"
+      },
+      {
+        "text": "Script recipes",
+        "link": "/reference/recipes"
+      },
+      {
+        "text": "Add-ons",
+        "link": "/reference/add-ons"
+      },
+      {
+        "text": "Calcs (ctx.calc)",
+        "link": "/reference/calcs"
+      },
+      {
+        "text": "Edit commands (ctx.edit)",
+        "link": "/reference/commands"
+      },
+      {
+        "text": "Tool server (MCP) tools",
+        "link": "/reference/mcp-tools"
+      },
+      {
+        "text": "Pack reads (ctx.read)",
+        "link": "/reference/reads"
+      }
+    ]
+  },
+  {
+    "text": "Script kit",
+    "collapsed": false,
+    "items": [
+      {
+        "text": "ctx: the script context",
+        "link": "/reference/script-kit/ctx"
+      },
+      {
+        "text": "defineScript",
+        "link": "/reference/script-kit/define-script"
+      },
+      {
+        "text": "units",
+        "link": "/reference/script-kit/units"
+      },
+      {
+        "text": "building",
+        "link": "/reference/script-kit/building"
+      },
+      {
+        "text": "routes",
+        "link": "/reference/script-kit/routes"
+      },
+      {
+        "text": "equipment",
+        "link": "/reference/script-kit/equipment"
+      },
+      {
+        "text": "parts",
+        "link": "/reference/script-kit/parts"
+      },
+      {
+        "text": "PartBuilder",
+        "link": "/reference/script-kit/part-builder"
+      },
+      {
+        "text": "documents",
+        "link": "/reference/script-kit/documents"
+      },
+      {
+        "text": "checks",
+        "link": "/reference/script-kit/checks"
+      }
+    ]
+  },
+  {
+    "text": "Project",
+    "collapsed": true,
+    "items": [
+      {
+        "text": "Notes for coding agents",
+        "link": "/project/agents"
+      },
+      {
+        "text": "Contributing to MutinyBIM",
+        "link": "/project/contributing"
+      },
+      {
+        "text": "Governance",
+        "link": "/project/governance"
+      },
+      {
+        "text": "Roadmap",
+        "link": "/project/roadmap"
+      },
+      {
+        "text": "Security policy",
+        "link": "/project/security"
+      }
+    ]
+  }
+]
