@@ -13,6 +13,7 @@ import {
   allMaterials,
   anchorInView,
   assemblyThermalSummary,
+  buildViewPickIndex,
   buildViewScene,
   executeCommand,
   gridBubbleEndpoints,
@@ -20,6 +21,7 @@ import {
   isPointInsideHostArea,
   lineJoinPlanGraphics,
   materialOf,
+  pickAt,
   planAutoTags,
   planGraphicsContext,
   planGraphicsOf,
@@ -33,6 +35,7 @@ import {
   type ModelState,
   type PlanGraphic,
   type Revision,
+  type ViewElement,
 } from "../src";
 import { installFirstPartyAddOns } from "@permitzip/bim-first-party";
 import { asStair, STAIR_KIND_ROW, stairGeometry, stairLayout } from "@permitzip/bim-pack-architecture";
@@ -519,5 +522,68 @@ describe("architectural overhaul", () => {
     expect(gb).not.toBeNull();
     expect(gb!.hasBubbleB).toBe(true);
     expect(Math.hypot(gb!.bubbleA.x - gb!.pA.x, gb!.bubbleA.y - gb!.pA.y)).toBeCloseTo(4.2, 2);
+  });
+
+  it("scopes boundary carry to the wall's level, flips opening host.side on perpendicular drag, updates room-backed space pick footprints, and scopes opening mark suppression per view", () => {
+    // 1. Level-scoped boundary carry: moving L1 wall reshapes L1 slab only, leaving coincident L2 slab intact
+    const m1 = runAll([
+      { type: "create_level", levelId: "L1", name: "Level 1", elevationMm: 0 },
+      { type: "create_level", levelId: "L2", name: "Level 2", elevationMm: 3000 },
+      { type: "create_element", elementId: "w-l1", kind: "wall", levelId: "L1", topLevelId: "L2", size: { thicknessMm: 200 }, placement: { kind: "line", start: { x: 0, y: 0 }, end: { x: 4000, y: 0 } } },
+      { type: "create_element", elementId: "slab-l1", kind: "slab", levelId: "L1", size: { thicknessMm: 200 }, placement: { kind: "area", outline: [{ x: 0, y: 0 }, { x: 4000, y: 0 }, { x: 4000, y: 4000 }, { x: 0, y: 4000 }] } },
+      { type: "create_element", elementId: "slab-l2", kind: "slab", levelId: "L2", size: { thicknessMm: 200 }, placement: { kind: "area", outline: [{ x: 0, y: 0 }, { x: 4000, y: 0 }, { x: 4000, y: 4000 }, { x: 0, y: 4000 }] } },
+      { type: "move_elements", ids: ["w-l1"], delta: { x: 0, y: -500 } },
+    ]);
+    const s1 = m1.elements["slab-l1"];
+    const s2 = m1.elements["slab-l2"];
+    if (s1?.kind !== "slab" || s2?.kind !== "slab") throw new Error("expected slabs");
+    expect(Math.min(...s1.outline.map((p) => p.y))).toBe(-500);
+    expect(Math.min(...s2.outline.map((p) => p.y))).toBe(0);
+
+    // 2. Perpendicular drag on a hosted door flips values["host.side"]
+    const m2 = runAll([
+      { type: "create_level", levelId: "L1", name: "Level 1", elevationMm: 0 },
+      { type: "create_element", elementId: "w1", kind: "wall", levelId: "L1", size: { thicknessMm: 200 }, placement: { kind: "line", start: { x: 0, y: 0 }, end: { x: 4000, y: 0 } } },
+      { type: "create_hosted", elementId: "d1", kind: "opening", openingType: "door", mark: "101", hostId: "w1", s: 2000, side: 1, size: { widthMm: 900, heightMm: 2100 } },
+      { type: "move_elements", ids: ["d1"], delta: { x: 0, y: -400 } },
+    ]);
+    const door = m2.elements["d1"];
+    if (door?.kind !== "opening") throw new Error("expected opening");
+    expect(door.values?.["host.side"]).toBe(-1);
+
+    // 3. Per-view opening mark suppression: tagging on view-a suppresses fallback mark only on view-a, never on view-b, and deleting tag restores it
+    const m3 = runAll([
+      { type: "create_level", levelId: "L1", name: "Level 1", elevationMm: 0 },
+      { type: "create_element", elementId: "w1", kind: "wall", levelId: "L1", size: { thicknessMm: 200 }, placement: { kind: "line", start: { x: 0, y: 0 }, end: { x: 4000, y: 0 } } },
+      { type: "create_hosted", elementId: "d1", kind: "opening", openingType: "door", mark: "D-101", hostId: "w1", s: 2000, side: 1, size: { widthMm: 900, heightMm: 2100 } },
+      { type: "create_view", viewId: "v-a", name: "Plan A", viewType: "floor_plan", props: { level: "Level 1", scale: 96 } },
+      { type: "create_view", viewId: "v-b", name: "Plan B", viewType: "floor_plan", props: { level: "Level 1", scale: 96 } },
+      { type: "add_drawing_item", itemId: "tag-a", ownerId: "v-a", shape: "tag", points: [{ x: 2000, y: 1200 }], tag: { elementId: "d1", template: "mark", leader: true } },
+    ]);
+    const textsIn = (m: ModelState, vid: string) =>
+      buildViewScene(m, vid).scene.primitives.filter((p) => p.kind === "text").map((p) => p.text);
+    // View A has 1 label (its movable tag), View B still has 1 label (its fallback mark)
+    expect(textsIn(m3, "v-a").filter((t) => t === "D-101")).toHaveLength(1);
+    expect(textsIn(m3, "v-b").filter((t) => t === "D-101")).toHaveLength(1);
+    const rDel = executeCommand(m3, { type: "delete_drawing_item", itemId: "tag-a" });
+    if (!rDel.ok) throw new Error(JSON.stringify(rDel));
+    // Deleting the movable tag on View A restores the fallback mark
+    expect(textsIn(rDel.model, "v-a").filter((t) => t === "D-101")).toHaveLength(1);
+
+    // 4. Incremental pick index re-measures room-backed spaces when their referenced room is removed
+    const m4 = runAll([
+      { type: "create_level", levelId: "L1", name: "Level 1", elevationMm: 0 },
+      { type: "add_architecture", levelId: "L1", walls: [], openings: [], casework: [], rooms: [{ roomId: "rm-1", number: "101", name: "Office", outline: [{ x: 0, y: 0 }, { x: 4000, y: 0 }, { x: 4000, y: 4000 }, { x: 0, y: 4000 }] }] },
+      { type: "make_spaces_from_rooms", roomIds: ["rm-1"] },
+      { type: "create_view", viewId: "v-1", name: "Level 1", viewType: "floor_plan", crop: { min: { x: -1000, y: -1000 }, max: { x: 6000, y: 6000 } }, props: { level: "Level 1", scale: 96, cropView: true } },
+    ]);
+    const sp1 = Object.values(m4.elements).find((el) => el.kind === "space");
+    if (!sp1) throw new Error("expected promoted space");
+    const v1 = m4.elements["v-1"] as ViewElement;
+    const idx1 = buildViewPickIndex(m4, v1);
+    expect(pickAt(idx1, { x: 2000, y: 2000 }, 50)).toContain(sp1.id);
+    const m4After: ModelState = { ...m4, elements: Object.fromEntries(Object.entries(m4.elements).filter(([id]) => id !== "rm-1")) };
+    const idx2 = buildViewPickIndex(m4After, v1, idx1, ["rm-1"]);
+    expect(pickAt(idx2, { x: 2000, y: 2000 }, 50)).not.toContain(sp1.id);
   });
 });

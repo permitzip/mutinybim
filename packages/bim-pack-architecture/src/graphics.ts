@@ -1,4 +1,4 @@
-import { elementsOfKind, hostLineOf, type BimElement, type ClassPlanGraphicsRow, type PlanGraphic, type Vec2 } from "@permitzip/bim-kernel";
+import { hostLineOf, type BimElement, type ClassPlanGraphicsRow, type PlanGraphic, type Vec2 } from "@permitzip/bim-kernel";
 import { valueOf } from "./values";
 
 /**
@@ -63,18 +63,10 @@ function boxPoly(origin: Vec2, u: Vec2, n: Vec2, u0: number, u1: number, n0: num
   return [pt(u0, n0), pt(u1, n0), pt(u1, n1), pt(u0, n1)];
 }
 
-function hasExplicitTag(elements: Elements, elementId: string): boolean {
-  for (const item of elementsOfKind(elements, "drawing_item")) {
-    if (item.shape === "tag" && item.tag?.elementId === elementId) return true;
-  }
-  return false;
-}
-
-function mark(f: OpeningFrame, elements: Elements, elementId: string, out: PlanGraphic[]): void {
+function mark(f: OpeningFrame, _elements: Elements, _elementId: string, out: PlanGraphic[]): void {
   if (f.mark.trim().length === 0) return;
-  // When the opening already has a movable drawing tag on a plan, suppress the fixed mark so there is no duplicate.
-  if (hasExplicitTag(elements, elementId)) return;
   // Horizontal mark strings are wider than tall, so give extra clearance when placed beside a vertical wall.
+  // View renderers suppress tag_place per view when a live movable drawing tag exists for this opening.
   const clearance = Math.abs(f.n.x) > 0.5 ? 480 : 320;
   out.push({ form: "tag_place", at: add(f.centre, mul(f.n, -(f.face + clearance))), rotationDeg: 0, text: f.mark, anchor: "middle" });
 }

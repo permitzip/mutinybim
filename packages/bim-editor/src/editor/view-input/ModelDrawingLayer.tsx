@@ -241,13 +241,18 @@ export function ModelDrawingLayer({ model, view, bridge, paperOf, paperMmPerPx, 
         bridge.hint(bridge.tools.finishRoute())
         setToolMark(null)
       } else if (e.key === 'Escape' && !e.defaultPrevented) {
-        const step = drawingEscapeStep({ tool: bridge.tool, dragging: drag !== null, routeInProgress: routing && bridge.tools.routeLastPoint() !== null })
+        const step = drawingEscapeStep({ tool: bridge.tool, dragging: drag !== null || wallEndDrag !== null, routeInProgress: routing && bridge.tools.routeLastPoint() !== null })
         if (step === null) return
         e.stopPropagation()
-        if (step === 'cancel-drag' && drag) {
-          setDrag(null)
-          if (drag.kind === 'run') bridge.runDrag.end(false)
-          bridge.hint(drag.kind === 'run' ? 'Drag cancelled; nothing changed.' : 'Move cancelled; nothing changed.')
+        if (step === 'cancel-drag' && (drag || wallEndDrag)) {
+          if (wallEndDrag) {
+            setWallEndDrag(null)
+            bridge.hint('Wall end drag cancelled; nothing changed.')
+          } else if (drag) {
+            setDrag(null)
+            if (drag.kind === 'run') bridge.runDrag.end(false)
+            bridge.hint(drag.kind === 'run' ? 'Drag cancelled; nothing changed.' : 'Move cancelled; nothing changed.')
+          }
         } else if (step === 'cancel-route' && bridge.tools.cancelRoute()) {
           bridge.hint('Route cancelled; nothing was saved. Click to start another, or Esc again to stop routing.')
         } else if (bridge.stopTool) {
@@ -722,6 +727,17 @@ export function ModelDrawingLayer({ model, view, bridge, paperOf, paperMmPerPx, 
                     if (typeof cmd === 'string') return
                     const err = bridge.submit(cmd, d.disjoin ? "disjoin and move the wall's end" : "move the wall's end")
                     if (err) toast.error(err)
+                  }}
+                  onPointerCancel={(e) => {
+                    if (!wallEndDrag) return
+                    e.stopPropagation()
+                    setWallEndDrag(null)
+                    bridge.hint(null)
+                  }}
+                  onLostPointerCapture={() => {
+                    if (!wallEndDrag) return
+                    setWallEndDrag(null)
+                    bridge.hint(null)
                   }}
                   onClick={(e) => e.stopPropagation()}
                 />

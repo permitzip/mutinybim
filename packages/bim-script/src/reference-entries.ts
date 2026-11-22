@@ -715,7 +715,7 @@ export const KIT_ENTRIES: readonly KitEntry[] = [
   {
     name: "documents.tag",
     summary: "A tag on one element in a plan view (its mark, size or the right text for its kind), with a leader; returns the tag's id.",
-    signature: "tag(ctx: ScriptContext, spec: { view: string; element: string; at: { x: Measure; y: Measure }; template?: TagTemplate; fields?: readonly string[]; leader?: boolean; id?: string }): string",
+    signature: "tag(ctx: ScriptContext, spec: { view: string; element: string; at: { x: Measure; y: Measure }; template?: TagTemplate; fields?: readonly string[]; leader?: boolean; elbow?: \"auto\" | { x: Measure; y: Measure }; mask?: boolean; textSizeMm?: number; styleId?: string; id?: string }): string",
     example: layout(`${WALLS}\n${PLAN}\n    documents.tag(ctx, { view: plan, element: walls.element(1), at: { x: units.ft(10), y: units.ft(-3) } });`),
     topics: ["tag", "tags", "label", "mark", "annotate"],
   },

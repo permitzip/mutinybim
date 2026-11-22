@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import type { BimElement } from '@permitzip/bim-kernel'
+import { lockOf, type BimElement } from '@permitzip/bim-kernel'
 
 /**
  * Revit-style selection locks shared across live plan, 3D, and printed drawings.
@@ -55,6 +55,6 @@ export function useSelectionLocks(): SelectionLocks {
 export function isSelectableUnderLocks(el: BimElement | undefined, locks: SelectionLocks): boolean {
   if (!el) return false
   if (!locks.rooms && (el.kind === 'room' || el.kind === 'space')) return false
-  if (!locks.locked && 'locked' in el && el.locked === true) return false
+  if (!locks.locked && lockOf(el) !== null) return false
   return true
 }

@@ -5,7 +5,7 @@ import { clientOnly as dynamic } from '@permitzip/bim-editor/client-only'
 import { useEditorNavigation } from '@permitzip/bim-editor/host'
 import { toast } from 'sonner'
 import { RefreshCw, Wind, X, ArrowLeft } from 'lucide-react'
-import { AUTO_TAG_CATEGORIES, ORGANIZATION_ZONE, elementsOfKind, planAutoTags, runLabel, type RunFitting, type RunSegment, SYSTEM_KINDS, displayContextOf, documentIndex, viewCamera3d, type Aabb3, normalizeLevelName, organizationOf, sheetDependsOn, sheetViewports, type Actor, type DisplayContext, type GroupVisibility, type ModelState, type PartInstance, type PartTypeDefinition, type SectionCut, type Sheet, type Vec2, type ViewElement, originPointPosition, viewFloorMm, viewModelLevel, canonicalViewLevel, modelLevels, viewRotationDeg, type OriginPoint, diagramKindLabel, type StoredDiagramKind, type ScheduleCategory, type ElementId, type WorkFrame, asElementId, type AuthorRef, type BranchRef, parseBranchModelId, type SubmittalCommand, matchingPlanCrop, projectParametersOf } from '@permitzip/bim-kernel'
+import { AUTO_TAG_CATEGORIES, ORGANIZATION_ZONE, elementsOfKind, lockOf, planAutoTags, runLabel, type RunFitting, type RunSegment, SYSTEM_KINDS, displayContextOf, documentIndex, viewCamera3d, type Aabb3, normalizeLevelName, organizationOf, sheetDependsOn, sheetViewports, type Actor, type DisplayContext, type GroupVisibility, type ModelState, type PartInstance, type PartTypeDefinition, type SectionCut, type Sheet, type Vec2, type ViewElement, originPointPosition, viewFloorMm, viewModelLevel, canonicalViewLevel, modelLevels, viewRotationDeg, type OriginPoint, diagramKindLabel, type StoredDiagramKind, type ScheduleCategory, type ElementId, type WorkFrame, asElementId, type AuthorRef, type BranchRef, parseBranchModelId, type SubmittalCommand, matchingPlanCrop, projectParametersOf } from '@permitzip/bim-kernel'
 import type { ConnectionStatus, Presence, SaveState } from '@permitzip/bim-sync'
 import { type ConnectionProblem } from './operator-messages'
 import { SHEET_FIRM_NAME, type SheetTitle } from '../contracts/building-model/sheet-title'
@@ -3741,17 +3741,11 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
               viewer={viewer}
               is3d={!showDrawing && !planOpen}
               hasSelection={selectedIds.length > 0}
-              selectionLocked={selectedIds.length > 0 && selectedIds.every((id) => {
-                const el = model?.elements[id]
-                return el !== undefined && 'locked' in el && el.locked === true
-              })}
+              selectionLocked={selectedIds.length > 0 && selectedIds.every((id) => lockOf(model?.elements[id]) !== null)}
               canEdit={canEdit}
               onTogglePin={() => {
                 if (!model || selectedIds.length === 0) return
-                const allLocked = selectedIds.every((id) => {
-                  const el = model.elements[id]
-                  return el !== undefined && 'locked' in el && el.locked === true
-                })
+                const allLocked = selectedIds.every((id) => lockOf(model.elements[id]) !== null)
                 submitWithUndo(
                   allLocked
                     ? { type: 'unlock_elements', elementIds: [...selectedIds] }

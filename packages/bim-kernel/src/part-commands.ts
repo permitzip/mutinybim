@@ -432,19 +432,20 @@ function moveElements(model: ModelState, command: Extract<PartCommand, { type: "
         const margin = Math.min(el.width / 2 + 50, len / 2);
         const nextOffset = round(Math.max(margin, Math.min(len - margin, el.offset + along)));
         const nextPos = roundVec({ x: host.start.x + ux * nextOffset, y: host.start.y + uy * nextOffset });
-        const hosted = (el as unknown as { readonly hosted?: { readonly side?: 1 | -1; readonly s?: number } }).hosted;
         const flipSide = Math.abs(across) > host.thickness * 1.1 && Math.abs(across) > Math.abs(along) * 1.5;
-        const nextSide = flipSide && hosted ? ((hosted.side === -1 ? 1 : -1) as 1 | -1) : hosted?.side;
+        const currentSide = el.values?.["host.side"] === -1 ? -1 : 1;
+        const nextSide: 1 | -1 = flipSide ? (currentSide === -1 ? 1 : -1) : currentSide;
         const nextOpening = {
           ...el,
           offset: nextOffset,
           position: nextPos,
-          ...(hosted ? { hosted: { ...hosted, s: nextOffset, ...(nextSide !== undefined ? { side: nextSide } : {}) } } : {}),
+          ...(flipSide ? { values: { ...(el.values ?? {}), "host.side": nextSide } } : {}),
         };
         p.set(nextOpening);
         // Mark the host wall touched so its opening void and plan poché re-derive cleanly.
         p.touched.add(asElementId(el.hostId));
         authored.push({ elementId: id, field: "offset", value: nextOffset });
+        if (flipSide) authored.push({ elementId: id, field: "values.host.side", value: nextSide });
         break;
       }
       case "component":

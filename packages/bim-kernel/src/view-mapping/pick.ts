@@ -84,6 +84,8 @@ export interface ViewPickIndex {
   /** Grid cell → ids. */
   readonly cells: Map<string, Set<string>>;
   readonly big: Set<string>;
+  /** Room id → room-backed space ids shown in this view, so incremental updates invalidate dependent spaces. */
+  readonly roomToSpaces: Map<string, Set<string>>;
 }
 
 export type BoxMode = "window" | "crossing";
@@ -417,6 +419,20 @@ function changedIds(before: ModelState["elements"], after: ModelState["elements"
  * knows which ids an edit touched (a changeset) passes them as `changedHint`
  * and skips the comparison of every record.
  */
+function indexSpaceRooms(roomToSpaces: Map<string, Set<string>>, el: BimElement | undefined, add: boolean): void {
+  if (el?.kind !== "space" || el.bounds.kind !== "rooms") return;
+  for (const rid of el.bounds.roomIds) {
+    let set = roomToSpaces.get(rid);
+    if (add) {
+      if (!set) roomToSpaces.set(rid, (set = new Set()));
+      set.add(el.id);
+    } else if (set) {
+      set.delete(el.id);
+      if (set.size === 0) roomToSpaces.delete(rid);
+    }
+  }
+}
+
 export function buildViewPickIndex(model: ModelState, view: ViewElement, previous?: ViewPickIndex | null, changedHint?: readonly string[]): ViewPickIndex {
   if (previous && previous.viewId === view.id && previous.view === view) {
     if (previous.model.elements === model.elements) return { ...previous, model };
@@ -424,8 +440,12 @@ export function buildViewPickIndex(model: ModelState, view: ViewElement, previou
     const changed = previous.cropOn ? (hinted ?? changedIds(previous.model.elements, model.elements)) : null;
     if (changed) {
       // A straight run's footprint stops at the fittings on its ends: a changed fitting re-measures the runs it joins.
+      // A room-backed space derives its footprint from its referenced rooms: a changed/removed room re-measures its spaces.
       const withLegs = new Set(changed);
+      const roomToSpaces = previous.roomToSpaces;
       for (const id of changed) {
+        const depSpaces = roomToSpaces.get(id);
+        if (depSpaces) for (const sid of depSpaces) withLegs.add(sid);
         for (const el of [model.elements[id], previous.model.elements[id]]) {
           if (el?.kind !== "run_fitting") continue;
           for (const port of el.ports) if (port.link) withLegs.add(port.link.elementId);
@@ -435,6 +455,7 @@ export function buildViewPickIndex(model: ModelState, view: ViewElement, previou
       const grid = { cells: previous.cells, big: previous.big };
       const build: Build = { model, mapping: previous.mapping, levelZ: previous.levelZ };
       for (const id of withLegs) {
+        indexSpaceRooms(roomToSpaces, previous.model.elements[id], false);
         const old = footprints.get(id);
         if (old) {
           removeFrom(grid, old);
@@ -442,12 +463,13 @@ export function buildViewPickIndex(model: ModelState, view: ViewElement, previou
         }
         const el = model.elements[id];
         if (!el || !previous.shown(el)) continue;
+        indexSpaceRooms(roomToSpaces, el, true);
         const f = footprintOf(build, el);
         if (!f || !kept(f, previous.mapping, previous.window)) continue;
         footprints.set(id, f);
         addTo(grid, f);
       }
-      return { ...previous, model, footprints, cells: grid.cells, big: grid.big };
+      return { ...previous, model, footprints, cells: grid.cells, big: grid.big, roomToSpaces };
     }
   }
   const mapping = viewMapping(model, view);
@@ -455,19 +477,21 @@ export function buildViewPickIndex(model: ModelState, view: ViewElement, previou
   const levelZ = levelElevations(model);
   const cropOn = view.props?.cropView !== false;
   const empty = { viewId: view.id, view, model, mapping, window, levelZ, cropOn };
-  if (mapping.kind !== "plan" && mapping.kind !== "section") return { ...empty, shown: () => false, footprints: new Map(), cells: new Map(), big: new Set() };
+  if (mapping.kind !== "plan" && mapping.kind !== "section") return { ...empty, shown: () => false, footprints: new Map(), cells: new Map(), big: new Set(), roomToSpaces: new Map() };
   const shown = shownFilter(model, view);
   const build: Build = { model, mapping, levelZ };
   const footprints = new Map<string, Footprint>();
   const grid = { cells: new Map<string, Set<string>>(), big: new Set<string>() };
+  const roomToSpaces = new Map<string, Set<string>>();
   for (const [id, el] of elementEntries(model.elements)) {
     if (!shown(el)) continue;
+    indexSpaceRooms(roomToSpaces, el, true);
     const f = footprintOf(build, el);
     if (!f || !kept(f, mapping, window)) continue;
     footprints.set(id, f);
     addTo(grid, f);
   }
-  return { ...empty, shown, footprints, cells: grid.cells, big: grid.big };
+  return { ...empty, shown, footprints, cells: grid.cells, big: grid.big, roomToSpaces };
 }
 
 function distToSegment(p: Vec2, a: Vec2, b: Vec2): number {

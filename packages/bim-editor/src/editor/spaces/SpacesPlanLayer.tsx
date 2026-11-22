@@ -258,7 +258,7 @@ export function SpacesPlanLayer({ projectId, model, view, paperOf, paperPerPixel
   const taggedSpaceIds = useMemo(() => {
     const ids = new Set<string>()
     for (const el of elementsOfKind(model.elements, 'drawing_item')) {
-      if (el.ownerId === view.view.id && el.shape === 'tag' && el.tag?.elementId) {
+      if (!el.deleted && el.ownerId === view.view.id && el.shape === 'tag' && el.tag?.elementId) {
         ids.add(el.tag.elementId)
       }
     }

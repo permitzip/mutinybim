@@ -322,6 +322,7 @@ export interface VerticalViewSpec {
   /** Optional level whose plan shows this marker; absent: shown on every level's plan it overlaps. */
   readonly level?: string;
   readonly discipline?: string;
+  readonly hide?: ViewProps["hiddenCategories"];
   readonly id?: string;
 }
 
@@ -432,6 +433,7 @@ function verticalView(ctx: ScriptContext, viewType: "section" | "elevation", spe
     ...(spec.level ? { level: levelName(ctx, spec.level) } : {}),
     ...(spec.discipline ? { discipline: spec.discipline } : {}),
     ...(spec.scale ? { scale: spec.scale } : {}),
+    ...(spec.hide ? { hiddenCategories: spec.hide } : {}),
     ...(spec.levelLeftExtMm !== undefined ? { levelLeftExtMm: spec.levelLeftExtMm } : {}),
     ...(spec.levelRightExtMm !== undefined ? { levelRightExtMm: spec.levelRightExtMm } : {}),
     section: {

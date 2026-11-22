@@ -7,6 +7,7 @@ import { elementKindTable } from "../registry/element-kind-point";
 import { elementsOfKind } from "../store";
 import { asElementId, type BimElement, type ElementId, type ModelState, type Vec2 } from "../types";
 import { LINE_JOIN_POINT, type LineJoinRow } from "./contract";
+import { lineLevelId } from "./rows";
 import { lineMeetingsOf } from "./solve";
 
 /**
@@ -193,8 +194,34 @@ export function carryJoinedEndsOfMove(model: ModelState, reader: TrackedReader, 
  * whose outline edge lies collinear with that wall's centerline or face shifts its edge
  * along with the wall so floors, ceilings, and roofs stay locked to exterior/interior walls.
  */
+function areaLevelId(el: BimElement, levelsByName: ReadonlyMap<string, ElementId>): ElementId | "" {
+  const rec = el as BimElement & { readonly levelId?: string; readonly placement?: { readonly levelId?: string } };
+  if (typeof rec.placement?.levelId === "string" && rec.placement.levelId.length > 0) return asElementId(rec.placement.levelId);
+  if (typeof rec.levelId === "string" && rec.levelId.length > 0) return asElementId(rec.levelId);
+  const name = el.partition?.level;
+  return name ? (levelsByName.get(name) ?? "") : "";
+}
+
+/**
+ * When a wall translates perpendicular to its length, reshape any slab, ceiling,
+ * or roof boundary edge that sat flush against the wall on the same level (or on
+ * the wall's top level for add-on roof surfaces) so floors/ceilings/roofs follow
+ * exterior wall moves automatically instead of poking out or pulling back.
+ */
 function carryBoundaryOutlines(before: Elements, working: Record<string, BimElement>, moved: ReadonlyMap<string, Vec2>): readonly ElementId[] {
-  const wallMoves: { readonly start: Vec2; readonly end: Vec2; readonly ux: number; readonly uy: number; readonly nx: number; readonly ny: number; readonly len: number; readonly halfT: number; readonly dn: number }[] = [];
+  const wallMoves: {
+    readonly start: Vec2;
+    readonly end: Vec2;
+    readonly ux: number;
+    readonly uy: number;
+    readonly nx: number;
+    readonly ny: number;
+    readonly len: number;
+    readonly halfT: number;
+    readonly dn: number;
+    readonly levelId: ElementId | "";
+    readonly topLevelId: ElementId | "";
+  }[] = [];
   for (const [id, d] of moved) {
     if (d.x === 0 && d.y === 0) continue;
     const el = before[id];
@@ -209,10 +236,13 @@ function carryBoundaryOutlines(before: Elements, working: Record<string, BimElem
     const ny = ux;
     const dn = d.x * nx + d.y * ny;
     if (Math.abs(dn) < 0.5) continue;
-    wallMoves.push({ start: el.start, end: el.end, ux, uy, nx, ny, len, halfT: el.thickness / 2, dn });
+    const levelId = lineLevelId(el, before);
+    const topLevelId = el.placement && "topLevelId" in el.placement && el.placement.topLevelId ? el.placement.topLevelId : "";
+    wallMoves.push({ start: el.start, end: el.end, ux, uy, nx, ny, len, halfT: el.thickness / 2, dn, levelId, topLevelId });
   }
   if (wallMoves.length === 0) return [];
 
+  const levelsByName = new Map(elementsOfKind(before, "level").map((l) => [l.name, l.id] as const));
   const kindTable = elementKindTable();
   const extraAreaKinds = kindTable.kinds.filter((k) => kindTable.row(k)?.create?.placements.includes("area"));
   const candidates: BimElement[] = [
@@ -233,10 +263,16 @@ function carryBoundaryOutlines(before: Elements, working: Record<string, BimElem
           : undefined;
     if (!rawOutline) continue;
 
+    const candLevelId = areaLevelId(el, levelsByName);
+    const isRoofLike = el.kind !== "slab" && el.kind !== "ceiling";
     const pts = rawOutline.map((p) => ({ x: p.x, y: p.y }));
     const n = pts.length;
     let changed = false;
     for (const w of wallMoves) {
+      // Only carry boundaries on the wall's own level (or, for roofs/add-on surfaces, on the wall's topLevelId).
+      const sameLevel = candLevelId === w.levelId;
+      const onWallTop = isRoofLike && w.topLevelId !== "" && candLevelId === w.topLevelId;
+      if (!sameLevel && !onWallTop) continue;
       const tol = w.halfT + 30;
       for (let i = 0; i < n; i++) {
         const a = pts[i]!;
