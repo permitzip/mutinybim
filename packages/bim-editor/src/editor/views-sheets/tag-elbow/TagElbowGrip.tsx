@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { paperMapping, tagElbowLeader, tagTarget, type DrawingItem, type ModelState, type Vec2, type ViewElement } from '@permitzip/bim-kernel'
+import { paperMapping, tagElbowLeader, tagLeaderTarget, type DrawingItem, type ModelState, type Vec2, type ViewElement } from '@permitzip/bim-kernel'
 import { elbowGripCommand, type TagCommand } from './tag-elbow-commands'
 
 const GRIP_PX = 9
@@ -50,12 +50,12 @@ export function TagElbowGrip({ model, view, item, toPaper, toStored, paperOf, pa
   const { toModel } = paperMapping(view)
   const bend = toPaper(toModel(leader.elbow))
   const start = leader.points[0] ? toPaper(toModel(leader.points[0])) : null
-  const targetModel = tagTarget(model, view, item.tag)
+  const at = drag?.to ?? bend
+  const targetModel = tagLeaderTarget(model, view, item.tag, drag ? toStored(drag.to) : item.tag.elbow !== 'auto' ? item.tag.elbow : item.points[0])
   const target = targetModel ? toPaper(targetModel) : null
   const size = GRIP_PX * paperMmPerPx
-  const at = drag?.to ?? bend
 
-  /** Snap the elbow to a crisp horizontal shoulder from the tag and square vertical drop to the target (matching electrical TagElbowGrip); hold Alt for freehand. */
+  /** Snap the elbow to a crisp horizontal shoulder from the tag (within 2.5 mm) and vertical drop to the target (within 2 mm); hold Alt for freehand. */
   const snapElbow = (p: Vec2, freehand: boolean): Vec2 => {
     if (freehand) return p
     const hTol = Math.max(2.2, 8 * paperMmPerPx)
