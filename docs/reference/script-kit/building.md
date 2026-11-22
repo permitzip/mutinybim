@@ -577,7 +577,7 @@ export default defineScript({
 
 ## building.level
 
-A level at an elevation; returns its id. Every level argument in the kit takes a level's id (this one, or one from ctx.model.levels()); the kit's helpers also take the name of exactly one level the script read (reads.levels: true), and refuse an unknown or shared name with the levels there are.
+A level at an elevation; returns its id. When the script reads the levels (reads.levels: true) and the model already has a level with this name at this elevation, it returns that level's id instead of making a second one (a new model starts with "Level 1" at 0). Every level argument in the kit takes a level's id (this one, or one from ctx.model.levels()); the kit's helpers also take the name of exactly one level the script read (reads.levels: true), and refuse an unknown or shared name with the levels there are.
 
 ```ts
 level(ctx: ScriptContext, spec: { name: string; elevation: Measure; id?: string }): string
