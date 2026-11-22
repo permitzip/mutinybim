@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react'
 import { Check, CircleAlert, MousePointerClick, Plus, Save, ToggleLeft, Trash2, X } from 'lucide-react'
-import { roomOf, roomText, type ModelState, type PartInstance, type PartTypeElement } from '@permitzip/bim-kernel'
+import { elementsOfKind, roomOf, roomText, type ModelState, type PartInstance, type PartTypeElement } from '@permitzip/bim-kernel'
 import { Alert, AlertDescription } from '../../ui/alert'
 import { Badge } from '../../ui/badge'
 import { Button } from '../../ui/button'
@@ -120,8 +120,8 @@ export function EditControlsDialog({
 }) {
   const allControlParts = useMemo(
     () =>
-      Object.values(model.elements)
-        .filter((e): e is PartInstance => e.kind === 'part' && e.planned === undefined && isControlCapablePart(model, e))
+      elementsOfKind(model.elements, 'part')
+        .filter((e): e is PartInstance => e.planned === undefined && isControlCapablePart(model, e))
         .sort((a, b) => partMark(a).localeCompare(partMark(b))),
     [model],
   )
