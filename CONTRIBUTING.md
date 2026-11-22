@@ -190,6 +190,10 @@ Two kinds, kept apart:
   then run `npm run docs` and commit the result. The `docs-current` test fails
   when they are stale.
 
+`tools/docs-site` builds the docs site from both (`npm install && npm run
+build` in that folder). It has its own dependencies and lockfile, apart from
+the engine's.
+
 ## Writing style
 
 Error messages, labels and docs speak to the person using the software. Say

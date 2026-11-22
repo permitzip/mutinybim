@@ -183,9 +183,7 @@ Every calculation must:
 
 Two kinds, kept apart:
 
-- **Written by hand:** the guides in `docs/` (people using the app in
-  `docs/guide/`, people building on the engine in `docs/*.md`). Edit them like
-  any other file.
+- **Written by hand:** the guides in `docs/`. Edit them like any other file.
 - **Generated from the code:** the reference in `docs/reference/` and
   `llms.txt` (the script kit, edit commands, calcs, pack reads, add-ons and
   tool server tools). Never edit these by hand. Change the code they read,
@@ -193,7 +191,8 @@ Two kinds, kept apart:
   when they are stale.
 
 `tools/docs-site` builds the docs site from both (`npm install && npm run
-build` in that folder). It has its own dependencies, apart from the engine's.
+build` in that folder). It has its own dependencies and lockfile, apart from
+the engine's.
 
 ## Writing style
 

@@ -1,24 +1,7 @@
 [
   {
     "text": "Guide",
-    "items": [
-      {
-        "text": "MutinyBIM user guide",
-        "link": "/guide/"
-      },
-      {
-        "text": "Getting started",
-        "link": "/guide/getting-started"
-      },
-      {
-        "text": "A tour of the editor",
-        "link": "/guide/editor-tour"
-      },
-      {
-        "text": "Connect Claude or another assistant",
-        "link": "/guide/connect-claude"
-      }
-    ]
+    "items": []
   },
   {
     "text": "Building on MutinyBIM",
