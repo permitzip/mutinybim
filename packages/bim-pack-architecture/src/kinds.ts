@@ -416,7 +416,7 @@ export const ROOF_KIND_ROW: ElementKindItem = {
   },
   create: {
     placements: ["area"],
-    make(input) {
+    make(input, elements) {
       if (input.placement.kind !== "area") return { refused: "A roof is drawn as an area: click its corners" };
       const thicknessMm = input.size?.thicknessMm ?? DEFAULT_ROOF_THICKNESS_MM;
       const rise = num(input.values?.["architecture.slope_rise"]) ?? num(input.values?.["architecture.roof_slope_rise"]);
@@ -435,7 +435,9 @@ export const ROOF_KIND_ROW: ElementKindItem = {
         ...(form ? { form } : {}),
         ...(effectiveRise !== null ? { slope: { directionDeg, rise: effectiveRise } } : {}),
       };
-      return { ...roof, ...(input.values ? { values: input.values } : {}), version: 0, authoredRev: {} } as unknown as BimElement;
+      const lvl = elements[input.levelId];
+      const levelName = lvl?.kind === "level" ? lvl.name : input.levelId;
+      return { ...roof, ...(input.values ? { values: input.values } : {}), partition: { level: levelName, zone: "*", discipline: "architecture" }, version: 0, authoredRev: {} } as unknown as BimElement;
     },
   },
   planGraphics(el, ctx) {
@@ -732,7 +734,9 @@ export const STAIR_KIND_ROW: ElementKindItem = {
         end = { x: Math.round(rawStair.start.x + dx * s), y: Math.round(rawStair.start.y + dy * s) };
       }
       const stair: StairRecord = { ...rawStair, end };
-      return { ...stair, ...(input.values ? { values: input.values } : {}), version: 0, authoredRev: {} } as unknown as BimElement;
+      const lvl = elements[input.levelId];
+      const levelName = lvl?.kind === "level" ? lvl.name : input.levelId;
+      return { ...stair, ...(input.values ? { values: input.values } : {}), partition: { level: levelName, zone: "*", discipline: "architecture" }, version: 0, authoredRev: {} } as unknown as BimElement;
     },
   },
   planGraphics(el, ctx) {

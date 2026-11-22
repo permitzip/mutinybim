@@ -1439,7 +1439,7 @@ function drawProjected(p: Painter, projected: readonly ProjectedSolid[], tones: 
       }
       continue;
     }
-    if (s.role !== "mep" && s.role !== "equipment") {
+    if (s.role === "architecture") {
       const cutPen = display.pen(s.category, "cut", "heavy", s.owner);
       for (const poly of x.cuts) {
         const ring = hull2(poly.map((q) => ({ x: q.u, y: q.v })));
