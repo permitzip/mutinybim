@@ -5,6 +5,7 @@ import { localBounds, resolveDim, resolveGeometry, resolveSymbol, type PartTypeD
 import { placeClearance, resolveClearances, resolvePositionEnvelopes, type PlacedClearance } from "./part-model/clearance";
 import type { Dim } from "./part-dim";
 import { pathLength, profileElevationAt } from "./placement/geometric-math";
+import { registerRevisionCarry } from "./revision-carry";
 import { elementsOfKind } from "./store";
 import type { BimElement, ElementId, ModelState, PartInstance, Vec2, Wall } from "./types";
 
@@ -159,22 +160,260 @@ export interface NearestWallFace {
   readonly label: string;
 }
 
+// ── Incremental indexes for wall-face hosting (carried across revisions) ────
+
+type SpatialElements = Readonly<Record<string, BimElement>>;
+
+const WALL_CELL_MM = 4000;
+
+interface WallGridIndex {
+  /** `${levelName}|${cx}|${cy}` -> wall ids whose bounding box + thickness overlaps that cell. */
+  readonly cells: Map<string, Set<ElementId>>;
+  /** wallId -> cell keys currently holding it (for O(1) incremental removal on update/delete). */
+  readonly keysByWall: Map<ElementId, readonly string[]>;
+}
+
+const wallGridCache = new WeakMap<SpatialElements, WallGridIndex>();
+
+function wallCellKeys(wall: Wall): string[] {
+  const pad = wall.thickness / 2;
+  const lvl = wall.partition?.level ?? "";
+  const x0 = Math.floor((Math.min(wall.start.x, wall.end.x) - pad) / WALL_CELL_MM);
+  const x1 = Math.floor((Math.max(wall.start.x, wall.end.x) + pad) / WALL_CELL_MM);
+  const y0 = Math.floor((Math.min(wall.start.y, wall.end.y) - pad) / WALL_CELL_MM);
+  const y1 = Math.floor((Math.max(wall.start.y, wall.end.y) + pad) / WALL_CELL_MM);
+  const out: string[] = [];
+  for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) out.push(`${lvl}|${x}|${y}`);
+  return out;
+}
+
+function addWallToGrid(grid: WallGridIndex, wall: Wall): void {
+  const keys = wallCellKeys(wall);
+  grid.keysByWall.set(wall.id, keys);
+  for (const k of keys) {
+    let bucket = grid.cells.get(k);
+    if (!bucket) {
+      bucket = new Set();
+      grid.cells.set(k, bucket);
+    }
+    bucket.add(wall.id);
+  }
+}
+
+function removeWallFromGrid(grid: WallGridIndex, id: ElementId): void {
+  const prev = grid.keysByWall.get(id);
+  if (!prev) return;
+  for (const k of prev) {
+    const bucket = grid.cells.get(k);
+    if (!bucket) continue;
+    bucket.delete(id);
+    if (bucket.size === 0) grid.cells.delete(k);
+  }
+  grid.keysByWall.delete(id);
+}
+
+function wallGridFor(elements: SpatialElements): WallGridIndex {
+  const cached = wallGridCache.get(elements);
+  if (cached) return cached;
+  const grid: WallGridIndex = { cells: new Map(), keysByWall: new Map() };
+  for (const wall of elementsOfKind(elements, "wall")) addWallToGrid(grid, wall);
+  wallGridCache.set(elements, grid);
+  return grid;
+}
+
+function cloneWallGrid(from: WallGridIndex): WallGridIndex {
+  const cells = new Map<string, Set<ElementId>>();
+  for (const [k, s] of from.cells) cells.set(k, new Set(s));
+  return { cells, keysByWall: new Map(from.keysByWall) };
+}
+
+registerRevisionCarry("spatial.walls-grid", (from, to, changedIds) => {
+  const prev = wallGridCache.get(from);
+  if (!prev) return;
+  let anyWall = false;
+  for (const id of changedIds) {
+    if (from[id]?.kind === "wall" || to[id]?.kind === "wall") {
+      anyWall = true;
+      break;
+    }
+  }
+  if (!anyWall) {
+    wallGridCache.set(to, prev);
+    return;
+  }
+  const next = cloneWallGrid(prev);
+  for (const id of changedIds) {
+    const a = from[id];
+    const b = to[id];
+    if (a?.kind !== "wall" && b?.kind !== "wall") continue;
+    if (a?.kind === "wall") removeWallFromGrid(next, a.id);
+    if (b?.kind === "wall") addWallToGrid(next, b);
+  }
+  wallGridCache.set(to, next);
+});
+
+interface WallHostIndex {
+  /** wallId -> set of placed part ids with `host.kind === "wall_face"`. */
+  readonly byWall: Map<string, Set<ElementId>>;
+  /** partId -> host wallId. */
+  readonly wallOfPart: Map<ElementId, string>;
+}
+
+const wallHostCache = new WeakMap<SpatialElements, WallHostIndex>();
+
+function addPartHost(idx: WallHostIndex, part: PartInstance): void {
+  if (part.planned !== undefined || part.host?.kind !== "wall_face") return;
+  const wId = part.host.elementId;
+  idx.wallOfPart.set(part.id, wId);
+  let set = idx.byWall.get(wId);
+  if (!set) {
+    set = new Set();
+    idx.byWall.set(wId, set);
+  }
+  set.add(part.id);
+}
+
+function removePartHost(idx: WallHostIndex, partId: ElementId): void {
+  const wId = idx.wallOfPart.get(partId);
+  if (wId === undefined) return;
+  const set = idx.byWall.get(wId);
+  if (set) {
+    set.delete(partId);
+    if (set.size === 0) idx.byWall.delete(wId);
+  }
+  idx.wallOfPart.delete(partId);
+}
+
+function wallHostIndexFor(elements: SpatialElements): WallHostIndex {
+  const cached = wallHostCache.get(elements);
+  if (cached) return cached;
+  const idx: WallHostIndex = { byWall: new Map(), wallOfPart: new Map() };
+  for (const part of elementsOfKind(elements, "part")) addPartHost(idx, part);
+  wallHostCache.set(elements, idx);
+  return idx;
+}
+
+registerRevisionCarry("spatial.wall-hosts", (from, to, changedIds) => {
+  const prev = wallHostCache.get(from);
+  if (!prev) return;
+  let anyHostChange = false;
+  for (const id of changedIds) {
+    const a = from[id];
+    const b = to[id];
+    const aWall = a?.kind === "part" && a.planned === undefined && a.host?.kind === "wall_face" ? a.host.elementId : undefined;
+    const bWall = b?.kind === "part" && b.planned === undefined && b.host?.kind === "wall_face" ? b.host.elementId : undefined;
+    if (aWall !== bWall) {
+      anyHostChange = true;
+      break;
+    }
+  }
+  if (!anyHostChange) {
+    wallHostCache.set(to, prev);
+    return;
+  }
+  const byWall = new Map<string, Set<ElementId>>();
+  for (const [k, s] of prev.byWall) byWall.set(k, new Set(s));
+  const next: WallHostIndex = { byWall, wallOfPart: new Map(prev.wallOfPart) };
+  for (const id of changedIds) {
+    const a = from[id];
+    const b = to[id];
+    if (a?.kind === "part") removePartHost(next, a.id);
+    if (b?.kind === "part") addPartHost(next, b);
+  }
+  wallHostCache.set(to, next);
+});
+
+/**
+ * Every placed part hosted via `wall_face` on any wall in `wallIds`, without
+ * scanning the model's parts. Reads the incremental index on `baseElements`
+ * and reconciles only `touchedIds` against `working`.
+ */
+export function partsHostedOnWalls(
+  baseElements: SpatialElements,
+  working: SpatialElements,
+  wallIds: ReadonlySet<string>,
+  touchedIds: readonly ElementId[] = [],
+): PartInstance[] {
+  if (wallIds.size === 0) return [];
+  const idx = wallHostIndexFor(baseElements);
+  const candidateIds = new Set<ElementId>();
+  for (const wId of wallIds) {
+    const hosted = idx.byWall.get(wId);
+    if (hosted) for (const pid of hosted) candidateIds.add(pid);
+  }
+  for (const tid of touchedIds) {
+    const el = working[tid];
+    if (el?.kind === "part" && el.planned === undefined && el.host?.kind === "wall_face" && wallIds.has(el.host.elementId)) {
+      candidateIds.add(el.id);
+    }
+  }
+  const out: PartInstance[] = [];
+  for (const pid of candidateIds) {
+    const el = working[pid];
+    if (el?.kind === "part" && el.planned === undefined && el.host?.kind === "wall_face" && wallIds.has(el.host.elementId)) {
+      out.push(el);
+    }
+  }
+  return out;
+}
+
 /**
  * Nearest wall finish face to `point` on `levelId`'s level within `maxDistanceMm`
- * (default 450 mm). Shared by interactive plan placement and scripting helpers.
+ * (default 450 mm). Uses the incremental per-level spatial wall grid so lookups
+ * visit only nearby cells rather than scanning every wall in the model.
  */
 export function nearestWallFace(
   model: ModelState,
   levelId: string,
   point: Vec2,
-  opts: { readonly maxDistanceMm?: number; readonly excludeIds?: ReadonlySet<string> } = {},
+  opts: {
+    readonly maxDistanceMm?: number;
+    readonly excludeIds?: ReadonlySet<string>;
+    /** Optional committed base record whose spatial index can be queried when `model.elements` is a mutable draft overlay. */
+    readonly baseElements?: SpatialElements;
+    /** Wall ids added or moved in the draft overlay beyond `baseElements`. */
+    readonly overlayWallIds?: ReadonlySet<string>;
+  } = {},
 ): NearestWallFace | null {
   const maxDist = opts.maxDistanceMm ?? 450;
   const levelEl = model.elements[levelId];
   const levelName = levelEl?.kind === "level" ? levelEl.name : undefined;
+  const grid = wallGridFor(opts.baseElements ?? model.elements);
+  const x0 = Math.floor((point.x - maxDist) / WALL_CELL_MM);
+  const x1 = Math.floor((point.x + maxDist) / WALL_CELL_MM);
+  const y0 = Math.floor((point.y - maxDist) / WALL_CELL_MM);
+  const y1 = Math.floor((point.y + maxDist) / WALL_CELL_MM);
+  const levelsToQuery: string[] = levelName ? [levelName, ""] : [""];
+  // If `levelId` did not resolve to a named level, include all levels present in the grid cells.
+  const candidateIds = new Set<string>();
+  if (levelName) {
+    for (const lvl of levelsToQuery) {
+      for (let x = x0; x <= x1; x++) {
+        for (let y = y0; y <= y1; y++) {
+          const bucket = grid.cells.get(`${lvl}|${x}|${y}`);
+          if (bucket) for (const id of bucket) candidateIds.add(id);
+        }
+      }
+    }
+  } else {
+    for (const [key, bucket] of grid.cells) {
+      const p1 = key.lastIndexOf("|");
+      const p0 = key.lastIndexOf("|", p1 - 1);
+      const cx = Number(key.slice(p0 + 1, p1));
+      const cy = Number(key.slice(p1 + 1));
+      if (cx >= x0 && cx <= x1 && cy >= y0 && cy <= y1) {
+        for (const id of bucket) candidateIds.add(id);
+      }
+    }
+  }
+  if (opts.overlayWallIds) {
+    for (const id of opts.overlayWallIds) candidateIds.add(id);
+  }
   let best: NearestWallFace | null = null;
-  for (const wall of elementsOfKind(model.elements, "wall")) {
-    if (opts.excludeIds?.has(wall.id)) continue;
+  for (const wallId of candidateIds) {
+    if (opts.excludeIds?.has(wallId)) continue;
+    const wall = model.elements[wallId];
+    if (wall?.kind !== "wall") continue;
     if (levelName && wall.partition?.level && wall.partition.level !== levelName) continue;
     const hit = wallStationOf(wall, point);
     if (hit.distanceMm > maxDist) continue;
@@ -191,6 +430,78 @@ export function nearestWallFace(
     }
   }
   return best;
+}
+
+/**
+ * Resolve wall-face snapping/re-hosting for a part moved to `candidatePos`.
+ * Shared by `move_elements` (before connected-run propagation) and the edit hook.
+ */
+export function resolveMovedWallFacePart(
+  model: ModelState,
+  prev: PartInstance,
+  candidatePos: Vec2,
+  opts: {
+    readonly wallFaceAllowed: boolean;
+    readonly baseElements?: SpatialElements;
+    readonly overlayWallIds?: ReadonlySet<string>;
+    readonly maxDistanceMm?: number;
+  },
+): { readonly position: Vec2; readonly rotationDeg: number; readonly host: PartHost | undefined; readonly changed: boolean } {
+  const hasLinks = Boolean(prev.links && Object.keys(prev.links).length > 0);
+  const maxDistanceMm = opts.maxDistanceMm ?? 450;
+  if (prev.host?.kind === "wall_face") {
+    const snap = nearestWallFace(model, prev.levelId, candidatePos, {
+      maxDistanceMm,
+      baseElements: opts.baseElements,
+      overlayWallIds: opts.overlayWallIds,
+    });
+    if (snap) {
+      const faceOffsetMm = prev.host.faceOffsetMm ?? 0;
+      const wall = model.elements[snap.wallId];
+      const frame = wall?.kind === "wall" ? wallFaceFrame(wall, snap.stationMm, snap.side, faceOffsetMm) : { position: snap.position, rotationDeg: snap.rotationDeg };
+      // Connected runs cannot rotate with a part: if snapping would turn it onto a differently oriented wall, detach the host and keep its translated orientation.
+      if (hasLinks && frame.rotationDeg !== prev.rotationDeg) {
+        return { position: candidatePos, rotationDeg: prev.rotationDeg, host: undefined, changed: true };
+      }
+      return {
+        position: frame.position,
+        rotationDeg: frame.rotationDeg,
+        host: {
+          kind: "wall_face",
+          elementId: snap.wallId,
+          stationMm: snap.stationMm,
+          side: snap.side,
+          ...(faceOffsetMm !== 0 ? { faceOffsetMm } : {}),
+        },
+        changed: true,
+      };
+    }
+    return { position: candidatePos, rotationDeg: prev.rotationDeg, host: undefined, changed: true };
+  }
+  if (opts.wallFaceAllowed && prev.host === undefined) {
+    const typeEl = model.elements[prev.typeId];
+    if (typeEl?.kind !== "part_type" || !isWallFaceMountable(typeEl.definition)) {
+      return { position: candidatePos, rotationDeg: prev.rotationDeg, host: prev.host, changed: false };
+    }
+    const snap = nearestWallFace(model, prev.levelId, candidatePos, {
+      maxDistanceMm,
+      baseElements: opts.baseElements,
+      overlayWallIds: opts.overlayWallIds,
+    });
+    if (!snap) return { position: candidatePos, rotationDeg: prev.rotationDeg, host: prev.host, changed: false };
+    const wall = model.elements[snap.wallId];
+    const frame = wall?.kind === "wall" ? wallFaceFrame(wall, snap.stationMm, snap.side, 0) : { position: snap.position, rotationDeg: snap.rotationDeg };
+    if (hasLinks && frame.rotationDeg !== prev.rotationDeg) {
+      return { position: candidatePos, rotationDeg: prev.rotationDeg, host: prev.host, changed: false };
+    }
+    return {
+      position: frame.position,
+      rotationDeg: frame.rotationDeg,
+      host: { kind: "wall_face", elementId: snap.wallId, stationMm: snap.stationMm, side: snap.side },
+      changed: true,
+    };
+  }
+  return { position: candidatePos, rotationDeg: prev.rotationDeg, host: prev.host, changed: false };
 }
 
 /**

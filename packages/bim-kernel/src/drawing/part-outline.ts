@@ -179,11 +179,18 @@ export function resolvePartPlan(
   const classSymbol = classSymbolId === null ? null : symbolById(classSymbolId);
   const solidProgram = type.definition.model !== undefined && isPartModel2(type.definition.model);
   const levelSymbol = !classSymbol && solidProgram ? partSymbolLines(type.definition, part.values, "plan", detail) : null;
-  const symbolSource = classSymbol ? [...classSymbol.primitives] : levelSymbol;
+  const directSymbol = type.definition.symbol;
+  const symbolSource = classSymbol
+    ? [...classSymbol.primitives]
+    : levelSymbol !== null
+      ? directSymbol.length > 0
+        ? [...levelSymbol, ...directSymbol]
+        : levelSymbol
+      : null;
   const rawSymbols = placedSymbol(symbolSource ? { ...type, definition: { ...type.definition, symbol: symbolSource } } : type, part);
   const filteredSymbols = rawSymbols.filter((s) => !s.detailLevels || s.detailLevels.includes(detail));
   const ownSymbols = scaleLocalSymbols(filteredSymbols, viewScale, symbolScale);
-  const typeDisplay = solidProgram && !classSymbol && levelSymbol === null ? "model" : type.definition.model?.planDisplay;
+  const typeDisplay = solidProgram && !classSymbol && levelSymbol === null && directSymbol.length === 0 ? "model" : type.definition.model?.planDisplay;
   const planDisplay = planDisplayFor(planSymbol, { typeDisplay, hasSymbol: ownSymbols.length > 0, hasBody: type.definition.model !== undefined });
   const symbols = planDisplay === "model" ? [] : ownSymbols;
   const bodyOutline: PlanOutline[] = [];

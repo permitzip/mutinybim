@@ -495,16 +495,17 @@ function resolveWallMount(
     if (raw?.kind !== "wall") throw new ScriptRunError(`Wall "${onWall.wall}" wasn't found in the model (add walls to \`reads.kinds\` or create the wall first).`);
     const wall: Wall = raw;
     const towardMm = onWall.toward ? planMm(onWall.toward, "Wall mount toward") : undefined;
-    const refPoint = towardMm ?? fallbackAt;
+    const stationRef = fallbackAt ?? towardMm;
+    const sideRef = towardMm ?? fallbackAt;
     const stationMm =
       onWall.along !== undefined
         ? mm(onWall.along, "Distance along wall")
-        : refPoint
-          ? wallStationOf(wall, refPoint).stationMm
+        : stationRef
+          ? wallStationOf(wall, stationRef).stationMm
           : (() => {
               throw new ScriptRunError(`onWall for wall "${onWall.wall}" needs \`along\`, \`at\`, or \`toward\` to know where along the wall to mount.`);
             })();
-    const side: 1 | -1 = onWall.side ?? (refPoint ? wallFaceSideToward(wall, refPoint) : 1);
+    const side: 1 | -1 = onWall.side ?? (sideRef ? wallFaceSideToward(wall, sideRef) : 1);
     const faceOffsetMm = onWall.offset !== undefined ? mm(onWall.offset, "Wall face offset") : 0;
     const frame = wallFaceFrame(wall, stationMm, side, faceOffsetMm);
     const host: Extract<PartHost, { kind: "wall_face" }> = {

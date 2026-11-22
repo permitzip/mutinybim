@@ -102,6 +102,13 @@ function setPartHost(model: ModelState, command: Extract<SpatialCommand, { type:
     if (host && command.seat !== false) {
       if (host.kind === "wall_face" && hostWall) {
         const frame = wallFaceFrame(hostWall, host.stationMm, host.side, host.faceOffsetMm ?? 0);
+        if (frame.rotationDeg !== part.rotationDeg && part.links && Object.keys(part.links).length > 0) {
+          refuse(
+            "anchored_would_move",
+            `${part.mark || part.id} has runs connected to it; disconnect them before turning it onto a different wall orientation`,
+            [part.id, hostWall.id],
+          );
+        }
         position = frame.position;
         rotationDeg = frame.rotationDeg;
       } else {

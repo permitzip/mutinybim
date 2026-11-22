@@ -112,6 +112,39 @@ export async function renderSheetPdfWith(scene: SheetScene, meta: PdfMetadata, d
   const page = doc.addPage([width, height]);
   const regular = await doc.embedFont(StandardFonts.Helvetica);
   const bold = await doc.embedFont(StandardFonts.HelveticaBold);
+  // Lazily embed additional standard PDF faces only when a Text Type requests Courier, Times, or italic — keeping default PDFs byte-identical.
+  const extraFonts = new Map<StandardFonts, PDFFont>();
+  const standardFontFor = async (fontFamily?: string, isBold?: boolean, isItalic?: boolean): Promise<PDFFont> => {
+    const fam = fontFamily?.toLowerCase() ?? "";
+    const isMono = fam.includes("courier") || fam.includes("mono");
+    const isSerif = !isMono && (fam.includes("times") || fam.includes("serif") || fam.includes("georgia"));
+    if (!isMono && !isSerif && !isItalic) return isBold ? bold : regular;
+    const key: StandardFonts = isMono
+      ? isBold && isItalic
+        ? StandardFonts.CourierBoldOblique
+        : isBold
+          ? StandardFonts.CourierBold
+          : isItalic
+            ? StandardFonts.CourierOblique
+            : StandardFonts.Courier
+      : isSerif
+        ? isBold && isItalic
+          ? StandardFonts.TimesRomanBoldItalic
+          : isBold
+            ? StandardFonts.TimesRomanBold
+            : isItalic
+              ? StandardFonts.TimesRomanItalic
+              : StandardFonts.TimesRoman
+        : isBold
+          ? StandardFonts.HelveticaBoldOblique
+          : StandardFonts.HelveticaOblique;
+    let cached = extraFonts.get(key);
+    if (!cached) {
+      cached = await doc.embedFont(key);
+      extraFonts.set(key, cached);
+    }
+    return cached;
+  };
   const winAnsi = new WinAnsiWriter();
   const black = rgb(0, 0, 0);
   const toneColor = (tone: Tone | undefined, color?: string) => (tone && tone !== "ink" ? rgb(TONE_GREY[tone], TONE_GREY[tone], TONE_GREY[tone]) : color && !print.monochrome ? hexColor(color) : black);
@@ -188,7 +221,7 @@ export async function renderSheetPdfWith(scene: SheetScene, meta: PdfMetadata, d
       });
     } else {
       const face = p.font ? sceneFonts.get(p.font) : undefined;
-      const font: PDFFont = face?.font ?? (p.bold ? bold : regular);
+      const font: PDFFont = face?.font ?? (await standardFontFor(p.fontFamily, p.bold, p.italic));
       const size = (p.size / (face?.capHeight ?? CAP_HEIGHT_RATIO)) * MM_TO_PT;
       const text = face ? p.text : winAnsi.text(font, p.text);
       const textWidth = font.widthOfTextAtSize(text, size);

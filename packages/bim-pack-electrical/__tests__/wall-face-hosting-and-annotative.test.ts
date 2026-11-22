@@ -33,6 +33,7 @@ import {
   type PartInstance,
   type PartTypeElement,
   type Revision,
+  type RunSegment,
   type ViewElement,
   type Wall,
 } from "@permitzip/bim-kernel";
@@ -887,5 +888,153 @@ describe("Revit-style wall-face hosting, hybrid minPaperMm symbols, view symbolS
     expect(diagEval?.boxes.length).toBeGreaterThanOrEqual(2);
     expect(buildViewScene(after, "v-ctrl-diag").scene.primitives.length).toBeGreaterThan(0);
     expect(buildViewScene(after, "v-ctrl-sch").scene.primitives.length).toBeGreaterThan(0);
+  });
+
+  it("projects station from `at` before `onWall.toward`, preserves builder solid `.planSymbol(...)`, and propagates connected runs through wall-follow and snapped part moves", async () => {
+    const base = runCmds(emptyModel(), [
+      { type: "create_level", levelId: "L1", name: "Level 1", elevationMm: 0 },
+      {
+        type: "add_architecture",
+        levelId: "L1",
+        walls: [
+          { wallId: "w-south", start: { x: 0, y: 0 }, end: { x: 20 * FT, y: 0 }, thicknessMm: 152.4, heightMm: 3000 },
+          { wallId: "w-west", start: { x: 0, y: 0 }, end: { x: 0, y: 12 * FT }, thicknessMm: 152.4, heightMm: 3000 },
+        ],
+        openings: [],
+        casework: [],
+        rooms: [],
+      },
+    ]);
+
+    // 1) Two devices with different `at` and a shared room-center `toward` must NOT stack at `toward`,
+    //    AND a builder-created part with solid geometry + `.planSymbol(...)` must render its direct plan symbol.
+    const customWallBox = parts
+      .part("Custom Wall Sensor", { type: "WS-1", category: "electrical_equipment", hosting: "wall_face" })
+      .box({ length: units.in(4), width: units.in(2), height: units.in(4) })
+      .planSymbol([
+        { kind: "circle", center: [0, 2], radius: 1.5, units: "paper" },
+        { kind: "text", at: [0, 2], text: "S", heightMm: 1.5, units: "paper" },
+      ])
+      .build();
+    const withCustomType = runCmds(base, [
+      { type: "save_part_types", types: [{ typeId: "custom:wall-sensor@1", definition: customWallBox }] },
+    ]);
+    const script = defineScript({
+      kind: "layout",
+      reads: { levels: true, kinds: ["wall", "part", "part_type"] },
+      parameters: {},
+      run(ctx) {
+        const roomCenter = { x: units.ft(10), y: units.ft(6) };
+        equipment.place(ctx, {
+          id: "dev-a",
+          level: "Level 1",
+          type: "custom:wall-sensor@1",
+          at: { x: units.ft(4), y: units.ft(0) },
+          onWall: { wall: "w-south", toward: roomCenter },
+          mark: "SA",
+        });
+        equipment.place(ctx, {
+          id: "dev-b",
+          level: "Level 1",
+          type: "custom:wall-sensor@1",
+          at: { x: units.ft(14), y: units.ft(0) },
+          onWall: { wall: "w-south", toward: roomCenter },
+          mark: "SB",
+        });
+      },
+    });
+    const slice = { ...sliceModel(withCustomType, script.manifest.reads), features: [...ALL_TEST_FEATURES] };
+    const res = await runScript(script, { slice, values: {}, scriptHash: "wall-station-and-solid-symbol" });
+    expect(res.kind).toBe("edits");
+    if (res.kind !== "edits") throw new Error("expected edits");
+    let m = runCmds(withCustomType, res.batches);
+
+    const devA = m.elements["dev-a"] as PartInstance;
+    const devB = m.elements["dev-b"] as PartInstance;
+    expect(devA.host?.kind).toBe("wall_face");
+    expect(devB.host?.kind).toBe("wall_face");
+    expect(devA.position.x).toBeCloseTo(4 * FT, 1);
+    expect(devB.position.x).toBeCloseTo(14 * FT, 1);
+    expect(devA.position.y).toBeCloseTo(76.2, 1);
+    expect(devB.position.y).toBeCloseTo(76.2, 1);
+
+    // Direct `.planSymbol(...)` primitives on a solid builder part must survive plan resolution!
+    const circles: number[] = [];
+    const texts: string[] = [];
+    drawPartSymbol(
+      m,
+      devA,
+      () => {},
+      (_at, txt) => texts.push(txt),
+      null,
+      "medium",
+      { scale: 48, showMark: false, circle: (_c, r) => circles.push(r) },
+    );
+    expect(circles.length).toBeGreaterThan(0);
+    expect(texts).toContain("S");
+
+    // 2) Connected run propagation through wall-follow and snapped part moves:
+    //    Place a wall-hosted part with a connector and route a connected run perpendicular out of it.
+    const connType = parts
+      .part("Wall Conduit Box", { type: "JB-12", category: "electrical_equipment", hosting: "wall_face" })
+      .box({ length: units.in(12), width: units.in(6), height: units.in(12) })
+      .connector("left", { id: "out", label: "Supply", domain: "duct", systemKind: "supply_air", shape: "round", diameter: units.in(6) })
+      .build();
+    m = runCmds(m, [
+      { type: "save_part_types", types: [{ typeId: "custom:wall-conduit-box@1", definition: connType }] },
+      {
+        type: "place_part",
+        partId: "box-1",
+        typeId: "custom:wall-conduit-box@1",
+        levelId: "L1",
+        position: { x: 6 * FT, y: 76.2 },
+        host: { kind: "wall_face", elementId: "w-south", stationMm: 6 * FT, side: 1 },
+        mark: "JB-1",
+      },
+      {
+        type: "route_run",
+        idPrefix: "run-jb",
+        system: { id: "sys-sa", kind: "supply_air", name: "Supply Air 1" },
+        levelId: "L1",
+        domain: "duct",
+        size: { shape: "round", diameter: 6 * 25.4 },
+        elevationMm: 6 * 25.4,
+        from: { kind: "part", partId: "box-1", connectorId: "out" },
+        points: [{ x: 6 * FT, y: 6 * FT }],
+      },
+    ]);
+    const segBefore = Object.values(m.elements).find((e): e is RunSegment => e.kind === "run_segment")!;
+    expect(segBefore).toBeDefined();
+    expect(segBefore.start.x).toBeCloseTo(6 * FT, 1);
+
+    // 2a) Moving the host wall in +Y carries BOTH the wall-hosted part AND its connected conduit run together.
+    const movedWall = runCmds(m, [{ type: "move_elements", ids: ["w-south"], delta: { x: 0, y: 300 } }]);
+    const boxAfterWall = movedWall.elements["box-1"] as PartInstance;
+    const segAfterWall = movedWall.elements[segBefore.id] as RunSegment;
+    expect(boxAfterWall.position.y).toBeCloseTo(76.2 + 300, 1);
+    expect(segAfterWall.start.y).toBeCloseTo(segBefore.start.y + 300, 1);
+
+    // 2b) Dragging the connected wall-hosted part along its wall WITH off-axis wobble (y: +25mm)
+    //     snaps back onto y=76.2 BEFORE propagating connected runs, so the move succeeds cleanly and keeps endpoints aligned!
+    const movedPart = runCmds(m, [{ type: "move_elements", ids: ["box-1"], delta: { x: 500, y: 25 } }]);
+    const boxAfterDrag = movedPart.elements["box-1"] as PartInstance;
+    const segAfterDrag = movedPart.elements[segBefore.id] as RunSegment;
+    expect(boxAfterDrag.position.x).toBeCloseTo(6 * FT + 500, 1);
+    expect(boxAfterDrag.position.y).toBeCloseTo(76.2, 1);
+    expect(segAfterDrag.start.x).toBeCloseTo(segBefore.start.x + 500, 1);
+    expect(segAfterDrag.start.y).toBeCloseTo(segBefore.start.y, 1);
+
+    // 2c) Seating a connected part onto a differently-oriented wall via set_part_host refuses cleanly instead of misaligning runs.
+    const turnRefusal = withUpgradePolicy(
+      () => true,
+      () =>
+        executeCommand(m, {
+          type: "set_part_host",
+          ids: ["box-1"],
+          host: { kind: "wall_face", elementId: "w-west", stationMm: 4 * FT, side: -1 },
+        }),
+    );
+    expect(turnRefusal.ok).toBe(false);
+    if (!turnRefusal.ok) expect(turnRefusal.error.code).toBe("anchored_would_move");
   });
 });

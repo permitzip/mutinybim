@@ -1,9 +1,18 @@
 import { refuse, registerEditHook } from "../command-core";
 import { decidingUndo, peerReads } from "../elements/feature";
+import { round } from "../geometry";
+import { TrackedReader } from "../model";
 import { isUnitCodeOnly, PARTS_UNIT_CODES_FEATURE, type ParamDef } from "../parts";
-import { isWallFaceMountable, lineHostTopMm, nearestWallFace, PARTS_LINE_HOST_FEATURE, PARTS_WALL_FACE_HOST_FEATURE, wallFaceFrame } from "../spatial";
-import { elementsOfKind } from "../store";
-import type { BimElement, ElementId, ModelState } from "../types";
+import { carryConnectedRuns, RunPropagator } from "../routing/propagate";
+import {
+  lineHostTopMm,
+  PARTS_LINE_HOST_FEATURE,
+  PARTS_WALL_FACE_HOST_FEATURE,
+  partsHostedOnWalls,
+  resolveMovedWallFacePart,
+  wallFaceFrame,
+} from "../spatial";
+import type { BimElement, ElementId, ModelState, PartInstance } from "../types";
 
 /**
  * Part writes gated on what peers read (units here; line hosts below).
@@ -113,27 +122,61 @@ function followWallFaceHosts(base: ModelState, working: Record<string, BimElemen
     }
   }
   const alreadyTouched = new Set<string>(touchedIds);
-  // 1) Hosted parts whose host wall changed follow their wall's new finish face.
+  const hookTouched = new Set<ElementId>(touchedIds);
+  let propagator: RunPropagator | null = null;
+  const runPropagator = (): RunPropagator => {
+    if (!propagator) propagator = new RunPropagator(new TrackedReader(base), working, hookTouched, alreadyTouched);
+    return propagator;
+  };
+  const flushHookTouched = (): void => {
+    for (const id of hookTouched) {
+      if (!alreadyTouched.has(id)) {
+        touchedIds.push(id);
+        alreadyTouched.add(id);
+      }
+    }
+  };
+  // 1) Hosted parts whose host wall changed follow their wall's new finish face (O(|hosted parts on changed walls|), no full-model scan).
   if (changedWalls.size > 0) {
-    for (const part of elementsOfKind(working, "part")) {
-      if (part.planned !== undefined || part.host?.kind !== "wall_face") continue;
-      if (!changedWalls.has(part.host.elementId)) continue;
+    const followers = partsHostedOnWalls(base.elements, working, changedWalls, touchedIds);
+    // Record all following parts as moving so runs bridging two parts on the same moved wall don't refuse each other.
+    const movingFollowers = new Set<string>(alreadyTouched);
+    for (const part of followers) movingFollowers.add(part.id);
+    let wallRuns: RunPropagator | null = null;
+    for (const part of followers) {
+      if (part.host?.kind !== "wall_face") continue;
       const wall = working[part.host.elementId];
       if (wall?.kind !== "wall") continue;
       const frame = wallFaceFrame(wall, part.host.stationMm, part.host.side, part.host.faceOffsetMm ?? 0);
       if (part.position.x === frame.position.x && part.position.y === frame.position.y && part.rotationDeg === frame.rotationDeg) continue;
-      working[part.id] = { ...part, position: frame.position, rotationDeg: frame.rotationDeg };
-      if (!alreadyTouched.has(part.id)) {
-        touchedIds.push(part.id);
-        alreadyTouched.add(part.id);
+      const hasLinks = Boolean(part.links && Object.keys(part.links).length > 0);
+      if (hasLinks) {
+        if (frame.rotationDeg !== part.rotationDeg) {
+          refuse(
+            "anchored_would_move",
+            `${part.mark || part.id} has runs connected to it; disconnect them before turning its host wall`,
+            [part.id, wall.id],
+          );
+        }
+        const dx = round(frame.position.x - part.position.x);
+        const dy = round(frame.position.y - part.position.y);
+        if (dx !== 0 || dy !== 0) {
+          if (!wallRuns) wallRuns = new RunPropagator(new TrackedReader(base), working, hookTouched, movingFollowers);
+          carryConnectedRuns(wallRuns, part, { x: dx, y: dy, z: 0 });
+        }
       }
+      working[part.id] = { ...part, position: frame.position, rotationDeg: frame.rotationDeg };
+      hookTouched.add(part.id);
     }
+    flushHookTouched();
   }
-  // 2) Hosted parts (and unhosted wall-mountable parts) that were moved directly:
-  //    re-project onto the nearest wall face within 450 mm, or detach if dragged into open room space.
+  // 2) Fallback for any non-move_elements command that moved a wall-hosted or wall-mountable part
+  //    without already updating its host record: snap via the spatial wall grid and carry connected runs.
   const workingModel: ModelState = { ...base, elements: working };
   const wallFaceAllowed = peerReads(PARTS_WALL_FACE_HOST_FEATURE);
-  for (const id of touchedIds) {
+  const initialCount = touchedIds.length;
+  for (let i = 0; i < initialCount; i++) {
+    const id = touchedIds[i]!;
     const next = working[id];
     if (next?.kind !== "part" || next.planned !== undefined) continue;
     const prev = base.elements[id];
@@ -143,50 +186,36 @@ function followWallFaceHosts(base: ModelState, working: Record<string, BimElemen
     if (next.host?.kind === "wall_face") {
       if (changedWalls.has(next.host.elementId)) continue;
       if (prev.host?.kind !== "wall_face") continue;
-      // Skip if the command explicitly updated the host record itself (e.g. set_part_host).
       const sameHost =
         prev.host.elementId === next.host.elementId &&
         prev.host.stationMm === next.host.stationMm &&
         prev.host.side === next.host.side &&
         (prev.host.faceOffsetMm ?? 0) === (next.host.faceOffsetMm ?? 0);
       if (!sameHost) continue;
-      const snap = nearestWallFace(workingModel, next.levelId, next.position, { maxDistanceMm: 450 });
-      if (snap) {
-        const faceOffsetMm = next.host.faceOffsetMm ?? 0;
-        const wall = working[snap.wallId];
-        const frame = wall?.kind === "wall" ? wallFaceFrame(wall, snap.stationMm, snap.side, faceOffsetMm) : { position: snap.position, rotationDeg: snap.rotationDeg };
-        working[id] = {
-          ...next,
-          position: frame.position,
-          rotationDeg: frame.rotationDeg,
-          host: {
-            kind: "wall_face",
-            elementId: snap.wallId,
-            stationMm: snap.stationMm,
-            side: snap.side,
-            ...(faceOffsetMm !== 0 ? { faceOffsetMm } : {}),
-          },
-        };
-      } else {
-        const { host: _detached, ...unhosted } = next;
-        working[id] = unhosted;
-      }
-    } else if (wallFaceAllowed && next.host === undefined && prev.host === undefined) {
-      // An unhosted wall-mountable part dragged back near a wall re-snaps and auto-rotates onto the finish face.
-      const typeEl = working[next.typeId];
-      if (typeEl?.kind !== "part_type" || !isWallFaceMountable(typeEl.definition)) continue;
-      const snap = nearestWallFace(workingModel, next.levelId, next.position, { maxDistanceMm: 450 });
-      if (!snap) continue;
-      const wall = working[snap.wallId];
-      const frame = wall?.kind === "wall" ? wallFaceFrame(wall, snap.stationMm, snap.side, 0) : { position: snap.position, rotationDeg: snap.rotationDeg };
-      working[id] = {
-        ...next,
-        position: frame.position,
-        rotationDeg: frame.rotationDeg,
-        host: { kind: "wall_face", elementId: snap.wallId, stationMm: snap.stationMm, side: snap.side },
-      };
+    } else if (!(wallFaceAllowed && next.host === undefined && prev.host === undefined)) {
+      continue;
     }
+    const snapped = resolveMovedWallFacePart(workingModel, next, next.position, {
+      wallFaceAllowed,
+      baseElements: base.elements,
+      overlayWallIds: changedWalls,
+    });
+    if (!snapped.changed) continue;
+    const dx = round(snapped.position.x - next.position.x);
+    const dy = round(snapped.position.y - next.position.y);
+    if ((dx !== 0 || dy !== 0) && next.links && Object.keys(next.links).length > 0) {
+      carryConnectedRuns(runPropagator(), next, { x: dx, y: dy, z: 0 });
+    }
+    const { host: _prevHost, ...partBase } = next;
+    const updated: PartInstance = {
+      ...partBase,
+      position: snapped.position,
+      rotationDeg: snapped.rotationDeg,
+      ...(snapped.host !== undefined ? { host: snapped.host } : {}),
+    };
+    working[id] = updated;
   }
+  flushHookTouched();
 }
 
 registerEditHook("part-unit-codes", (base, working, touchedIds) => {

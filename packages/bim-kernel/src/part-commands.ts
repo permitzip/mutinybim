@@ -44,7 +44,8 @@ import { serviceLinkName, translateThroughNetworks } from "./connections/model";
 import { catalogEntryName } from "./catalog/model";
 import { adoptPartStarterConnectionType } from "./load-points/adopt-starter";
 import { isKernelElementKind } from "./registry/element-kinds";
-import { MAX_CURB_MM, partHostSchema, partsHostedOn, wallFaceFrame } from "./spatial";
+import { MAX_CURB_MM, PARTS_WALL_FACE_HOST_FEATURE, partHostSchema, partsHostedOn, resolveMovedWallFacePart, wallFaceFrame } from "./spatial";
+import { peerReads } from "./elements/feature";
 import { documentIndex } from "./commands/views";
 import { PART_MOUNTS, type PartMount } from "./part-mount";
 import { INTAKE_KINDS, INTAKE_LABELS, takesIntake, type IntakeChoice } from "./part-model/intake-hood";
@@ -401,26 +402,53 @@ function moveElements(model: ModelState, command: Extract<PartCommand, { type: "
     for (const id of runIds) runs.moveWhole(id, d3);
     for (const id of runIds) runs.pushOutOf(id, d3);
   }
+  // Selected walls also move before parts so wall-hosted parts moving alongside their host wall stay seated cleanly.
+  const movingWallIds = new Set<string>();
   for (const id of ids) {
     const el = p.current(id);
-    if (el.kind === "run_segment" || el.kind === "run_fitting") continue;
+    if (el.kind !== "wall") continue;
+    if (dz !== 0) refuse("unsupported_geometry", `${label(el)} has no height of its own to change; only parts move up and down`, [id]);
+    const next = translatedFlatLine(el, d, el.thickness);
+    p.set(next);
+    movingWallIds.add(id);
+    for (const dep of networkOf(model).dependents(el.id)) reader.get(dep);
+    authored.push({ elementId: id, field: "start", value: next.start }, { elementId: id, field: "end", value: next.end });
+  }
+  const workingModel: ModelState = { ...model, elements: p.working };
+  const wallFaceAllowed = peerReads(PARTS_WALL_FACE_HOST_FEATURE);
+  for (const id of ids) {
+    const el = p.current(id);
+    if (el.kind === "run_segment" || el.kind === "run_fitting" || el.kind === "wall") continue;
     if (dz !== 0 && el.kind !== "part") refuse("unsupported_geometry", `${label(el)} has no height of its own to change; only parts move up and down`, [id]);
     switch (el.kind) {
       case "part": {
         refusePlanned(el, "moved");
-        const position = roundVec({ x: el.position.x + d.x, y: el.position.y + d.y });
+        const rawPos = roundVec({ x: el.position.x + d.x, y: el.position.y + d.y });
         const offsetMm = round(el.offsetMm + dz);
-        p.set({ ...el, position, offsetMm });
+        const movingWithHostWall = el.host?.kind === "wall_face" && movingWallIds.has(el.host.elementId);
+        const snapped = movingWithHostWall
+          ? { position: rawPos, rotationDeg: el.rotationDeg, host: el.host, changed: false }
+          : resolveMovedWallFacePart(workingModel, el, rawPos, {
+              wallFaceAllowed,
+              baseElements: model.elements,
+              overlayWallIds: movingWallIds,
+            });
+        const position = snapped.position;
+        const rotationDeg = snapped.rotationDeg;
+        const { host: _prevHost, ...partBase } = el;
+        const nextPart: PartInstance = {
+          ...partBase,
+          position,
+          rotationDeg,
+          offsetMm,
+          ...(snapped.host !== undefined ? { host: snapped.host } : {}),
+        };
+        p.set(nextPart);
         authored.push({ elementId: id, field: "position", value: position });
+        if (rotationDeg !== el.rotationDeg) authored.push({ elementId: id, field: "rotationDeg", value: rotationDeg });
         if (dz !== 0) authored.push({ elementId: id, field: "offsetMm", value: offsetMm });
-        carryConnectedRuns(runs, el, { x: d.x, y: d.y, z: dz });
-        break;
-      }
-      case "wall": {
-        const next = translatedFlatLine(el, d, el.thickness);
-        p.set(next);
-        for (const dep of networkOf(model).dependents(el.id)) reader.get(dep);
-        authored.push({ elementId: id, field: "start", value: next.start }, { elementId: id, field: "end", value: next.end });
+        const finalDelta = { x: round(position.x - el.position.x), y: round(position.y - el.position.y), z: dz };
+        carryConnectedRuns(runs, el, finalDelta);
         break;
       }
       case "component":

@@ -634,6 +634,52 @@ function drawLoadPoints(model: ModelState, hostId: string, line: (a: Vec2, b: Ve
   }
 }
 
+function seedPartLabelObstacles(
+  model: ModelState,
+  view: ViewElement,
+  p: Painter,
+  frame: ViewFrame,
+  display: Display,
+  shownAs: (el: BimElement) => { readonly visible: boolean },
+  candidates: readonly BimElement[],
+  takenPartBoxes: PartLabelIndex,
+  symScale: number,
+  onPart?: (el: PartInstance, look: CategoryLook) => void,
+): void {
+  const wallPad = 0.6 * frame.scale;
+  const partPad = 0.45 * frame.scale;
+  for (const el of candidates) {
+    if (!nearWindow(p, el) || leftOutOfDisciplineView(view, el)) continue;
+    if (el.kind === "wall") {
+      const half = el.thickness / 2 + wallPad;
+      takenPartBoxes.add({
+        min: { x: Math.min(el.start.x, el.end.x) - half, y: Math.min(el.start.y, el.end.y) - half },
+        max: { x: Math.max(el.start.x, el.end.x) + half, y: Math.max(el.start.y, el.end.y) + half },
+      });
+    } else if (el.kind === "part") {
+      const look = elementLook(model, view, el);
+      if (!look.visible || !shownAs(el).visible) continue;
+      // For unmarked paper-only symbols (e.g. hundreds of small schematic devices), use a conservative paper-space bound to avoid a redundant full resolve pass; compute exact bounds for marked or model-sized parts.
+      const t = model.elements[el.typeId];
+      const sym = t?.kind === "part_type" ? t.definition.symbol : undefined;
+      const paperOnly = !el.mark && sym !== undefined && sym.length > 0 && sym.every((s) => s.units === "paper");
+      if (paperOnly) {
+        const r = 5.0 * symScale * frame.scale + partPad;
+        takenPartBoxes.add({ min: { x: el.position.x - r, y: el.position.y - r }, max: { x: el.position.x + r, y: el.position.y + r } });
+      } else {
+        const b = partPlanOutline(model, el, { detail: look.detailLevel ?? display.detail, scale: frame.scale, symbolScale: symScale, planSymbol: look.planSymbol }).bounds;
+        if (b) {
+          takenPartBoxes.add({
+            min: { x: b.min.x - partPad, y: b.min.y - partPad },
+            max: { x: b.max.x + partPad, y: b.max.y + partPad },
+          });
+        }
+      }
+      onPart?.(el, look);
+    }
+  }
+}
+
 function drawPlan(
   model: ModelState,
   view: ViewElement,
@@ -695,37 +741,7 @@ function drawPlan(
     return t?.kind === "part_type" && (t.definition.clearances?.length ?? 0) > 0;
   });
   if (hasPartLabels) {
-    const wallPad = 0.6 * frame.scale;
-    const partPad = 0.45 * frame.scale;
-    for (const el of candidates) {
-      if (!nearWindow(p, el) || leftOutOfDisciplineView(view, el)) continue;
-      if (el.kind === "wall") {
-        const half = el.thickness / 2 + wallPad;
-        takenPartBoxes.add({
-          min: { x: Math.min(el.start.x, el.end.x) - half, y: Math.min(el.start.y, el.end.y) - half },
-          max: { x: Math.max(el.start.x, el.end.x) + half, y: Math.max(el.start.y, el.end.y) + half },
-        });
-      } else if (el.kind === "part") {
-        const look = elementLook(model, view, el);
-        if (!look.visible || !shownAs(el).visible) continue;
-        // For unmarked paper-only symbols (e.g. hundreds of small schematic devices), use a conservative paper-space bound to avoid a redundant full resolve pass; compute exact bounds for marked or model-sized parts.
-        const t = model.elements[el.typeId];
-        const sym = t?.kind === "part_type" ? t.definition.symbol : undefined;
-        const paperOnly = !el.mark && sym !== undefined && sym.length > 0 && sym.every((s) => s.units === "paper");
-        if (paperOnly) {
-          const r = 5.0 * symScale * frame.scale + partPad;
-          takenPartBoxes.add({ min: { x: el.position.x - r, y: el.position.y - r }, max: { x: el.position.x + r, y: el.position.y + r } });
-        } else {
-          const b = partPlanOutline(model, el, { detail: look.detailLevel ?? display.detail, scale: frame.scale, symbolScale: symScale, planSymbol: look.planSymbol }).bounds;
-          if (b) {
-            takenPartBoxes.add({
-              min: { x: b.min.x - partPad, y: b.min.y - partPad },
-              max: { x: b.max.x + partPad, y: b.max.y + partPad },
-            });
-          }
-        }
-      }
-    }
+    seedPartLabelObstacles(model, view, p, frame, display, shownAs, candidates, takenPartBoxes, symScale);
   }
   for (const el of candidates) {
     if (!nearWindow(p, el)) continue;
@@ -2095,25 +2111,11 @@ export function planAutoPartMarks(model: ModelState, view: ViewElement, frame: V
   const symScale = view.props?.symbolScale ?? 1;
   const taken = new PartLabelIndex(frame.scale);
   const toPaper = toPaperOverride ?? ((q: Vec2): Vec2 => modelToPaper(frame, q));
-  const wallPad = 0.6 * frame.scale;
-  const partPad = 0.45 * frame.scale;
+  const p = painter([], [], [], frame, view, viewCropAndWindow(model, view).crop, []);
   const markParts: { readonly el: PartInstance; readonly planSymbol: boolean | null; readonly detail: DetailLevel }[] = [];
-  for (const el of candidates) {
-    if (leftOutOfDisciplineView(view, el)) continue;
-    if (el.kind === "wall") {
-      const half = el.thickness / 2 + wallPad;
-      taken.add({
-        min: { x: Math.min(el.start.x, el.end.x) - half, y: Math.min(el.start.y, el.end.y) - half },
-        max: { x: Math.max(el.start.x, el.end.x) + half, y: Math.max(el.start.y, el.end.y) + half },
-      });
-    } else if (el.kind === "part") {
-      const look = elementLook(model, view, el);
-      if (!look.visible || !shownAs(el).visible) continue;
-      const b = partPlanOutline(model, el, { detail: look.detailLevel ?? display.detail, scale: frame.scale, symbolScale: symScale, planSymbol: look.planSymbol }).bounds;
-      if (b) taken.add({ min: { x: b.min.x - partPad, y: b.min.y - partPad }, max: { x: b.max.x + partPad, y: b.max.y + partPad } });
-      if (el.mark && !taggedHere.has(el.id)) markParts.push({ el, planSymbol: look.planSymbol, detail: look.detailLevel ?? display.detail });
-    }
-  }
+  seedPartLabelObstacles(model, view, p, frame, display, shownAs, candidates, taken, symScale, (el, look) => {
+    if (el.mark && !taggedHere.has(el.id)) markParts.push({ el, planSymbol: look.planSymbol, detail: look.detailLevel ?? display.detail });
+  });
   const hits: AutoPartMarkHit[] = [];
   const noop = () => {};
   for (const dp of markParts) {
