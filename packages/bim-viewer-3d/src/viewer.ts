@@ -1331,8 +1331,9 @@ export class ModelViewer3D {
       this.carryControlState(enabled);
     } else {
       this.cutPlane = null;
-      if (this.sunLight) this.sunLight.castShadow = this.shadowsEnabled;
-      if (this.groundShadowPlane) this.groundShadowPlane.visible = this.shadowsEnabled;
+      const shadowsActive = this.shadowsEnabled && this.renderQuality !== "draft";
+      if (this.sunLight) this.sunLight.castShadow = shadowsActive;
+      if (this.groundShadowPlane) this.groundShadowPlane.visible = shadowsActive;
       this.scene.background = this.palette.background;
       if (this.lightingController) {
         this.lightingController.apply(this.lightingController.getPreset(), {
