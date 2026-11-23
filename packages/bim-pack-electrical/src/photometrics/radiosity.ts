@@ -333,33 +333,45 @@ export function solveRoomPatchRadiosity(input: RoomRadiosityInput): RoomRadiosit
     };
   }
 
-  // 2. Patch-to-patch form factor matrix `F[i * n + j]` (row-normalized <= 1 for strict energy conservation)
+  // 2. Patch-to-patch form factor matrix `F[i * n + j]` using exact reciprocity (`A_i F_ij = A_j F_ji`)
+  //    and skipping redundant visibility rays inside empty convex cavities.
   const convex = isConvexPolygon(input.outline);
-  const needVisCheck = !convex || (input.rayOpts?.includeFurniture ?? false);
+  const hasInteriorObstacles =
+    (input.occlusion.columns.length > 0) ||
+    ((input.rayOpts?.includeFurniture ?? false) && input.occlusion.furniture.length > 0);
+  const needVisCheck = !convex || hasInteriorObstacles;
   const formFactors = new Float64Array(n * n);
+  const rowSums = new Float64Array(n);
 
   for (let i = 0; i < n; i++) {
     const a = patches[i]!;
-    let rowSum = 0;
-    const rowOff = i * n;
-    for (let j = 0; j < n; j++) {
-      if (i === j) continue;
+    const rowOffI = i * n;
+    for (let j = i + 1; j < n; j++) {
       const b = patches[j]!;
       // Coplanar surfaces on the same plane cannot see each other
       if (a.surface === b.surface && (a.surface === "floor" || a.surface === "ceiling")) continue;
-      const f = patchFormFactor(a.xMm, a.yMm, a.zMm, a.nx, a.ny, a.nz, b);
-      if (f <= 1e-5) continue;
+      const fij = patchFormFactor(a.xMm, a.yMm, a.zMm, a.nx, a.ny, a.nz, b);
+      if (fij <= 1e-5) continue;
       const vis = needVisCheck
         ? input.occlusion.rayTransmittance(a.xMm, a.yMm, a.zMm, b.xMm, b.yMm, b.zMm, input.rayOpts)
         : 1;
       if (vis <= 0.01) continue;
-      const eff = f * vis;
-      formFactors[rowOff + j] = eff;
-      rowSum += eff;
+      const effIJ = fij * vis;
+      const effJI = b.areaSqFt > 1e-6 ? effIJ * (a.areaSqFt / b.areaSqFt) : 0;
+      formFactors[rowOffI + j] = effIJ;
+      rowSums[i] = rowSums[i]! + effIJ;
+      if (effJI > 1e-5) {
+        formFactors[j * n + i] = effJI;
+        rowSums[j] = rowSums[j]! + effJI;
+      }
     }
-    // Enforce exact hemispherical energy conservation: sum_j F_ij <= 1.0
+  }
+  // Enforce exact hemispherical energy conservation: sum_j F_ij <= 1.0
+  for (let i = 0; i < n; i++) {
+    const rowSum = rowSums[i]!;
     if (rowSum > 1.0) {
       const inv = 1 / rowSum;
+      const rowOff = i * n;
       for (let j = 0; j < n; j++) formFactors[rowOff + j] = formFactors[rowOff + j]! * inv;
     }
   }
