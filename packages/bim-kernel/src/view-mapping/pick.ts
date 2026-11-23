@@ -57,6 +57,8 @@ export interface Footprint {
   readonly kind: BimElement["kind"];
   /** Convex outline (counter-clockwise), drawing frame. A strip's is its swept box. */
   readonly poly: readonly Vec2[];
+  /** Cutout polygons inside `poly` (e.g. stairwell holes in a ceiling) excluded from interior hits. */
+  readonly holes?: ReadonlyArray<readonly Vec2[]>;
   /** A straight run's centreline and half-width; picks by distance to the line. */
   readonly strip: { readonly a: Vec2; readonly b: Vec2; readonly half: number } | null;
   readonly min: Vec2;
@@ -269,11 +271,15 @@ function footprintOf(b: Build, el: BimElement): Footprint | null {
       if (b.view.viewType !== "ceiling_plan" || el.outline.length < 3) return null;
       const z = (b.levelZ.get(el.levelId) ?? mapping.floorMm) + (el.heightMm ?? 2700);
       const pts = el.outline.map((q) => at(q.x, q.y, z));
-      return make(
+      const holes = el.holes
+        ?.filter((h) => h.length >= 3)
+        .map((h) => h.map((q) => at(q.x, q.y, z)).map((q) => ({ x: q.u, y: q.v })));
+      const fp = make(
         pts.map((q) => ({ x: q.u, y: q.v })),
         z,
         z,
       );
+      return holes && holes.length > 0 ? { ...fp, holes } : fp;
     }
     case "space": {
       let best: readonly Vec2[] | null = null;
@@ -545,10 +551,16 @@ function insidePoly(p: Vec2, poly: readonly Vec2[]): boolean {
   return inside;
 }
 
-/** Distance from a drawing point to the footprint (0 inside). */
+/** Distance from a drawing point to the footprint (0 inside, excluding any interior cutout holes). */
 export function footprintDistance(f: Footprint, p: Vec2): number {
   if (f.strip) return Math.max(0, distToSegment(p, f.strip.a, f.strip.b) - f.strip.half);
-  if (insidePoly(p, f.poly)) return 0;
+  if (insidePoly(p, f.poly)) {
+    const hole = f.holes?.find((h) => insidePoly(p, h));
+    if (!hole) return 0;
+    let best = Infinity;
+    for (let i = 0; i < hole.length; i++) best = Math.min(best, distToSegment(p, hole[i] as Vec2, hole[(i + 1) % hole.length] as Vec2));
+    return best;
+  }
   let best = Infinity;
   for (let i = 0; i < f.poly.length; i++) best = Math.min(best, distToSegment(p, f.poly[i] as Vec2, f.poly[(i + 1) % f.poly.length] as Vec2));
   return best;

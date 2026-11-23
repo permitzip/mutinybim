@@ -1,4 +1,5 @@
 import { categoryOverridesWritable } from "../categories/feature";
+import { BUILDING_VIEW_DISCIPLINE } from "../categories/registry";
 import { documentIndex, type ViewCommand } from "../commands/views";
 import type { CalloutSpec, DrawingItem, ViewProps } from "../documents";
 import { cleanPolygon, isAxisAlignedRectPolygon, polygonBounds } from "../drawing/polygon-clip";
@@ -578,7 +579,8 @@ export function planReferenceViews(model: Pick<ModelState, "elements" | "connect
   if (planView.viewType !== "floor_plan" && planView.viewType !== "ceiling_plan") return [];
   const cropOn = planView.props?.cropView !== false;
   const bounds: ModelClipBounds = { min: planView.cropMin, max: planView.cropMax };
-  const planDisc = planView.props?.discipline ?? "architecture";
+  const defaultDisc = BUILDING_VIEW_DISCIPLINE;
+  const planDisc = planView.props?.discipline ?? defaultDisc;
   const allowedByPlan = planView.props?.showReferenceDisciplines;
   const out: ViewElement[] = [];
   for (const v of documentIndex(model).views) {
@@ -589,7 +591,7 @@ export function planReferenceViews(model: Pick<ModelState, "elements" | "connect
     // Discipline reference filtering: a vertical view can scope which plan disciplines show its callout,
     // and a plan can scope which vertical view disciplines it displays.
     if (cut.showInDisciplines && cut.showInDisciplines.length > 0 && !cut.showInDisciplines.includes(planDisc)) continue;
-    const viewDisc = v.props?.discipline ?? "architecture";
+    const viewDisc = v.props?.discipline ?? defaultDisc;
     if (allowedByPlan && !allowedByPlan.includes(viewDisc)) continue;
     if (cropOn) {
       if (v.viewType === "elevation") {

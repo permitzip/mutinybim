@@ -1216,7 +1216,13 @@ export class ModelViewer3D {
     const modelEl = this.lastAuthored?.view.elements[s.elementId];
     if (modelEl?.kind === "ceiling") {
       const grid = modelEl.grid ?? { spacingXMm: 1219.2, spacingYMm: 609.6 };
-      applyCeilingGridUVs(geometry, grid);
+      // Mesh vertices are local to `s.center` (Three.js metres where kernelX = x*1000, kernelY = -z*1000);
+      // convert the kernel world grid origin into mesh-local mm so 3D tile joints match the RCP and snapped devices.
+      const localOrigin = {
+        x: (grid.origin?.x ?? 0) - s.center[0] * 1000,
+        y: (grid.origin?.y ?? 0) + s.center[2] * 1000,
+      };
+      applyCeilingGridUVs(geometry, { ...grid, origin: localOrigin });
     } else {
       ensureBoxUVs(geometry);
     }

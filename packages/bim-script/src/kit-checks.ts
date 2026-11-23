@@ -1,8 +1,8 @@
 import { LintEngine, readLintConfig, type Finding, type Ruleset, type Severity } from "@permitzip/bim-lint";
-import type { ModelState } from "@permitzip/bim-kernel";
+import { elementValues, type ModelState } from "@permitzip/bim-kernel";
 import { measureIn, type Measure } from "@permitzip/bim-units";
 import type { ScriptContext } from "./context";
-import { onWorking } from "./working";
+import { onWorkingWithTouched } from "./working";
 
 /**
  * `checks`: the coordination check (clashes, clearances, documents) on the
@@ -144,9 +144,18 @@ export function evaluateClashes(model: ModelState, options: RawClashReportOption
   const rules = allowedRules(options.types);
   const minRank = options.minSeverity ? SEVERITY_RANK[options.minSeverity] : 2;
   const idSet = ids && ids.length > 0 ? new Set(ids) : null;
+  let wantedLevel: string | null = null;
+  if (options.level) {
+    const q = options.level.trim().toLowerCase();
+    const matched = elementValues(model.elements).find(
+      (el) => el.kind === "level" && (el.id.toLowerCase() === q || el.name.toLowerCase() === q),
+    );
+    wantedLevel = matched?.kind === "level" ? matched.name.toLowerCase() : q;
+  }
   return raw.filter((f) => {
     if (rules && !rules.has(f.rule)) return false;
     if (SEVERITY_RANK[f.severity] > minRank) return false;
+    if (wantedLevel !== null && (f.at.level ?? "").toLowerCase() !== wantedLevel) return false;
     if (scope === "touched" && idSet && !f.elementIds.some((id) => idSet.has(id))) return false;
     return true;
   });
@@ -204,14 +213,14 @@ export const checks = {
   /** Every matching finding (worst first): rule, elements, location and fix hint. Supports filtering by `types`, `minSeverity`, `scope`, tolerances, and `maxFindings`. */
   clashes(ctx: ScriptContext, spec: ClashCheckSpec = {}): readonly Finding[] {
     const raw = toRawOptions(spec);
-    return onWorking(ctx, "checks.clashes", (model) => {
-      const all = evaluateClashes(model, raw);
+    return onWorkingWithTouched(ctx, "checks.clashes", (model, touchedIds) => {
+      const all = evaluateClashes(model, raw, touchedIds);
       return spec.maxFindings !== undefined ? all.slice(0, Math.max(1, Math.min(100, Math.round(spec.maxFindings)))) : all;
     });
   },
   /** Configurable clash & clearance report (`detail: "summary" | "compact" | "full"`) with counts by severity and rule. */
   clashReport(ctx: ScriptContext, spec: ClashReportSpec = {}): ClashReport {
     const raw = toRawOptions(spec);
-    return onWorking(ctx, "checks.clashReport", (model) => evaluateClashReport(model, raw));
+    return onWorkingWithTouched(ctx, "checks.clashReport", (model, touchedIds) => evaluateClashReport(model, raw, touchedIds));
   },
 };

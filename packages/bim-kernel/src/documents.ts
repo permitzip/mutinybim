@@ -256,9 +256,9 @@ export interface SheetProps {
   readonly fields?: Readonly<Record<string, string>>;
   /** The revision table, oldest first. Prints in the title block above the sheet number. */
   readonly revisions?: readonly SheetRevision[];
-  /** Optional discipline id for organizing sheets in the browser and print set (e.g. `"architecture"`, `"coordination"`). */
+  /** Optional discipline id for organizing sheets in the browser and print set (e.g. `"mechanical"`, `"coordination"`). */
   readonly discipline?: string;
-  /** Optional custom folder/group label for browser grouping (e.g. `"Architectural"`, `"Life Safety"`). */
+  /** Optional custom folder/group label for browser grouping (e.g. `"General"`, `"Life Safety"`). */
   readonly group?: string;
   /** Optional explicit sort order within its group or sheet list (lower sorts first; falls back to sheet number). */
   readonly sortOrder?: number;

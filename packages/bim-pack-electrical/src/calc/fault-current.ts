@@ -274,7 +274,7 @@ export function estimatedFeederLengthFt(
   const dy = Math.abs(b.y - a.y);
   const dz = Math.abs(b.z - a.z);
   const mm = mode === "manhattan" ? dx + dy + dz : Math.hypot(dx, dy, dz);
-  return Math.max(1, Math.round((mm / 304.8) * 10) / 10);
+  return mm / 304.8;
 }
 
 const faultCache = new WeakMap<ModelElements, Map<string, ModelFaultNode>>();
@@ -351,10 +351,11 @@ function nodeAt(elements: ModelElements, partId: string, memo: Map<string, Model
   const rw = racewayOf(construction.feederType?.conduit?.type);
   const step = conductorFaultStep(startA, { lengthFt, size, material, raceway: rw.raceway, sets: conductors.sets, voltageV, phases });
   if (!step) return done(null, trail, `There is no C value for ${sizeLabel(size)} ${material} in ${rw.raceway} raceway, so ${feederName} can't be calculated`);
+  const displayLen = Math.round(lengthFt * 10) / 10;
   trail.push(
-    `Feeder ${feederName}: ${conductors.sets > 1 ? `${conductors.sets} sets of ` : ""}${sizeLabel(size)} ${material === "copper" ? "Cu" : "Al"} in ${rw.raceway === "steel" ? "steel" : "non-magnetic"} raceway${rw.assumed ? " (raceway not stated: non-magnetic, the higher fault current)" : ""}, ${lengthFt} ft${lengthNote}, C = ${step.c.toLocaleString("en-US")}, ${voltageV} V ${phases}-phase: f = ${round(step.f, 4)}, M = ${round(step.m, 4)} → ${amps(step.availableA)}`,
+    `Feeder ${feederName}: ${conductors.sets > 1 ? `${conductors.sets} sets of ` : ""}${sizeLabel(size)} ${material === "copper" ? "Cu" : "Al"} in ${rw.raceway === "steel" ? "steel" : "non-magnetic"} raceway${rw.assumed ? " (raceway not stated: non-magnetic, the higher fault current)" : ""}, ${displayLen} ft${lengthNote}, C = ${step.c.toLocaleString("en-US")}, ${voltageV} V ${phases}-phase: f = ${round(step.f, 4)}, M = ${round(step.m, 4)} → ${amps(step.availableA)}`,
   );
-  chain.push(`${lengthFt} ft ${conductors.sets > 1 ? `${conductors.sets}×` : ""}${sizeLabel(size)} ${material === "copper" ? "Cu" : "Al"}`);
+  chain.push(`${displayLen} ft ${conductors.sets > 1 ? `${conductors.sets}×` : ""}${sizeLabel(size)} ${material === "copper" ? "Cu" : "Al"}`);
   return done(step.availableA, trail, null, chain);
 }
 

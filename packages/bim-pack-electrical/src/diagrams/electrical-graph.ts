@@ -92,7 +92,7 @@ function feedEdge(elements: Elements, link: ServiceLink, fedId: string, parentKi
   const catalog = mark ? feederTypeInfoOf(elements, mark) : null;
   const explicitLen = link.electrical?.lengthFt;
   const derivedLen = explicitLen === undefined && lengthMode !== "explicit" ? estimatedFeederLengthFt(elements, link.source.elementId, fedId, lengthMode) : null;
-  const lengthFt = explicitLen ?? derivedLen ?? undefined;
+  const lengthFt = explicitLen ?? (derivedLen !== null ? Math.round(derivedLen * 10) / 10 : undefined);
   return {
     linkId: link.id,
     device,

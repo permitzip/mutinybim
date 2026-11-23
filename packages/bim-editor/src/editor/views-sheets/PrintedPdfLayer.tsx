@@ -125,6 +125,9 @@ export function PrintedPdfLayer({
     if (lastWholeRef.current && lastWholeRef.current.scene === scene && Math.abs(lastWholeRef.current.widthPx - widthPx) < 0.5) {
       return
     }
+    // Starting a replacement render invalidates the previous whole-page cache so a subsequent failure
+    // cannot leave a stale cache entry that bypasses recovery when zooming back to the prior width.
+    lastWholeRef.current = null
     let cancelled = false
     let finished = false
     let deadline: ReturnType<typeof setTimeout> | undefined

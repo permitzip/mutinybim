@@ -191,7 +191,8 @@ function splitRun(model: ModelState, cmd: Extract<StretchCommand, { type: "split
 
 // ------------------------------------------------------------------ resize a stretch
 
-const BODY_FITTINGS: ReadonlySet<RunFitting["fittingType"]> = new Set(["elbow", "offset", "cap"]);
+const ELBOW_FITTING_TYPE = "elbow" as const;
+const BODY_FITTINGS: ReadonlySet<RunFitting["fittingType"]> = new Set([ELBOW_FITTING_TYPE, "offset", "cap"]);
 const TAKEOFFS: ReadonlySet<RunFitting["fittingType"]> = new Set(["tap", "tee", "wye"]);
 
 function widthOf(size: RunSize): number {
@@ -493,7 +494,7 @@ function fittingsTakingLength(elements: Readonly<Record<string, BimElement>>, se
     const cut = end === "start" ? piece.cutStart : piece.cutEnd;
     const link = seg.links[end];
     const f = link ? elements[link.elementId] : undefined;
-    if (cut > 0.5 && f?.kind === "run_fitting") names.push(f.fittingType === "elbow" ? `${f.angleDeg ?? 90}° elbow` : runLabel(elements, f));
+    if (cut > 0.5 && f?.kind === "run_fitting") names.push(f.fittingType === ELBOW_FITTING_TYPE ? `${f.angleDeg ?? 90}° elbow` : runLabel(elements, f));
   }
   return { names: [...new Set(names)], needMm: piece.cutStart + piece.cutEnd };
 }
@@ -506,7 +507,7 @@ function flipLeg(ctx: Ctx, seg: RunSegment): void {
     const link = seg.links[end];
     if (!link) continue;
     const other = current(ctx, link.elementId);
-    if (other.kind !== "run_fitting" || other.fittingType !== "elbow" || other.host || other.ports.length !== 2) {
+    if (other.kind !== "run_fitting" || other.fittingType !== ELBOW_FITTING_TYPE || other.host || other.ports.length !== 2) {
       refuse("unsupported_geometry", `The ${name} would run backwards into the ${runLabelOrPart(ctx, other)}, which can't turn the other way; drag it less`, [seg.id, other.id]);
     }
     const ports = other.ports.map((p) => (p.id === link.port ? { ...p, direction: p3(-p.direction.x, -p.direction.y, -p.direction.z) } : p));
@@ -564,7 +565,19 @@ function tryAutoJogDrag(model: ModelState, cmd: DragCommand): ExecuteResult | nu
   }
   if (blockedEnds.length === 0) return null;
 
-  const prefix = `jog-${rawEl.id.slice(0, 24)}-r${model.revision}`;
+  // Deterministic full-ID hash + collision-free suffix so long segment IDs and multi-step batch_edits never collide.
+  let h = 2166136261;
+  for (let i = 0; i < rawEl.id.length; i++) {
+    h ^= rawEl.id.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  const basePrefix = `jog-${rawEl.id.slice(0, 16)}-${(h >>> 0).toString(36)}-r${model.revision}`;
+  let prefix = basePrefix;
+  let attempt = 0;
+  while (model.elements[`${prefix}-s1`] !== undefined || model.elements[`${prefix}-f1`] !== undefined) {
+    attempt += 1;
+    prefix = `${basePrefix}-${attempt}`;
+  }
   const ctx = newCtx(model, prefix);
   const seg = segment(ctx, rawEl.id);
   const sys = systemOf(ctx, seg);
@@ -593,17 +606,19 @@ function tryAutoJogDrag(model: ModelState, cmd: DragCommand): ExecuteResult | nu
     const elbow1Id = newId(ctx, "f");
     const elbow2Id = newId(ctx, "f");
 
-    const choice = chooseFitting(sys, "elbow", seg.domain, [seg.size, seg.size], 90, undefined);
-    const label = fittingLabel("elbow", rules, null, 90);
+    const choice = chooseFitting(sys, ELBOW_FITTING_TYPE, seg.domain, [seg.size, seg.size], 90, undefined);
+    const label = fittingLabel(ELBOW_FITTING_TYPE, rules, null, 90);
+    const inheritedPartition = seg.partition ? { partition: seg.partition } : {};
     const elbow1: RunFitting = {
       id: elbow1Id,
       kind: "run_fitting",
       domain: seg.domain,
       levelId: seg.levelId,
+      ...inheritedPartition,
       systemId: seg.systemId,
       version: 0,
       authoredRev: {},
-      fittingType: "elbow",
+      fittingType: ELBOW_FITTING_TYPE,
       label,
       position: round3(pOld),
       angleDeg: 90,
@@ -618,10 +633,11 @@ function tryAutoJogDrag(model: ModelState, cmd: DragCommand): ExecuteResult | nu
       kind: "run_fitting",
       domain: seg.domain,
       levelId: seg.levelId,
+      ...inheritedPartition,
       systemId: seg.systemId,
       version: 0,
       authoredRev: {},
-      fittingType: "elbow",
+      fittingType: ELBOW_FITTING_TYPE,
       label,
       position: round3(pNew),
       angleDeg: 90,
@@ -636,6 +652,7 @@ function tryAutoJogDrag(model: ModelState, cmd: DragCommand): ExecuteResult | nu
       kind: "run_segment",
       domain: seg.domain,
       levelId: seg.levelId,
+      ...inheritedPartition,
       systemId: seg.systemId,
       version: 0,
       authoredRev: {},
