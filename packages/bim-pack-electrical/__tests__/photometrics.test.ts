@@ -488,8 +488,8 @@ describe("NFPA 101 §7.9.2.1 / IBC §1008.3.5 emergency egress pass/fail, calcs,
   });
 });
 
-describe("Performance benchmark: 20-room building on 2 ft grid (< 150 ms)", () => {
-  it("evaluates a 20-room office building with walls and 40 luminaires in under 150 ms", () => {
+describe("Performance benchmark: 20-room building on 2 ft grid", () => {
+  it("evaluates a 20-room office building with walls and 40 luminaires fast in both cavity-bounce and 4-bounce patch radiosity modes", () => {
     const troffer = builtinPartType("builtin:troffer-2x4-led@1")!;
     // 20 rooms arranged in 2 rows of 10 (each 12'×14' = 168 sf -> 3,360 sf total, ~840 grid points, 40 luminaires, 33 opaque walls)
     const walls: Array<{ wallId: string; start: { x: number; y: number }; end: { x: number; y: number }; thicknessMm: number; heightMm: number }> = [];
@@ -561,15 +561,27 @@ describe("Performance benchmark: 20-room building on 2 ft grid (< 150 ms)", () =
       ...placements,
     ]);
 
-    // Measure cold uncached detailed-mode runtime (materials + occlusion + inter-reflectance) for 20 rooms / 40 luminaires
+    // 1. Measure cold uncached detailed-mode runtime (materials + occlusion + 4-bounce patch radiosity) for 20 rooms / 40 luminaires
     const t0 = performance.now();
     const res = evaluateNormalPhotometrics(m, { gridSpacingFt: 2, workplaneHeightIn: 30, interReflectance: true });
-    const elapsed = performance.now() - t0;
+    const elapsedPatch = performance.now() - t0;
 
     expect(res.spaces.length).toBe(20);
     expect(res.totalFixtures).toBe(40);
     expect(res.gridPoints.length).toBeGreaterThanOrEqual(700);
-    expect(elapsed).toBeLessThan(300);
+    expect(elapsedPatch).toBeLessThan(800);
+
+    // 2. Measure fast cavity-bounce mode on the same 20-room building
+    const t1 = performance.now();
+    const resFast = evaluateNormalPhotometrics(m, {
+      gridSpacingFt: 2,
+      workplaneHeightIn: 30,
+      interReflectance: true,
+      radiosityMethod: "cavity",
+    });
+    const elapsedFast = performance.now() - t1;
+    expect(resFast.spaces.length).toBe(20);
+    expect(elapsedFast).toBeLessThan(300);
   });
 });
 
