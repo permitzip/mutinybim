@@ -884,11 +884,36 @@ function squareTree(start: Node, rest: readonly Node[]): Array<readonly [Node, N
   return out;
 }
 
-/** Pairs to join in drawing order: a tree for square lines, the nearest-neighbour chain otherwise. */
+/** Arc style: minimum spanning tree rooted at `start` (Euclidean distance) so mid-circuit home-runs branch naturally without long loop-back crossings. */
+function arcTree(start: Node, rest: readonly Node[]): Array<readonly [Node, Node]> {
+  const inTree: Node[] = [start];
+  const left = [...rest];
+  const out: Array<readonly [Node, Node]> = [];
+  while (left.length > 0) {
+    let bi = 0;
+    let bt = start;
+    let bd = Infinity;
+    for (let i = 0; i < left.length; i++) {
+      for (const t of inTree) {
+        const d = dist(t.point, left[i]!.point);
+        if (d < bd) {
+          bd = d;
+          bi = i;
+          bt = t;
+        }
+      }
+    }
+    const next = left.splice(bi, 1)[0]!;
+    out.push([bt, next]);
+    inTree.push(next);
+  }
+  return out;
+}
+
+/** Pairs to join in drawing order: a tree rooted at the home run (Manhattan for square lines, Euclidean for arcs). */
 function joinPairs(style: CircuitGraphicStyle, start: Node, rest: readonly Node[]): Array<readonly [Node, Node]> {
   if (style === "orthogonal") return squareTree(start, rest);
-  const ordered = chain(start, rest);
-  return ordered.slice(1).map((b, i) => [ordered[i]!, b] as const);
+  return arcTree(start, rest);
 }
 
 /**

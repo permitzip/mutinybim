@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { ScheduleTab } from '../schedule-tab/ScheduleTab'
 import { dockTitle } from '../schedule-tab/dock'
 import { useDockedSchedule } from '../schedule-tab/use-docked-schedule'
@@ -35,6 +35,8 @@ import { useNecRulesFrom, type NecRules } from './use-nec-rules'
 import { useCapacityTargets } from './use-capacity-targets'
 import { useScheduleWorkflow } from './schedules/use-schedule-workflow'
 import type { NewScheduleFormSlot } from '../schedules/new-schedule-plan'
+import type { ScalarHeatmapOverlay, SceneLightEmitter, SceneLightingPreset } from '@permitzip/bim-viewer-3d'
+import { buildPhotometricsHeatmap, buildSceneLightEmitters, type PhotometricsHeatmapMode } from './photometrics-heatmap'
 
 export interface ElectricalWorkflowInput {
   /** The host project, for its Code Study's NEC edition. */
@@ -67,6 +69,13 @@ export interface ElectricalWorkflowInput {
   readonly pickPlanPointAt?: (clientX: number, clientY: number) => Vec2 | null
   /** Show a proposal's devices as ghosts in the plan (null clears). */
   readonly previewParts?: (ghosts: readonly ProposalGhost[] | null) => void
+  /** Display or clear a trade-agnostic 3D false-color scalar heatmap overlay over floors/workplanes. */
+  readonly setScalarHeatmap?: (overlay: ScalarHeatmapOverlay | null) => void
+  /** Set physical 3D luminaire emitters rendered during evening/night/blackout presets. */
+  readonly setLightEmitters?: (emitters: readonly SceneLightEmitter[]) => void
+  /** Switch 3D time-of-day lighting preset (`morning`, `noon`, `afternoon`, `evening`, `night`, `night_blackout`, `no_shadows`). */
+  readonly setLightingPreset?: (preset: SceneLightingPreset) => void
+  readonly lightingPreset?: SceneLightingPreset
   /** Hear what the pointer is over (the Propose tool previews the room under it). */
   readonly subscribeHover?: (listener: (ids: readonly string[] | null) => void) => () => void
   /** Take plan clicks before selection (a click on a previewed room places its devices); returns the unregister. */
@@ -141,8 +150,35 @@ export function useElectricalWorkflow(input: ElectricalWorkflowInput): Electrica
   const [scheduleAttempt, setScheduleAttempt] = useState(0)
   const [lastPanelId, setLastPanelId] = useState<string | null>(null)
   const [hintDismissed, setHintDismissed] = useState(false)
+  const [heatmapMode, setHeatmapMode] = useState<PhotometricsHeatmapMode>('off')
   const inputPreview = input.previewParts
+  const inputSetScalarHeatmap = input.setScalarHeatmap
+  const inputSetLightEmitters = input.setLightEmitters
+  const inputSetLightingPreset = input.setLightingPreset
   const previewParts = useCallback((ghosts: readonly ProposalGhost[] | null) => inputPreview?.(ghosts), [inputPreview])
+  useEffect(() => {
+    if (!inputSetLightEmitters) return
+    if (!model) {
+      inputSetLightEmitters([])
+      return
+    }
+    inputSetLightEmitters(buildSceneLightEmitters(model))
+    return () => {
+      inputSetLightEmitters([])
+    }
+  }, [inputSetLightEmitters, model])
+  useEffect(() => {
+    if (!inputSetScalarHeatmap) return
+    if (!model || heatmapMode === 'off') {
+      inputSetScalarHeatmap(null)
+      return
+    }
+    const built = buildPhotometricsHeatmap(model, heatmapMode, input.levelId ?? null)
+    inputSetScalarHeatmap(built.overlay)
+    return () => {
+      inputSetScalarHeatmap(null)
+    }
+  }, [inputSetScalarHeatmap, model, heatmapMode, input.levelId])
   const closeDock = useCallback(() => setDock(null), [])
   const target = useMemo(() => electricalTarget(model, selectedIds), [model, selectedIds])
   const panels = useMemo(() => (model ? distributionEquipment(model.elements) : []), [model])
@@ -268,6 +304,31 @@ export function useElectricalWorkflow(input: ElectricalWorkflowInput): Electrica
     balance: { run: () => setDialog({ kind: 'rebalance', panelId: panelFor() }), blocked: editBlocked ?? (hasCircuits ? null : PLACE_PANEL_FIRST) },
     types: { run: () => setDialog({ kind: 'types', tab: 'connection' }), blocked: model ? null : 'The model is still loading.' },
     templates: { run: () => setDialog(templateCount > 0 ? { kind: 'template', name: null } : { kind: 'types', tab: 'template' }), blocked: editBlocked ?? (hasCircuits ? null : PLACE_PANEL_FIRST) },
+    photometrics3d: {
+      mode: heatmapMode,
+      setMode: (nextMode: PhotometricsHeatmapMode) => {
+        setHeatmapMode(nextMode)
+        if (!model) return
+        const built = buildPhotometricsHeatmap(model, nextMode, input.levelId ?? null)
+        notify(built.summary, nextMode === 'off' || built.pass ? 'info' : 'error')
+      },
+      lightingPreset: input.lightingPreset ?? 'noon',
+      setLightingPreset: (preset: SceneLightingPreset) => {
+        inputSetLightingPreset?.(preset)
+        const label =
+          preset === 'evening'
+            ? '3D Evening dusk — normal luminaires ON (emergency-only heads OFF).'
+            : preset === 'night'
+              ? '3D Night — normal luminaires at rated lumens (emergency-only heads OFF).'
+              : preset === 'night_blackout'
+                ? '3D Emergency Initial (0 min) — egress fixtures at emergency_lumens, exit-combo heads ON.'
+                : preset === 'night_blackout_90min'
+                  ? '3D Emergency 90-Min — battery fixtures at 60% end-of-discharge derate.'
+                  : `3D lighting set to ${preset.replace('_', ' ')}.`
+        notify(label, 'info')
+      },
+      blocked: model ? null : 'The model is still loading.',
+    },
     docked: { addon: ADDON_UI.addon, dock: DOCK, list: panels.map((p) => ({ id: p.id, name: p.name })), open: (id) => openPanelView(id) },
   }
 
