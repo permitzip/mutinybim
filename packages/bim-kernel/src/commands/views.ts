@@ -24,6 +24,7 @@ import {
   SCHEDULE_FILTER_OPS,
   TITLE_BLOCK_TYPES,
   VIEW_CATEGORIES,
+  VIEWPORT_NORTH_ARROW_OFFSET_FEATURE,
   type DrawingItem,
   type SheetProps,
   type ViewProps,
@@ -1415,6 +1416,9 @@ export function executeViewCommand(model: ModelState, command: ViewCommand): Exe
           const other = model.elements[existing.sheetId];
           fail(`${label(view)} is already on ${other?.kind === "sheet" ? `sheet ${other.number}` : "another sheet"}. A view goes on one sheet; duplicate it to show it again.`, [view.id, existing.id], "in_use");
         }
+        if (command.northArrowOffsetMm !== undefined && !peerReads(VIEWPORT_NORTH_ARROW_OFFSET_FEATURE)) {
+          fail("Viewport north-arrow offsets can't be saved yet: the model server this model is open on is an older version. Try again once it is updated.", [sheet.id]);
+        }
         const s = view.viewType === "schedule" ? 1 : (command.scale ?? view.props?.scale ?? DEFAULT_PLAN_SCALE);
         const vp: Viewport = {
           ...NEW_META,
@@ -1485,6 +1489,9 @@ export function executeViewCommand(model: ModelState, command: ViewCommand): Exe
       }
       case "set_viewport_north_arrow": {
         const vp = live(reader, command.viewportId, "viewport", "The viewport");
+        if ((command.offsetMm !== undefined || command.show === undefined) && !peerReads(VIEWPORT_NORTH_ARROW_OFFSET_FEATURE)) {
+          fail("Viewport north-arrow offsets can't be saved yet: the model server this model is open on is an older version. Try again once it is updated.", [vp.id]);
+        }
         let next = vp;
         if (command.show !== undefined) {
           next = { ...next, northArrow: command.show };

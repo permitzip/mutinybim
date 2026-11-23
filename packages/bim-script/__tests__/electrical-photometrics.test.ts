@@ -177,4 +177,14 @@ describe("@permitzip/bim-script electrical photometrics & egress kit", () => {
     const cat = Object.values(after.elements).find((e) => e.kind === "service_catalog" && e.entry.type === "photometric_profile");
     expect(cat).toBeDefined();
   });
+
+  it("exposes calculationMode options and viewport north-arrow helpers in generated script declarations", async () => {
+    const { kitDeclarations } = await import("../src");
+    const dts = kitDeclarations();
+    expect(dts).toContain('export type PhotometricsCalculationMode = "simplified" | "detailed" | "surfaces";');
+    expect(dts).toContain("calculationMode?: PhotometricsCalculationMode;");
+    expect(dts).toContain("includeFurnitureOcclusion?: boolean;");
+    expect(dts).toContain("setViewportNorthArrow(");
+    expect(dts).toContain("northArrowOffset?: { x: Measure; y: Measure }");
+  });
 });

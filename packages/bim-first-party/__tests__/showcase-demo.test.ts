@@ -15,6 +15,7 @@
 import { buildSheetSceneFor, elementValues, evaluateDiagram, resolveElementMaterial, sceneToSvg, validateModel } from "@permitzip/bim-kernel";
 import { evaluateEgressPhotometrics, evaluateNormalPhotometrics } from "@permitzip/bim-pack-electrical";
 import { createDemoModel } from "@permitzip/bim-pack-mechanical/seed";
+import { plumbingDiagramGraph } from "@permitzip/bim-pack-plumbing";
 import { createShowcaseDemoModel } from "../src/seed";
 
 describe("createShowcaseDemoModel", () => {
@@ -186,6 +187,20 @@ describe("createShowcaseDemoModel", () => {
         expect(svg).toContain("EMERGENCY / EGRESS LIGHTING COMPLIANCE SCHEDULE");
       }
     }
+  });
+
+  it("integrates vent trees onto sanitary risers only, never onto domestic water risers", () => {
+    const graph = plumbingDiagramGraph(model.elements, {
+      systemKinds: ["domestic_cold_water", "domestic_hot_water", "sanitary", "vent"],
+    });
+    const hasService = (node: (typeof graph.roots)[number], service: string): boolean =>
+      node.service === service || node.children.some((c) => hasService(c, service));
+    const waterRoots = graph.roots.filter((r) => r.service === "domestic_cold_water");
+    const sanitaryRoots = graph.roots.filter((r) => r.service === "sanitary");
+    expect(waterRoots.length).toBeGreaterThan(0);
+    expect(sanitaryRoots.length).toBeGreaterThan(0);
+    for (const w of waterRoots) expect(hasService(w, "vent")).toBe(false);
+    expect(sanitaryRoots.some((r) => hasService(r, "vent"))).toBe(true);
   });
 
   it("keeps legacy createDemoModel('f-a-demo') intact for existing fixtures and E2E specs", () => {

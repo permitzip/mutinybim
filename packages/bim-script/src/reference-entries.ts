@@ -714,10 +714,10 @@ export const KIT_ENTRIES: readonly KitEntry[] = [
   },
   {
     name: "documents.place",
-    summary: "Puts a view (a plan, a schedule, a detail) on a sheet at a point (its centre, from the sheet's lower-left corner), with optional scale and viewport title offset/rule length; returns the viewport's id.",
-    signature: "place(ctx: ScriptContext, sheetId: string, viewId: string, at: SheetPoint, scale?: number, title?: { offset?: { x: Measure; y: Measure }; ruleLength?: Measure }): string",
+    summary: "Puts a view (a plan, a schedule, a detail) on a sheet at a point (its centre, from the sheet's lower-left corner), with optional scale and viewport title/north-arrow offsets; returns the viewport's id.",
+    signature: "place(ctx: ScriptContext, sheetId: string, viewId: string, at: SheetPoint, scale?: number, title?: { offset?: { x: Measure; y: Measure }; ruleLength?: Measure; northArrowOffset?: { x: Measure; y: Measure } }): string",
     example: layout(`    const s = documents.sheet(ctx, { number: "M-101", name: "Mechanical plan" });\n    const v = documents.planView(ctx, { level: "L1", name: "L1 Mechanical" });\n    documents.place(ctx, s, v, { x: units.mm(420), y: units.mm(300) });`),
-    topics: ["viewport", "place", "sheet", "layout", "view title"],
+    topics: ["viewport", "place", "sheet", "layout", "view title", "north arrow"],
   },
   {
     name: "documents.setViewportTitle",
@@ -725,6 +725,13 @@ export const KIT_ENTRIES: readonly KitEntry[] = [
     signature: "setViewportTitle(ctx: ScriptContext, viewportId: string, spec: { offset?: { x: Measure; y: Measure }; ruleLength?: Measure | null }): void",
     example: layout(`    const s = documents.sheet(ctx, { number: "A-101", name: "Floor Plan" });\n    const v = documents.planView(ctx, { level: "L1", name: "L1 Plan" });\n    const vp = documents.place(ctx, s, v, { x: units.mm(420), y: units.mm(300) });\n    documents.setViewportTitle(ctx, vp, { offset: { x: units.mm(0), y: units.mm(12) }, ruleLength: units.mm(95) });`),
     topics: ["viewport", "view title", "title line", "sheet", "layout"],
+  },
+  {
+    name: "documents.setViewportNorthArrow",
+    summary: "Shows, hides, or repositions a placed viewport's north arrow on its sheet (`offset`, or `null` to reset to the default corner).",
+    signature: "setViewportNorthArrow(ctx: ScriptContext, viewportId: string, spec: { show?: boolean; offset?: { x: Measure; y: Measure } | null }): void",
+    example: layout(`    const s = documents.sheet(ctx, { number: "A-101", name: "Floor Plan" });\n    const v = documents.planView(ctx, { level: "L1", name: "L1 Plan" });\n    const vp = documents.place(ctx, s, v, { x: units.mm(420), y: units.mm(300) });\n    documents.setViewportNorthArrow(ctx, vp, { show: true, offset: { x: units.mm(-14), y: units.mm(-10) } });`),
+    topics: ["viewport", "north arrow", "sheet", "layout"],
   },
   {
     name: "documents.editSchedule",

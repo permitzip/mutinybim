@@ -338,6 +338,7 @@ export interface View3dSpec extends Camera3dSpec {
 }
 export type LuminaireEmergencyMode = "none" | "battery_pack" | "generator_circuit" | "inverter";
 export type PhotometricOverlayMode = "off" | "normal" | "egress";
+export type PhotometricsCalculationMode = "simplified" | "detailed" | "surfaces";
 export interface LuminaireIesSpec {
   profile?: string; iesText?: string; saveAsProfile?: string;
   emergencyMode?: LuminaireEmergencyMode; emergencyLumens?: number; emergencyBallastFactor?: number;
@@ -345,10 +346,13 @@ export interface LuminaireIesSpec {
 }
 export interface PhotometricsRunSpec {
   level?: string; spaceIds?: readonly string[]; gridSpacing?: Measure | number; workplaneHeight?: Measure | number;
+  calculationMode?: PhotometricsCalculationMode; useMaterialReflectances?: boolean;
+  includeFurnitureOcclusion?: boolean; includeTaskSurfaces?: boolean;
   interReflectance?: boolean; reflectances?: { ceiling?: number; wall?: number; floor?: number };
 }
 export interface EgressLightingCheckSpec {
   level?: string; gridSpacing?: Measure | number; workplaneHeight?: Measure | number;
+  calculationMode?: PhotometricsCalculationMode; includeFurnitureOcclusion?: boolean;
   interReflectance?: boolean; battery90MinDerate?: number;
   egressPaths?: readonly { id: string; name: string; levelId?: string; levelName?: string; outline?: readonly { x: Measure | number; y: Measure | number }[]; polyline?: readonly { x: Measure | number; y: Measure | number }[]; widthFt?: number }[];
   explicitOnly?: boolean;

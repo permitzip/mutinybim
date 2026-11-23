@@ -1,11 +1,11 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ScheduleTab } from '../schedule-tab/ScheduleTab'
 import { dockTitle } from '../schedule-tab/dock'
 import { useDockedSchedule } from '../schedule-tab/use-docked-schedule'
 import { Lightbulb, Plug, X } from 'lucide-react'
-import { type ModelState, type Vec2, type ViewElement } from '@permitzip/bim-kernel'
+import { elementsOfKind, type BimElement, type ModelState, type Vec2, type ViewElement } from '@permitzip/bim-kernel'
 import { ADDON_UI, circuitTemplates, distributionEquipment, electricalConnections, polesForMembers, uncircuitedLoads, planCircuitDrop, planCircuitMove, planRemoveFromCircuits, type CircuitPlanResult } from '@permitzip/bim-pack-electrical'
 import type { NecEdition } from '@permitzip/bim-calc'
 import { Alert, AlertDescription, AlertTitle } from '../../ui/alert'
@@ -132,6 +132,37 @@ const SELECT_LOADS = 'Select the receptacles, lights or equipment to circuit fir
 const PLACE_PANEL_FIRST = 'Place a panel first: Electrical › Panel, then name it in its properties.'
 
 /**
+ * Collect immutable element references that affect live 3D light emitters
+ * (levels, lighting fixtures & panels, their part types, photometric catalog
+ * entries, and emergency circuit links). Unrelated edits (notes, sheets,
+ * dimensions, walls, rooms) leave every reference identical (`===`), avoiding
+ * unnecessary emitter rebuilds and spotlight pool churn.
+ */
+function collectLightEmitterInputs(model: ModelState): Map<string, BimElement> {
+  const els = model.elements
+  const refs = new Map<string, BimElement>()
+  for (const level of elementsOfKind(els, 'level')) refs.set(level.id, level)
+  for (const part of elementsOfKind(els, 'part')) {
+    const pt = els[part.typeId]
+    if (pt?.kind !== 'part_type') continue
+    if (pt.definition.category !== 'lighting_fixture' && pt.definition.category !== 'electrical_equipment') continue
+    refs.set(part.id, part)
+    refs.set(pt.id, pt)
+  }
+  for (const cat of elementsOfKind(els, 'service_catalog')) refs.set(cat.id, cat)
+  for (const link of elementsOfKind(els, 'service_link')) refs.set(link.id, link)
+  return refs
+}
+
+function sameElementRefs(a: ReadonlyMap<string, BimElement> | null, b: ReadonlyMap<string, BimElement>): boolean {
+  if (!a || a.size !== b.size) return false
+  for (const [id, el] of b) {
+    if (a.get(id) !== el) return false
+  }
+  return true
+}
+
+/**
  * Everything the Electrical tab, the Circuit tab, the properties panel and
  * the panel view do, in one place, so the Building Model surface mounts it
  * once. Every edit goes through `submit` as the same commands the agent tools
@@ -155,18 +186,49 @@ export function useElectricalWorkflow(input: ElectricalWorkflowInput): Electrica
   const inputSetScalarHeatmap = input.setScalarHeatmap
   const inputSetLightEmitters = input.setLightEmitters
   const inputSetLightingPreset = input.setLightingPreset
+  const inputLightingPreset = input.lightingPreset ?? 'noon'
   const previewParts = useCallback((ghosts: readonly ProposalGhost[] | null) => inputPreview?.(ghosts), [inputPreview])
+  const emitterCacheRef = useRef<{
+    inputs: ReadonlyMap<string, BimElement> | null
+    emitters: readonly SceneLightEmitter[]
+    pushedTo: ((emitters: readonly SceneLightEmitter[]) => void) | undefined
+    dirty: boolean
+  }>({ inputs: null, emitters: [], pushedTo: undefined, dirty: true })
   useEffect(() => {
+    const cache = emitterCacheRef.current
     if (!inputSetLightEmitters) return
     if (!model) {
-      inputSetLightEmitters([])
+      if (cache.inputs !== null || cache.emitters.length > 0) {
+        cache.inputs = null
+        cache.emitters = []
+        cache.pushedTo = inputSetLightEmitters
+        cache.dirty = false
+        inputSetLightEmitters([])
+      }
       return
     }
-    inputSetLightEmitters(buildSceneLightEmitters(model))
-    return () => {
-      inputSetLightEmitters([])
+    const nextInputs = collectLightEmitterInputs(model)
+    const inputsUnchanged = sameElementRefs(cache.inputs, nextInputs)
+    if (!inputsUnchanged) {
+      cache.inputs = nextInputs
+      cache.dirty = true
     }
-  }, [inputSetLightEmitters, model])
+    // Defer emitter collection while lighting is disabled (`no_shadows`); rebuild as soon as a lit preset is active.
+    if (inputLightingPreset === 'no_shadows') return
+    if (!cache.dirty && cache.pushedTo === inputSetLightEmitters) return
+    if (cache.dirty) {
+      cache.emitters = buildSceneLightEmitters(model)
+      cache.dirty = false
+    }
+    cache.pushedTo = inputSetLightEmitters
+    inputSetLightEmitters(cache.emitters)
+  }, [inputSetLightEmitters, model, inputLightingPreset])
+  useEffect(() => {
+    return () => {
+      emitterCacheRef.current.pushedTo = undefined
+      inputSetLightEmitters?.([])
+    }
+  }, [inputSetLightEmitters])
   useEffect(() => {
     if (!inputSetScalarHeatmap) return
     if (!model || heatmapMode === 'off') {

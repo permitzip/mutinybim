@@ -1,4 +1,4 @@
-import { systemRules, elementsOfKind } from "@permitzip/bim-kernel";
+import { systemRules, elementsOfKind, drainSystemKinds } from "@permitzip/bim-kernel";
 import type { MepSystem, BimElement, ElementId, DiagramHints, DiagramGraph, DiagramNode, DiagramPipe } from "@permitzip/bim-kernel";
 import { plumbingTrees } from "./plumbing-topology";
 
@@ -102,6 +102,7 @@ export function plumbingDiagramGraph(elements: Elements, hints: DiagramHints = {
     }
   }
   // A vent tree connected to one or more fixtures already on a drawn sanitary tree integrates right onto that sanitary riser.
+  const drains = drainSystemKinds();
   for (const r of [...roots]) {
     if (r.service !== "vent") continue;
     const ventTerminals = new Set<string>();
@@ -109,7 +110,7 @@ export function plumbingDiagramGraph(elements: Elements, hints: DiagramHints = {
     if (ventTerminals.size === 0) continue;
     for (let i = 0; i < roots.length; i++) {
       const host = roots[i] as DiagramNode;
-      if (host === r || host.service === "vent") continue;
+      if (host === r || !host.service || !drains.has(host.service) || host.service === "storm" || host.service === "condensate") continue;
       const hostTerminals = new Set<string>();
       collectTerminalIds(host, hostTerminals);
       const shared = [...ventTerminals].find((id) => hostTerminals.has(id));

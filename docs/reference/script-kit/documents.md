@@ -19,8 +19,9 @@ Every example below is a complete script that passes the kit's checks; the kit's
 - [`documents.callout`](#documentscallout): Places a live parametric callout box + split head bubble on a view referencing any existing enlarged plan, 2D detail, section, or elevation view.
 - [`documents.setCrop`](#documentssetcrop): Sets a view's crop box in typed units, toggles cropView/showCropBox, or adjusts section/elevation far clip depth, level datum extensions (`levelLeftExtMm`/`levelRightExtMm`), and section mark `headExt`/`tailExt`/`splitGap`.
 - [`documents.duplicateView`](#documentsduplicateview): A copy of a view (another discipline's plan of the same level); returns the new id.
-- [`documents.place`](#documentsplace): Puts a view (a plan, a schedule, a detail) on a sheet at a point (its centre, from the sheet's lower-left corner), with optional scale and viewport title offset/rule length; returns the viewport's id.
+- [`documents.place`](#documentsplace): Puts a view (a plan, a schedule, a detail) on a sheet at a point (its centre, from the sheet's lower-left corner), with optional scale and viewport title/north-arrow offsets; returns the viewport's id.
 - [`documents.setViewportTitle`](#documentssetviewporttitle): Moves a placed viewport's title block on its sheet (`offset`) and/or changes the horizontal title underline length (`ruleLength`, or `null` to reset).
+- [`documents.setViewportNorthArrow`](#documentssetviewportnortharrow): Shows, hides, or repositions a placed viewport's north arrow on its sheet (`offset`, or `null` to reset to the default corner).
 - [`documents.editSchedule`](#documentseditschedule): Edits a list schedule view in one undo step: add, move, remove or rename columns, filter, sort, group, totals (an equipment schedule's sort, a fixture schedule's DFU total).
 - [`documents.schedule`](#documentsschedule): A schedule view; returns its id.
 - [`documents.tag`](#documentstag): A tag on one element in a plan view (its mark, size or the right text for its kind), with a leader; returns the tag's id.
@@ -414,13 +415,13 @@ export default defineScript({
 
 ## documents.place
 
-Puts a view (a plan, a schedule, a detail) on a sheet at a point (its centre, from the sheet's lower-left corner), with optional scale and viewport title offset/rule length; returns the viewport's id.
+Puts a view (a plan, a schedule, a detail) on a sheet at a point (its centre, from the sheet's lower-left corner), with optional scale and viewport title/north-arrow offsets; returns the viewport's id.
 
 ```ts
-place(ctx: ScriptContext, sheetId: string, viewId: string, at: SheetPoint, scale?: number, title?: { offset?: { x: Measure; y: Measure }; ruleLength?: Measure }): string
+place(ctx: ScriptContext, sheetId: string, viewId: string, at: SheetPoint, scale?: number, title?: { offset?: { x: Measure; y: Measure }; ruleLength?: Measure; northArrowOffset?: { x: Measure; y: Measure } }): string
 ```
 
-Topics: viewport, place, sheet, layout, view title
+Topics: viewport, place, sheet, layout, view title, north arrow
 
 <details><summary>Example script</summary>
 
@@ -463,6 +464,35 @@ export default defineScript({
     const v = documents.planView(ctx, { level: "L1", name: "L1 Plan" });
     const vp = documents.place(ctx, s, v, { x: units.mm(420), y: units.mm(300) });
     documents.setViewportTitle(ctx, vp, { offset: { x: units.mm(0), y: units.mm(12) }, ruleLength: units.mm(95) });
+  },
+});
+```
+
+</details>
+
+## documents.setViewportNorthArrow
+
+Shows, hides, or repositions a placed viewport's north arrow on its sheet (`offset`, or `null` to reset to the default corner).
+
+```ts
+setViewportNorthArrow(ctx: ScriptContext, viewportId: string, spec: { show?: boolean; offset?: { x: Measure; y: Measure } | null }): void
+```
+
+Topics: viewport, north arrow, sheet, layout
+
+<details><summary>Example script</summary>
+
+```ts
+import { defineScript, units, routes, parts, building, equipment, documents, checks, electrical } from "@permitzip/bim-script";
+export default defineScript({
+  kind: "layout",
+  reads: { levels: true },
+  parameters: {},
+  run(ctx) {
+    const s = documents.sheet(ctx, { number: "A-101", name: "Floor Plan" });
+    const v = documents.planView(ctx, { level: "L1", name: "L1 Plan" });
+    const vp = documents.place(ctx, s, v, { x: units.mm(420), y: units.mm(300) });
+    documents.setViewportNorthArrow(ctx, vp, { show: true, offset: { x: units.mm(-14), y: units.mm(-10) } });
   },
 });
 ```

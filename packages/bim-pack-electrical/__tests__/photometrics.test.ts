@@ -9,6 +9,8 @@ import { installFirstPartyAddOns } from "@permitzip/bim-first-party";
 import {
   BUILTIN_LIBRARY_VERSION,
   DEFAULT_SETTINGS,
+  PARTS_LONG_TEXT_VALUES_FEATURE,
+  VIEWPORT_NORTH_ARROW_OFFSET_FEATURE,
   asElementId,
   buildSheetSceneFor,
   builtinFormTemplate,
@@ -798,5 +800,121 @@ describe("Photometrics materials, glazing, furniture, surfaces, 3D stairs & 3D s
     // True rising 3D treads span from near L1 floor up towards L2!
     expect(Math.min(...zs)).toBeLessThan(1.5 * FT);
     expect(Math.max(...zs)).toBeGreaterThan(10 * FT);
+  });
+
+  it("emits photometrics-egress-compliance for failing modeled stairs and re-runs incrementally when fixture inputs change", () => {
+    const downlight = builtinPartType("builtin:downlight-6-led@1")!;
+    const lit = runCmds(emptyModel("stair-lint-test"), [
+      { type: "create_level", levelId: "L2", name: "Level 2", elevationMm: 12 * FT },
+      { type: "save_part_types", types: [{ typeId: downlight.id, definition: downlight.definition }] },
+      {
+        type: "create_element",
+        elementId: "st-egress",
+        kind: "architecture.stair",
+        levelId: "L1",
+        placement: { kind: "line", start: { x: 10 * FT, y: 10 * FT }, end: { x: 20 * FT, y: 10 * FT } },
+        size: { widthMm: 1200 },
+        values: { "architecture.stair_form": "u_shape", "architecture.stair_turn": "right" },
+      },
+      { type: "place_part", partId: "em-low", typeId: downlight.id, levelId: "L1", position: { x: 14 * FT, y: 10 * FT }, offsetMm: 9 * FT, mark: "EM1" },
+      { type: "place_part", partId: "em-high", typeId: downlight.id, levelId: "L2", position: { x: 15 * FT, y: 12 * FT }, offsetMm: 9 * FT, mark: "EM2" },
+      {
+        type: "set_element_values",
+        elementIds: ["em-low", "em-high"],
+        values: { "electrical.photometric_profile": "downlight_6_led", "electrical.emergency_mode": "generator_circuit", "electrical.emergency_lumens": 3000, "electrical.egress_fixture": true },
+      },
+    ]);
+
+    const engine = new LintEngine();
+    engine.build(lit);
+    const config = readLintConfig({ ruleset: "default", include_linked: false });
+    const initialFindings = engine.check({ config });
+    expect(initialFindings.filter((f) => f.rule === "photometrics-egress-compliance" && f.elementIds.includes("st-egress"))).toEqual([]);
+
+    // Non-spatial fixture parameter edit disables emergency output -> incremental lint re-runs via `reads` and flags the stair!
+    const dark = runCmds(lit, [
+      {
+        type: "set_element_values",
+        elementIds: ["em-low", "em-high"],
+        values: { "electrical.emergency_mode": "none", "electrical.emergency_lumens": 0, "electrical.egress_fixture": false },
+      },
+    ]);
+    engine.advance(dark, ["em-low", "em-high"]);
+    const incFindings = engine.run({ box: null, documents: [], changed: ["em-low", "em-high"] }, { config, previous: lit });
+    const stairFinding = incFindings.find((f) => f.rule === "photometrics-egress-compliance" && f.elementIds.includes("st-egress"));
+    expect(stairFinding).toBeDefined();
+    expect(stairFinding!.severity).toBe("error");
+  });
+
+  it("gates >400-char part parameter edits and viewport north-arrow offsets on peer capabilities", () => {
+    const longText = "x".repeat(450);
+    const base = emptyModel("peer-gate-test");
+
+    const runWithFeatures = (m: ModelState, cmd: Command, allowed: readonly string[]) =>
+      withUpgradePolicy(
+        (feature) => allowed.includes(feature),
+        () => executeCommand(m, cmd),
+      );
+
+    // 1. Long text gate on save_part_types (maxLength / default / typeValues) & place_part / set_parameters
+    const baseDef = builtinPartType("builtin:downlight-6-led@1")!.definition;
+    const longLimitType: Command = {
+      type: "save_part_types",
+      types: [
+        {
+          typeId: "custom:long-limit@1",
+          definition: {
+            ...baseDef,
+            familyName: "Custom",
+            typeName: "LongLimit",
+            instanceParams: [...baseDef.instanceParams, { name: "notes_long", label: "Notes", kind: "text", maxLength: 2048 }],
+          },
+        },
+      ],
+    };
+    expect(runWithFeatures(base, longLimitType, []).ok).toBe(false);
+    const withType = runWithFeatures(base, longLimitType, [PARTS_LONG_TEXT_VALUES_FEATURE]);
+    expect(withType.ok).toBe(true);
+    if (!withType.ok) return;
+
+    const placeLong: Command = {
+      type: "place_part",
+      partId: "p-long",
+      typeId: "custom:long-limit@1",
+      levelId: "L1",
+      position: { x: 0, y: 0 },
+      values: { notes_long: longText },
+    };
+    expect(runWithFeatures(withType.model, placeLong, []).ok).toBe(false);
+    const placedShort = runWithFeatures(withType.model, { ...placeLong, values: { notes_long: "short" } }, []);
+    expect(placedShort.ok).toBe(true);
+    if (!placedShort.ok) return;
+
+    const setLong: Command = { type: "set_parameters", id: "p-long", scope: "instance", values: { notes_long: longText } };
+    expect(runWithFeatures(placedShort.model, setLong, []).ok).toBe(false);
+    expect(runWithFeatures(placedShort.model, setLong, [PARTS_LONG_TEXT_VALUES_FEATURE]).ok).toBe(true);
+
+    // 2. Viewport north-arrow offset gate on place_viewport and set_viewport_north_arrow
+    const withSheetAndView = runCmds(base, [
+      { type: "create_sheet", sheetId: "sh-1", number: "A-101", name: "Plan" },
+      { type: "create_view", viewId: "vw-1", name: "L1 Plan", viewType: "floor_plan", props: { level: "Level 1" } },
+    ]);
+    const placeWithOffset: Command = {
+      type: "place_viewport",
+      viewportId: "vp-1",
+      sheetId: "sh-1",
+      viewId: "vw-1",
+      center: { x: 400, y: 300 },
+      northArrowOffsetMm: { x: -10, y: -10 },
+    };
+    expect(runWithFeatures(withSheetAndView, placeWithOffset, []).ok).toBe(false);
+    const placedVp = runWithFeatures(withSheetAndView, { ...placeWithOffset, northArrowOffsetMm: undefined }, []);
+    expect(placedVp.ok).toBe(true);
+    if (!placedVp.ok) return;
+
+    // Legacy show toggle stays allowed; offset-only update requires VIEWPORT_NORTH_ARROW_OFFSET_FEATURE
+    expect(runWithFeatures(placedVp.model, { type: "set_viewport_north_arrow", viewportId: "vp-1", show: false }, []).ok).toBe(true);
+    expect(runWithFeatures(placedVp.model, { type: "set_viewport_north_arrow", viewportId: "vp-1", offsetMm: { x: -12, y: -8 } }, []).ok).toBe(false);
+    expect(runWithFeatures(placedVp.model, { type: "set_viewport_north_arrow", viewportId: "vp-1", offsetMm: { x: -12, y: -8 } }, [VIEWPORT_NORTH_ARROW_OFFSET_FEATURE]).ok).toBe(true);
   });
 });

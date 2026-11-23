@@ -1057,7 +1057,7 @@ function drawPlan(
   }
   const bgParts = maskedRunOwners.size > 0 ? deferredParts.filter((dp) => isBackgroundPart(dp.el, top.get(dp.el.id))) : [];
   const fgParts = maskedRunOwners.size > 0 ? deferredParts.filter((dp) => !isBackgroundPart(dp.el, top.get(dp.el.id))) : deferredParts;
-  if (bgParts.length > 0) drawPartList(bgParts, { index, top });
+  const bgStart = bgParts.length > 0 ? drawPartList(bgParts, { index, top }) : -1;
   for (const l of pending) {
     if (!hidesEdges(style)) {
       lineIn(p, l.a, l.b, l.pen, l.tone, l.dash);
@@ -1077,7 +1077,8 @@ function drawPlan(
     const vis = splitHidden({ u: t.at.x - 0.5, v: t.at.y, near }, { u: t.at.x + 0.5, v: t.at.y, near }, index, () => near);
     if (vis.visible.length > 0) emitInline(t);
   }
-  return drawPartList(fgParts);
+  const fgStart = drawPartList(fgParts);
+  return bgStart >= 0 ? bgStart : fgStart;
 }
 
 /**
