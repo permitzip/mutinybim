@@ -57,10 +57,14 @@ export const STEEL_BEAM_BODY: ClassSolidsRow = {
     const endOff = p?.endOffsetMm ?? 0;
     const vAlign = p?.vertical ?? "top";
     const zShift = vAlign === "bottom" ? depth : vAlign === "center" ? depth / 2 : 0;
-    const zTop = ctx.floorMm + (startOff + endOff) / 2 + zShift;
-    const zBot = zTop - depth;
-    const nx = -dy / len;
-    const ny = dx / len;
+    const zTopStart = ctx.floorMm + startOff + zShift;
+    const zBotStart = zTopStart - depth;
+    const dz = endOff - startOff;
+    const ux = dx / len;
+    const uy = dy / len;
+    const tilt = Math.abs(dz) > 1e-6 ? { at: el.start, rise: { x: (dz / len) * ux, y: (dz / len) * uy } } : undefined;
+    const nx = -uy;
+    const ny = ux;
     const strip = (halfW: number): readonly Vec2[] => [
       { x: el.start.x + nx * halfW, y: el.start.y + ny * halfW },
       { x: el.end.x + nx * halfW, y: el.end.y + ny * halfW },
@@ -69,6 +73,7 @@ export const STEEL_BEAM_BODY: ClassSolidsRow = {
     ];
     const flangeOutline = strip(bf / 2);
     const webOutline = strip(tw / 2);
+    const t = tilt ? { tilt0: tilt, tilt1: tilt } : {};
     const parts: ClassSolidPart[] = [
       {
         shape: {
@@ -76,9 +81,9 @@ export const STEEL_BEAM_BODY: ClassSolidsRow = {
           category: "structure",
           role: "architecture",
           blocks: [
-            { outline: flangeOutline, z0: zTop - tf, z1: zTop },
-            { outline: webOutline, z0: zBot + tf, z1: zTop - tf },
-            { outline: flangeOutline, z0: zBot, z1: zBot + tf },
+            { outline: flangeOutline, z0: zTopStart - tf, z1: zTopStart, ...t },
+            { outline: webOutline, z0: zBotStart + tf, z1: zTopStart - tf, ...t },
+            { outline: flangeOutline, z0: zBotStart, z1: zBotStart + tf, ...t },
           ],
         },
       },

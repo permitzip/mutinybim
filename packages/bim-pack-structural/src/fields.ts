@@ -21,7 +21,7 @@ const textOrNull = (v: unknown): string | null => (typeof v === "string" && v.tr
 const dist = (a: Vec2, b: Vec2): number => Math.hypot(b.x - a.x, b.y - a.y);
 
 const READS_TYPE = { elementKinds: ["element_type"] } as const;
-const READS_FRAME = { elementKinds: ["level", "column", "beam", "slab", "component", "part", "element_type"] } as const;
+const READS_FRAME = { elementKinds: ["level", "column", "beam", "slab", "component", "part", "part_type", "element_type"] } as const;
 
 interface LoadPathIndex {
   readonly beams: ReadonlyMap<string, BeamLoadResult>;

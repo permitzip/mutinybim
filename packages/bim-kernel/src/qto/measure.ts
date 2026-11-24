@@ -1,5 +1,6 @@
 import { elementClass } from "../categories/element";
 import { elementTypeValue } from "../elements/types";
+import { elementsOfKind } from "../store";
 import { activePackSet } from "../packs/scope";
 import type { PackSet } from "../packs/set";
 import { polygonAreaAndCentroid } from "../placement/geometric-math";
@@ -188,7 +189,7 @@ const COLUMN_RULE: MeasureRuleDef = {
   measures: [primary(COUNT), { ...LENGTH, from: "column height (base offset to top constraint or height)" }, { key: "qto.volume", kind: "volume", unit: "m3", from: "width × depth × height", label: "Volume" }, MASS_UNIT],
   reads(_el, elements) {
     const ids: string[] = [];
-    for (const other of Object.values(elements)) if (other.kind === "level") ids.push(other.id);
+    for (const other of elementsOfKind(elements, "level")) ids.push(other.id);
     return ids;
   },
   measure(el, elements) {

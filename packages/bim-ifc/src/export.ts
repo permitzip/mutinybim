@@ -4,6 +4,7 @@ import {
   ZONE_PURPOSE_POINT,
   activeClassRegistry,
   activeServiceRegistry,
+  classSolidsOf,
   gridAxisFamily,
   fieldProviderRegistry,
   hostLineOf,
@@ -612,12 +613,22 @@ export function exportIfc(opts: IfcExportOptions): IfcExportResult {
       const depth = line?.widthMm ?? 0;
       const placement = geo.placement(frame, geo.turned({ x: el.position.x, y: el.position.y, z: hostBase + sill }, angle));
       const body = el.width > 0 && el.height > 0 && depth > 0 ? geo.box({ x: -el.width / 2, y: -depth / 2, z: 0 }, { x: el.width / 2, y: depth / 2, z: el.height }) : null;
-      const rawDoorOp = el.openingType === "door" ? elementTypeValue(els, el, "architecture.door_operation") : undefined;
+      const resolveIfcDoorOp = (): string => {
+        const op = elementTypeValue(els, el, "architecture.door_operation");
+        if (typeof op === "string" && op.trim()) return op.trim().toUpperCase();
+        const hand = elementTypeValue(els, el, "architecture.door_handing");
+        if (typeof hand === "string") {
+          const h = hand.trim().toUpperCase();
+          if (h === "RH" || h === "RHR") return "SINGLE_SWING_RIGHT";
+          if (h === "LH" || h === "LHR") return "SINGLE_SWING_LEFT";
+        }
+        return "SINGLE_SWING_LEFT";
+      };
       const rawWinPart = el.openingType === "window" ? elementTypeValue(els, el, "architecture.window_partitioning") : undefined;
       const extraOpening: Record<string, number | string> = {
         OverallWidth: el.width,
         OverallHeight: el.height,
-        ...(typeof rawDoorOp === "string" && rawDoorOp.trim() ? { OperationType: rawDoorOp.trim().toUpperCase() } : {}),
+        ...(el.openingType === "door" ? { OperationType: resolveIfcDoorOp() } : {}),
         ...(typeof rawWinPart === "string" && rawWinPart.trim() ? { PartitioningType: rawWinPart.trim().toUpperCase() } : {}),
       };
       product = writeElement(el, cls, el.mark.trim() || null, el.mark.trim() || null, placement, body, extraOpening);
@@ -673,13 +684,49 @@ export function exportIfc(opts: IfcExportOptions): IfcExportResult {
       const dy = el.end.y - el.start.y;
       const len = Math.hypot(dx, dy);
       const p = el.placement?.kind === "line" ? el.placement : null;
-      const depth = 400;
-      const width = 180;
-      const avgOff = p ? (p.startOffsetMm + p.endOffsetMm) / 2 : 0;
+      let depth = 400;
+      let width = 180;
+      const classParts = classSolidsOf(el, { elements: els, floorMm: 0 }, activeClassRegistry());
+      if (classParts && classParts.length > 0 && len > 1e-3) {
+        const nx = -dy / len;
+        const ny = dx / len;
+        let minZ = Infinity;
+        let maxZ = -Infinity;
+        let minW = Infinity;
+        let maxW = -Infinity;
+        for (const part of classParts) {
+          const blocks = part.shape.form === "prisms" ? part.shape.blocks : part.shape.form === "prism" ? [part.shape] : [];
+          for (const b of blocks) {
+            minZ = Math.min(minZ, b.z0);
+            maxZ = Math.max(maxZ, b.z1);
+            for (const q of b.outline) {
+              const proj = (q.x - el.start.x) * nx + (q.y - el.start.y) * ny;
+              minW = Math.min(minW, proj);
+              maxW = Math.max(maxW, proj);
+            }
+          }
+        }
+        if (Number.isFinite(minZ) && Number.isFinite(maxZ) && maxZ - minZ > 1) depth = maxZ - minZ;
+        if (Number.isFinite(minW) && Number.isFinite(maxW) && maxW - minW > 1) width = maxW - minW;
+      }
+      const startOff = p?.startOffsetMm ?? 0;
+      const endOff = p?.endOffsetMm ?? 0;
       const vAlign = p?.vertical ?? "top";
-      const zBot = vAlign === "bottom" ? avgOff : vAlign === "center" ? avgOff - depth / 2 : avgOff - depth;
-      const placement = geo.placement(frame, geo.turned({ x: el.start.x, y: el.start.y, z: zBot }, (Math.atan2(dy, dx) * 180) / Math.PI));
-      const body = len > 0 ? geo.strip(len, width, depth) : null;
+      const zShift = vAlign === "bottom" ? depth : vAlign === "center" ? depth / 2 : 0;
+      const isSloped = Math.abs(endOff - startOff) > 1e-3;
+      const placement = isSloped
+        ? geo.placement(frame, geo.axis({ x: 0, y: 0, z: 0 }))
+        : geo.placement(frame, geo.turned({ x: el.start.x, y: el.start.y, z: startOff + zShift - depth }, (Math.atan2(dy, dx) * 180) / Math.PI));
+      const body =
+        len > 0
+          ? isSloped
+            ? geo.sweep(
+                { x: el.start.x, y: el.start.y, z: startOff + zShift - depth / 2 },
+                { x: el.end.x, y: el.end.y, z: endOff + zShift - depth / 2 },
+                { width, height: depth },
+              )
+            : geo.strip(len, width, depth)
+          : null;
       const mark = stringField(el, "mark") ?? (typeof el.values?.mark === "string" && el.values.mark.trim() ? el.values.mark.trim() : null);
       const name = mark ?? (el.sectionName.trim() || null);
       product = writeElement(el, cls, name, mark, placement, body);
@@ -692,7 +739,7 @@ export function exportIfc(opts: IfcExportOptions): IfcExportResult {
       const placement = p ? geo.placement(frame, geo.turned({ x: p.x, y: p.y, z: p.z + offsetZ }, rotation)) : null;
       let body: StepRef | null = null;
       if (el.kind === "component" && el.category === "footing" && el.size.x > 0 && el.size.y > 0) {
-        const rawThick = el.values?.["struct.footing_thickness_mm"];
+        const rawThick = elementTypeValue(els, el, "struct.footing_thickness_mm");
         const thickMm = typeof rawThick === "number" && Number.isFinite(rawThick) && rawThick > 0 ? rawThick : 18 * 25.4;
         body = geo.box({ x: -el.size.x / 2, y: -el.size.y / 2, z: -thickMm }, { x: el.size.x / 2, y: el.size.y / 2, z: 0 });
       }

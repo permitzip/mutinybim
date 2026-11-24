@@ -286,8 +286,10 @@ export function elementSolid(model: ModelState, el: BimElement, floorMm: number)
     }
     case "beam": {
       const d = sub(el.end, el.start);
-      if (Math.hypot(d.x, d.y) < 1e-6) return null;
-      const n = perp(unit(d));
+      const len = Math.hypot(d.x, d.y);
+      if (len < 1e-6) return null;
+      const u = { x: d.x / len, y: d.y / len };
+      const n = perp(u);
       const halfW = 100;
       const depth = 400;
       const p = el.placement?.kind === "line" ? el.placement : null;
@@ -295,14 +297,16 @@ export function elementSolid(model: ModelState, el: BimElement, floorMm: number)
       const endOff = p?.endOffsetMm ?? 0;
       const vAlign = p?.vertical ?? "top";
       const zShift = vAlign === "bottom" ? depth : vAlign === "center" ? depth / 2 : 0;
-      const zTop = floorMm + (startOff + endOff) / 2 + zShift;
+      const zTopStart = floorMm + startOff + zShift;
+      const dz = endOff - startOff;
+      const tilt = Math.abs(dz) > 1e-6 ? { at: el.start, rise: { x: (dz / len) * u.x, y: (dz / len) * u.y } } : undefined;
       const outline = [
         { x: el.start.x + n.x * halfW, y: el.start.y + n.y * halfW },
         { x: el.end.x + n.x * halfW, y: el.end.y + n.y * halfW },
         { x: el.end.x - n.x * halfW, y: el.end.y - n.y * halfW },
         { x: el.start.x - n.x * halfW, y: el.start.y - n.y * halfW },
       ];
-      return { owner: el.id, category: "structure", role: BUILDING_ROLE, pieces: [prism(outline, zTop - depth, zTop)] };
+      return { owner: el.id, category: "structure", role: BUILDING_ROLE, pieces: [prism(outline, zTopStart - depth, zTopStart, tilt, tilt)] };
     }
     case "load_point": {
       // A short octagonal stub at its pipe end ("nub"), so it shows and can be picked in 3D.

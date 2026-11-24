@@ -176,9 +176,11 @@ function profiledBlocks(j: LineJoins, spans: readonly Span[], profile: readonly 
     for (const s of spans) {
       if (s.b <= st.a || s.a >= st.b) continue;
       block(from, s.a, st.base, baseTilt, st.top, topTilt);
-      // A sill follows the base; a head is level, from the base under the void's middle.
-      if (s.lo > 0) block(s.a, s.b, st.base, baseTilt, st.base + s.lo, baseTilt);
-      block(s.a, s.b, baseAt((s.a + s.b) / 2) + s.hi, undefined, st.top, topTilt);
+      // Both sill and head of a hosted opening are level, anchored from the wall base under the void's midpoint
+      // so the wall cutout and horizontal door/window frame align cleanly at both jambs even over a sloped wall base.
+      const midBase = baseAt((s.a + s.b) / 2);
+      if (s.lo > 0) block(s.a, s.b, st.base, baseTilt, midBase + s.lo, undefined);
+      block(s.a, s.b, midBase + s.hi, undefined, st.top, topTilt);
       from = Math.max(from, s.b);
     }
     block(from, Infinity, st.base, baseTilt, st.top, topTilt);

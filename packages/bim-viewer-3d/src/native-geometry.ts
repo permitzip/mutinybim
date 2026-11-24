@@ -653,9 +653,10 @@ function rawElementSolids(el: BimElement, rules: ElevationRules = DEFAULT_ELEVAT
       const baseZ = span ? span.baseZMm : floor + (el.placement?.kind === "point" ? el.placement.offsetMm : 0);
       let colH = span ? span.heightMm : (typeof el.height === "number" && el.height > 0 ? el.height : rules.floorToFloorMm);
       const hasExplicitTopOffset = (el.placement?.kind === "point" || el.placement?.kind === "line") && el.placement.topOffsetMm !== undefined && el.placement.topOffsetMm !== 0;
+      const isLevelTiedOrInferred = span !== null && span.topLevelId !== null;
       const topZ = baseZ + colH;
-      // Stop cleanly at the underside of an overhead slab at the column's top level when no explicit top offset already accounts for it.
-      if (model && !hasExplicitTopOffset) {
+      // Stop cleanly at the underside of an overhead slab at the column's top level when level-tied/inferred and no explicit top offset already accounts for it.
+      if (model && isLevelTiedOrInferred && !hasExplicitTopOffset) {
         for (const slab of elementsOfKind(model.elements, "slab")) {
           if (Math.abs(floorOf(slab, rules, model) - topZ) > 50) continue;
           const xs = slab.outline.map((q) => q.x);
@@ -674,18 +675,21 @@ function rawElementSolids(el: BimElement, rules: ElevationRules = DEFAULT_ELEVAT
           shape: "box",
           center: kernelToScene(el.position.x, el.position.y, baseZ + colH / 2),
           size: [el.size.x * MM, colH * MM, el.size.y * MM],
-          yaw: (-rotDeg * Math.PI) / 180,
+          yaw: (rotDeg * Math.PI) / 180,
         },
       ];
     }
     case "beam": {
       const dx = el.end.x - el.start.x;
       const dy = el.end.y - el.start.y;
-      const len = Math.hypot(dx, dy);
-      if (len === 0) return [];
+      const planLen = Math.hypot(dx, dy);
+      if (planLen === 0) return [];
       const depth = 400;
       const width = 200;
       const p = el.placement?.kind === "line" ? el.placement : null;
+      const dz = p ? p.endOffsetMm - p.startOffsetMm : 0;
+      const len3D = Math.hypot(planLen, dz);
+      const pitch = Math.abs(dz) > 1e-6 ? Math.atan2(dz, planLen) : 0;
       const centerZ = p
         ? floor + (p.startOffsetMm + p.endOffsetMm) / 2 + (p.vertical === "bottom" ? depth / 2 : p.vertical === "center" ? 0 : -depth / 2)
         : floor + rules.floorToFloorMm - 300;
@@ -697,8 +701,9 @@ function rawElementSolids(el: BimElement, rules: ElevationRules = DEFAULT_ELEVAT
           group: "structure",
           shape: "box",
           center: kernelToScene((el.start.x + el.end.x) / 2, (el.start.y + el.end.y) / 2, centerZ),
-          size: [len * MM, h * MM, w * MM],
+          size: [len3D * MM, h * MM, w * MM],
           yaw: planAngleToSceneYaw(dx, dy),
+          ...(pitch !== 0 ? { pitch } : {}),
         },
       ];
     }

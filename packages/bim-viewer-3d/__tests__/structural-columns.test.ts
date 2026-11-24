@@ -68,4 +68,27 @@ describe("bim-viewer-3d structural column vertical spans", () => {
     expect(tallZ.minZ).toBeCloseTo(0, 0);
     expect(tallZ.maxZ).toBeCloseTo(Math.round(24 * FT) - 200, 0);
   });
+
+  it("preserves explicit untied column height under a slab, uses positive CCW yaw on fallback columns, and pitches sloped beams", () => {
+    const m2 = withUpgradePolicy(
+      () => true,
+      () =>
+        run({ modelId: "viewer-col-edge", revision: 0 as Revision, elements: {}, connections: [], settings: DEFAULT_SETTINGS }, [
+          { type: "create_level", levelId: "L1", name: "Level 1", elevationMm: 0 },
+          { type: "create_level", levelId: "L2", name: "Level 2", elevationMm: 2000 },
+          { type: "create_element", elementId: "slab-2", levelId: "L2", kind: "slab", size: { thicknessMm: 200 }, placement: { kind: "area", outline: [{ x: -1000, y: -1000 }, { x: 5000, y: -1000 }, { x: 5000, y: 5000 }, { x: -1000, y: 5000 }] } },
+          { type: "create_element", elementId: "col-fixed-rot", levelId: "L1", kind: "column", placement: { kind: "point", position: { x: 1000, y: 1000 }, rotationDeg: 30 }, size: { widthMm: 300, depthMm: 200, heightMm: 2000 } },
+          { type: "create_element", elementId: "bm-sloped", levelId: "L1", kind: "beam", placement: { kind: "line", start: { x: 0, y: 0 }, end: { x: 4000, y: 0 } } },
+          { type: "set_element_placement", elementId: "bm-sloped", placement: { kind: "line", levelId: "L1", start: { x: 0, y: 0 }, end: { x: 4000, y: 0 }, startOffsetMm: 0, endOffsetMm: 1000, lateral: "center", vertical: "top" } },
+        ]),
+    );
+    const colSolids = elementSolids(m2.elements["col-fixed-rot"]!, DEFAULT_ELEVATIONS, m2);
+    expect(colSolids).toHaveLength(1);
+    expect(zBoundsMmOfSolids(colSolids).maxZ).toBeCloseTo(2000, 0);
+    expect(colSolids[0]?.yaw).toBeCloseTo((30 * Math.PI) / 180, 5);
+
+    const bmSolids = elementSolids(m2.elements["bm-sloped"]!, DEFAULT_ELEVATIONS, m2);
+    expect(bmSolids).toHaveLength(1);
+    expect(bmSolids[0]?.pitch).toBeCloseTo(Math.atan2(1000, 4000), 5);
+  });
 });

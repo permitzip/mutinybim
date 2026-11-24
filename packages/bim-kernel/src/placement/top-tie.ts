@@ -92,9 +92,10 @@ export function columnVerticalSpan(
     const lineTop = levelZ + Math.max(p.startOffsetMm, p.endOffsetMm);
     if (lineTop > baseZMm) return { baseZMm, topZMm: lineTop, heightMm: lineTop - baseZMm, topLevelId: null };
   }
+  const searchAbove = Math.max(levelZ, baseZMm);
   let nextLevel: Level | null = null;
   for (const l of elementsOfKind(elements, "level")) {
-    if (l.elevationMm > baseZMm + 1 && (!nextLevel || l.elevationMm < nextLevel.elevationMm)) nextLevel = l;
+    if (l.elevationMm > searchAbove + 1 && (!nextLevel || l.elevationMm < nextLevel.elevationMm)) nextLevel = l;
   }
   if (nextLevel) {
     return { baseZMm, topZMm: nextLevel.elevationMm, heightMm: nextLevel.elevationMm - baseZMm, topLevelId: nextLevel.id };

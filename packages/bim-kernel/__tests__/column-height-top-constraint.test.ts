@@ -7,17 +7,20 @@
  * annotations, picking, and QTO measurements.
  */
 import {
+  buildViewPickIndex,
   buildViewScene,
   columnVerticalSpan,
   DEFAULT_SETTINGS,
   executeCommand,
   measuredValue,
+  pickAt,
   validateModel,
   withUpgradePolicy,
   type Column,
   type Command,
   type ModelState,
   type Revision,
+  type ViewElement,
 } from "../src";
 import { elementSolid } from "../src/drawing/solids";
 
@@ -159,9 +162,25 @@ describe("column height and top-level constraints", () => {
     expect(Math.min(...zs)).toBe(0);
     expect(Math.max(...zs)).toBe(Math.round(24 * FT) - 200);
 
-    // L2 plan should include the continuous L1→ROOF column cutting through L2 (4 rotated outline edges).
+    // L2 plan should include the continuous L1→ROOF column cutting through L2 (4 rotated outline edges) AND make it pickable.
     const { scene } = buildViewScene(m, "view-l2");
     const lines = scene.primitives.filter((p) => p.kind === "line");
     expect(lines.length).toBeGreaterThanOrEqual(4);
+    const pickIdx = buildViewPickIndex(m, m.elements["view-l2"] as ViewElement);
+    expect(pickAt(pickIdx, { x: 2000, y: 2000 }, 50)).toContain("col-2story");
+  });
+
+  it("does not truncate an untied column with negative baseOffsetMm at its own level", () => {
+    const m = withUpgradePolicy(
+      () => true,
+      () =>
+        run(baseModel(), [
+          { type: "create_element", elementId: "col-neg", levelId: "L1", kind: "column", placement: { kind: "point", position: { x: 1000, y: 1000 } }, baseOffsetMm: -500, size: { widthMm: 300, depthMm: 300 } },
+        ]),
+    );
+    const span = columnVerticalSpan(m.elements, m.elements["col-neg"] as Column, 0);
+    expect(span.baseZMm).toBe(-500);
+    expect(span.topZMm).toBe(Math.round(12 * FT));
+    expect(span.heightMm).toBe(Math.round(12 * FT) + 500);
   });
 });

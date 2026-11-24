@@ -1,5 +1,6 @@
 import type { Rect } from "../crop";
 import { otherLevelElementsInRange, viewCropAndWindow } from "../drawing/views";
+import { columnVerticalSpan } from "../placement/top-tie";
 import { partPlanOutline } from "../drawing/runs";
 import { elementSolid, hull2 } from "../drawing/solids";
 import { spaceOutlines, outlineAreaMm2 } from "../spaces/space-geometry";
@@ -377,7 +378,15 @@ function shownFilter(model: ModelState, view: ViewElement): (el: BimElement) => 
       if (view.viewType !== "ceiling_plan") return false;
       if (level && el.levelId !== level.id) return false;
     } else if (names && !names.has((el.partition ?? DEFAULT_PARTITION).level) && !reached?.has(el.id)) {
-      return false;
+      // Match `drawing/views.ts`: continuous columns spanning across this plan's level remain pickable.
+      let spansLevel = false;
+      if (el.kind === "column" && level && (view.viewType === "floor_plan" || view.viewType === "ceiling_plan")) {
+        const ownLvl = el.placement?.levelId ? model.elements[el.placement.levelId] : undefined;
+        const ownFloorMm = ownLvl?.kind === "level" ? ownLvl.elevationMm : 0;
+        const span = columnVerticalSpan(model.elements, el, ownFloorMm);
+        spansLevel = span.baseZMm < level.elevationMm - 1 && span.topZMm > level.elevationMm + 1;
+      }
+      if (!spansLevel) return false;
     }
     if (!elementLook(model, view, el).visible) return false;
     return display(el).visible;
