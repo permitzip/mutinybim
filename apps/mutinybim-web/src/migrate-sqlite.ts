@@ -1,5 +1,5 @@
 /**
- * One-shot, idempotent migration of app metadata from local SQLite (`<dataDir>/web.sqlite`)
+ * One-shot, idempotent migration of app metadata from local SQLite (`<dataDir>/accounts.sqlite`)
  * into Supabase Postgres (PostgREST). Run before enabling `MUTINYBIM_WEB_SUPABASE_SECRET_KEY`
  * on a deployment that already has accounts or models in SQLite:
  *
@@ -325,7 +325,8 @@ export async function migrateSqliteToSupabase(options: MigrateOptions): Promise<
 async function main(): Promise<void> {
   const dryRun = process.argv.includes("--dry-run");
   const dataDir = path.resolve(process.env.MUTINYBIM_WEB_DATA ?? "mutinybim-web-data");
-  const sqlitePath = path.join(dataDir, "web.sqlite");
+  const sqliteArg = process.argv.find((a) => a.startsWith("--sqlite="))?.slice("--sqlite=".length);
+  const sqlitePath = sqliteArg ? path.resolve(sqliteArg) : path.join(dataDir, "accounts.sqlite");
   const supabaseUrl = process.env.MUTINYBIM_WEB_SUPABASE_URL?.trim();
   const secretKey = process.env.MUTINYBIM_WEB_SUPABASE_SECRET_KEY?.trim();
   if (!supabaseUrl || !secretKey) {

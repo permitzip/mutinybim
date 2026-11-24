@@ -334,7 +334,7 @@ test("configured provider domains show a dismissible opt-in link prompt on My mo
 });
 
 test("migrateSqliteToSupabase copies records and remaps foreign keys when an email already exists in Postgres", async () => {
-  const sqlitePath = path.join(dataDir, "web.sqlite");
+  const sqlitePath = path.join(dataDir, "accounts.sqlite");
   const sqlite = openDb(sqlitePath);
   const legacyUser = await sqlite.createUser({
     id: "00000000-0000-4000-8000-000000000001",
