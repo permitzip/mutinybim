@@ -163,4 +163,28 @@ describe("c5x simple-beam elastic deflection (Euler–Bernoulli, superposed Tabl
       expect(() => simpleBeam({ ...base, elasticModulus: ksi(29000), momentOfInertia: bad as Quantity<"second_moment_of_area"> })).toThrow("The moment of inertia (I) must be a finite number greater than zero");
     }
   });
+
+  it("refuses flexural rigidity that underflows or overflows", () => {
+    const base = { span: span(20), uniform: plf(500) };
+    expect(() => simpleBeam({ ...base, elasticModulus: Number.MIN_VALUE as Quantity<"stress">, momentOfInertia: Number.MIN_VALUE as Quantity<"second_moment_of_area"> })).toThrow("The flexural rigidity (E·I) must be finite and greater than zero");
+    expect(() => simpleBeam({ ...base, elasticModulus: Number.MAX_VALUE as Quantity<"stress">, momentOfInertia: 2 as Quantity<"second_moment_of_area"> })).toThrow("The flexural rigidity (E·I) must be finite and greater than zero");
+  });
+
+  it("refuses a deflection that is not representable as a finite number", () => {
+    expect(() => simpleBeam({ span: span(20), uniform: plf(500), elasticModulus: Number.MIN_VALUE as Quantity<"stress">, momentOfInertia: 1 as Quantity<"second_moment_of_area"> })).toThrow("The calculated deflection is not representable as a finite number");
+  });
+
+  it("handles signed mixed loading with a challenging moment-root scale", () => {
+    const r = simpleBeam({
+      span: 1_000_000 as Quantity<"length">,
+      uniform: 1e-300 as Quantity<"line_load">,
+      pointLoads: [{ load: 1e6 as Quantity<"force">, at: 1 as Quantity<"length"> }, { load: -1e6 as Quantity<"force">, at: 999_999 as Quantity<"length"> }],
+      elasticModulus: 1 as Quantity<"stress">,
+      momentOfInertia: 1 as Quantity<"second_moment_of_area">,
+    });
+    expect(Number.isFinite(r.maxDeflection!)).toBe(true);
+    expect(Number.isFinite(r.maxDeflectionAt!)).toBe(true);
+    expect(to(r.maxDeflectionAt!, "m")).toBeGreaterThan(0);
+    expect(to(r.maxDeflectionAt!, "m")).toBeLessThan(1_000_000);
+  });
 });

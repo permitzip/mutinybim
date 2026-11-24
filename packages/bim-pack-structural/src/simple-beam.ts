@@ -77,6 +77,8 @@ export function simpleBeam(input: SimpleBeamInput): SimpleBeamResult {
   }
   if (E !== undefined && !(Number.isFinite(E) && E > 0)) throw new SimpleBeamInputError("The modulus of elasticity (E) must be a finite number greater than zero");
   if (I !== undefined && !(Number.isFinite(I) && I > 0)) throw new SimpleBeamInputError("The moment of inertia (I) must be a finite number greater than zero");
+  const EI = E !== undefined && I !== undefined ? E * I : undefined;
+  if (EI !== undefined && !(Number.isFinite(EI) && EI > 0)) throw new SimpleBeamInputError("The flexural rigidity (E·I) must be finite and greater than zero");
   for (const p of loads) {
     if (p.at < 0 || p.at > L) throw new SimpleBeamInputError(`A point load${p.label ? ` (${p.label})` : ""} sits ${to(p.at, "ft").toFixed(2)} ft from the start, outside the ${to(L, "ft").toFixed(2)} ft span`);
   }
@@ -111,7 +113,7 @@ export function simpleBeam(input: SimpleBeamInput): SimpleBeamResult {
     }
   }
   consider(L);
-  const deflection = E !== undefined && I !== undefined ? peakDeflection(L, w, loads, E * I, rStart) : null;
+  const deflection = EI !== undefined ? peakDeflection(L, w, loads, EI, rStart) : null;
   return {
     startReaction: fromCanonical("force", rStart),
     endReaction: fromCanonical("force", rEnd),
@@ -150,7 +152,9 @@ function peakDeflection(L: number, w: number, loads: readonly PointLoad[], EI: n
         v += (p.load * a * u * (L * L - a * a - u * u)) / (6 * L);
       }
     }
-    return v / EI;
+    const result = v / EI;
+    if (!Number.isFinite(result)) throw new SimpleBeamInputError("The calculated deflection is not representable as a finite number");
+    return result;
   };
   const slopeAt = (x: number): number => {
     let t = (w * (L ** 3 - 6 * L * x * x + 4 * x ** 3)) / 24;
@@ -163,7 +167,7 @@ function peakDeflection(L: number, w: number, loads: readonly PointLoad[], EI: n
         t -= (p.load * a * (L * L - a * a - 3 * u * u)) / (6 * L);
       }
     }
-    return t / EI;
+    return t;
   };
   let best = { v: 0, x: 0 };
   const consider = (x: number) => {
@@ -188,14 +192,7 @@ function peakDeflection(L: number, w: number, loads: readonly PointLoad[], EI: n
     const qa = -w / 2;
     const qb = rStart - sumP;
     const qc = sumPa;
-    const zeros: number[] = [];
-    if (qa !== 0) {
-      const disc = qb * qb - 4 * qa * qc;
-      if (disc >= 0) {
-        const s = Math.sqrt(disc);
-        zeros.push((-qb - s) / (2 * qa), (-qb + s) / (2 * qa));
-      }
-    } else if (qb !== 0) zeros.push(-qc / qb);
+    const zeros = quadraticRoots(qa, qb, qc);
     const knots = [x0, ...zeros.filter((z) => z > x0 && z < x1).sort((p, q) => p - q), x1];
     for (let k = 0; k < knots.length - 1; k++) {
       let lo = knots[k] ?? x0;
@@ -230,6 +227,24 @@ function peakDeflection(L: number, w: number, loads: readonly PointLoad[], EI: n
   }
   consider(L);
   return best;
+}
+
+/** Real roots of ax² + bx + c, with scaling and a cancellation-resistant q formula. */
+function quadraticRoots(a: number, b: number, c: number): number[] {
+  if (a === 0) return b === 0 ? [] : [-c / b];
+  if (b === 0 && c === 0) return [0];
+  const scale = Math.max(Math.abs(a), Math.abs(b), Math.abs(c));
+  if (!(scale > 0) || !Number.isFinite(scale)) return [];
+  const as = a / scale;
+  const bs = b / scale;
+  const cs = c / scale;
+  const discriminant = bs * bs - 4 * as * cs;
+  if (discriminant < 0) return [];
+  const rootDiscriminant = Math.sqrt(discriminant);
+  if (rootDiscriminant === 0) return [-bs / (2 * as)];
+  const q = -0.5 * (bs + (bs >= 0 ? rootDiscriminant : -rootDiscriminant));
+  if (q === 0) return [-bs / (2 * as)];
+  return [q / as, cs / q];
 }
 
 // ---------------------------------------------------------------------------
