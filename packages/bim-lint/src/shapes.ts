@@ -1,4 +1,6 @@
 import {
+  columnVerticalSpan,
+  wallBaseAtMm,
   ductOuterSize,
   mountedPositions,
   partConvexPieces,
@@ -265,7 +267,9 @@ export function elementShape(elements: Elements, el: BimElement, levelElevationB
       const nx = (-dy / l) * (el.thickness / 2);
       const ny = (dx / l) * (el.thickness / 2);
       const named = levelElevationByName(el.partition?.level ?? "");
-      const floor = named ?? 0;
+      const hasPlacementLevel = el.placement?.kind === "line" && Boolean(el.placement.levelId) && elements[el.placement.levelId]?.kind === "level";
+      const floor = hasPlacementLevel && el.placement?.kind === "line" ? levelElevation(elements, el.placement.levelId) : (named ?? 0);
+      const baseZ = floor + wallBaseAtMm(el, l / 2);
       const height = el.height > 0 ? el.height : DEFAULT_WALL_HEIGHT_MM;
       const outline = [
         { x: el.start.x + nx, y: el.start.y + ny },
@@ -273,14 +277,50 @@ export function elementShape(elements: Elements, el: BimElement, levelElevationB
         { x: el.end.x - nx, y: el.end.y - ny },
         { x: el.start.x - nx, y: el.start.y - ny },
       ];
-      const piece = prismConvex(outline, floor, floor + height);
-      return { role: "architecture", ...(named === null ? { layer: el.partition?.level ?? "" } : {}), box: aabbOfPoints(piece.points), pieces: () => [piece] };
+      const piece = prismConvex(outline, baseZ, baseZ + height);
+      return { role: "architecture", ...(!hasPlacementLevel && named === null ? { layer: el.partition?.level ?? "" } : {}), box: aabbOfPoints(piece.points), pieces: () => [piece] };
     }
     case "column": {
       const named = levelElevationByName(el.partition?.level ?? "");
       const floor = named ?? 0;
-      const box: Aabb = { min: p3(el.position.x - el.size.x / 2, el.position.y - el.size.y / 2, floor), max: p3(el.position.x + el.size.x / 2, el.position.y + el.size.y / 2, floor + DEFAULT_WALL_HEIGHT_MM) };
+      const span = columnVerticalSpan(elements, el, floor, DEFAULT_WALL_HEIGHT_MM);
+      const rad = el.placement?.kind === "point" && el.placement.rotationDeg ? (el.placement.rotationDeg * Math.PI) / 180 : 0;
+      if (Math.abs(rad) > 1e-6) {
+        const cos = Math.cos(rad);
+        const sin = Math.sin(rad);
+        const hx = el.size.x / 2;
+        const hy = el.size.y / 2;
+        const rot = (dx: number, dy: number) => ({ x: el.position.x + dx * cos - dy * sin, y: el.position.y + dx * sin + dy * cos });
+        const piece = prismConvex([rot(-hx, -hy), rot(hx, -hy), rot(hx, hy), rot(-hx, hy)], span.baseZMm, span.topZMm);
+        return { role: "structure", ...(named === null ? { layer: el.partition?.level ?? "" } : {}), box: aabbOfPoints(piece.points), pieces: () => [piece] };
+      }
+      const box: Aabb = { min: p3(el.position.x - el.size.x / 2, el.position.y - el.size.y / 2, span.baseZMm), max: p3(el.position.x + el.size.x / 2, el.position.y + el.size.y / 2, span.topZMm) };
       return { role: "structure", ...(named === null ? { layer: el.partition?.level ?? "" } : {}), box, pieces: () => [boxConvex(box)] };
+    }
+    case "beam": {
+      const dx = el.end.x - el.start.x;
+      const dy = el.end.y - el.start.y;
+      const l = Math.hypot(dx, dy);
+      if (l < 1e-3) return null;
+      const p = el.placement?.kind === "line" ? el.placement : null;
+      const baseLvl = p ? elements[p.levelId] : undefined;
+      const named = baseLvl?.kind === "level" ? baseLvl.elevationMm : levelElevationByName(el.partition?.level ?? "");
+      const floor = named ?? 0;
+      const depth = 400;
+      const halfW = 100;
+      const vAlign = p?.vertical ?? "top";
+      const zShift = vAlign === "bottom" ? depth : vAlign === "center" ? depth / 2 : 0;
+      const zTop = floor + ((p?.startOffsetMm ?? 0) + (p?.endOffsetMm ?? 0)) / 2 + zShift;
+      const nx = (-dy / l) * halfW;
+      const ny = (dx / l) * halfW;
+      const outline = [
+        { x: el.start.x + nx, y: el.start.y + ny },
+        { x: el.end.x + nx, y: el.end.y + ny },
+        { x: el.end.x - nx, y: el.end.y - ny },
+        { x: el.start.x - nx, y: el.start.y - ny },
+      ];
+      const piece = prismConvex(outline, zTop - depth, zTop);
+      return { role: "structure", ...(named === null ? { layer: el.partition?.level ?? "" } : {}), box: aabbOfPoints(piece.points), pieces: () => [piece] };
     }
     case "slab": {
       if (el.outline.length < 3) return null;

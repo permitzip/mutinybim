@@ -1,4 +1,5 @@
 import { lineJoinsOf, type LineJoins } from "../joins/solve";
+import { wallBaseAtMm } from "../placement/surface-bind";
 import { hostedIds } from "../qto/hosted";
 import { tiltedZ, type Tilt } from "../geometry";
 import type { BimElement, Vec2, WallBodyPoint } from "../types";
@@ -187,9 +188,13 @@ function profiledBlocks(j: LineJoins, spans: readonly Span[], profile: readonly 
 
 /** Along-the-host ranges a plan shows as gaps: voids that span the cut height. */
 export function planGapsOf(elements: Elements, hostId: string, cutMm: number = PLAN_CUT_HEIGHT_MM): Array<{ readonly a: number; readonly b: number }> {
+  const host = elements[hostId];
   return hostVoidsOf(elements, hostId)
     .map(spanOf)
-    .filter((s) => s.lo <= cutMm && s.hi >= cutMm && s.b > s.a)
+    .filter((s) => {
+      const base = host ? wallBaseAtMm(host, (s.a + s.b) / 2) : 0;
+      return base + s.lo <= cutMm && base + s.hi >= cutMm && s.b > s.a;
+    })
     .sort((x, y) => x.a - y.a)
     .map((s) => ({ a: s.a, b: s.b }));
 }

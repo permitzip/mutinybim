@@ -30,7 +30,7 @@ import { kindRowOf } from "../kinds/rows";
  */
 
 /** Kinds a person can select in a drawing (annotations belong to the drafting tools). */
-const PICKABLE = new Set<BimElement["kind"]>(["run_segment", "run_fitting", "part", "wall", "column", "opening", "room", "space", "ceiling", "grid"]);
+const PICKABLE = new Set<BimElement["kind"]>(["run_segment", "run_fitting", "part", "wall", "column", "beam", "component", "opening", "room", "space", "ceiling", "grid"]);
 /** Drawn only in plans (a section draws their cut through solids, which these don't have). */
 const PLAN_ONLY = new Set<BimElement["kind"]>(["opening", "room", "space", "ceiling", "grid"]);
 /** Picked only when nothing else is under the pointer (they cover whole rooms and floors). */
