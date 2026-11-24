@@ -28,7 +28,7 @@ describe("createShowcaseDemoModel", () => {
     expect(validateModel(model)).toEqual([]);
 
     const count = (kind: string) => active.filter((el) => el.kind === kind).length;
-    expect(count("level")).toBe(3);
+    expect(count("level")).toBe(4);
     expect(count("wall")).toBeGreaterThanOrEqual(25);
     expect(count("opening")).toBeGreaterThanOrEqual(17);
     expect(count("space")).toBe(9);
@@ -174,7 +174,7 @@ describe("createShowcaseDemoModel", () => {
     }
   });
 
-  it("renders all 19 Arch D sheets cleanly with no unresolved callout references and verified passing normal + egress photometrics", () => {
+  it("renders all 20 Arch D sheets cleanly with no unresolved callout references and verified passing normal + egress photometrics", () => {
     const sheets = active.filter((el): el is Extract<typeof el, { kind: "sheet" }> => el.kind === "sheet");
     expect(sheets.map((s) => s.number).sort()).toEqual([
       "A-101",
@@ -184,6 +184,7 @@ describe("createShowcaseDemoModel", () => {
       "A-201",
       "A-301",
       "A-302",
+      "E-001",
       "E-101",
       "E-102",
       "E-201",
@@ -211,7 +212,11 @@ describe("createShowcaseDemoModel", () => {
 
     for (const sh of sheets) {
       const scene = buildSheetSceneFor(model, sh.id, { projectName: "MutinyBIM Showcase" });
-      expect(scene.primitives.length).toBeGreaterThan(200);
+      if (sh.number === "E-001") {
+        expect(scene.textBlocks?.length ?? 0).toBeGreaterThanOrEqual(2);
+      } else {
+        expect(scene.primitives.length).toBeGreaterThan(200);
+      }
       const svg = sceneToSvg(scene);
       expect(svg).toContain("<svg");
       expect(svg).not.toContain("?? DIMENSION REFERENCE MISSING");
@@ -306,5 +311,86 @@ describe("createShowcaseDemoModel", () => {
     expect(legacy.modelId).toBe("f-a-demo");
     expect(legacyEls.some((el) => el.kind === "duct_segment")).toBe(true);
     expect(legacyEls.some((el) => el.kind === "sheet")).toBe(false);
+  });
+
+  it("showcases floor-hosted floor boxes, view range, per-view hidden elements, filtered >=60A one-line, multi-line leader notes, and locked service gear", () => {
+    const fb1 = model.elements["fb-studio-1"];
+    const fb2 = model.elements["fb-conf-1"];
+    expect(fb1?.kind).toBe("part");
+    expect(fb2?.kind).toBe("part");
+    if (fb1?.kind === "part" && fb2?.kind === "part") {
+      expect(fb1.host).toBeUndefined();
+      expect(fb2.host).toBeUndefined();
+    }
+
+    const mechL1 = model.elements["view-mech-l1"];
+    expect(mechL1?.kind).toBe("view");
+    if (mechL1?.kind === "view") {
+      expect(mechL1.props?.hiddenElementIds).toContain("cafe-island-l1");
+      expect(mechL1.props?.viewTopMm).toBe(Math.round(10 * 304.8));
+    }
+
+    const distOneLine = model.elements["view-oneline-dist"];
+    expect(distOneLine?.kind).toBe("view");
+    if (distOneLine?.kind === "view") {
+      expect(distOneLine.props?.diagram?.hints?.minBreakerA).toBe(60);
+      expect(distOneLine.props?.diagram?.hints?.phaseScope).toBe("new");
+      const ev = evaluateDiagram(model.elements, distOneLine);
+      expect(ev?.items.length ?? 0).toBeGreaterThan(10);
+    }
+
+    expect(model.elements["note-elec-fb1"]?.kind).toBe("drawing_item");
+    expect(model.elements["note-elec-clearance"]?.kind).toBe("drawing_item");
+    expect(model.elements["sheet-e001"]?.kind).toBe("sheet");
+    expect(model.elements["note-e001-general"]?.kind).toBe("drawing_item");
+    expect(model.elements["note-e001-demo"]?.kind).toBe("drawing_item");
+
+    // Verify E-101 renders merged NEC 110.26 working-space clearances cleanly in halftone dashed lines
+    const e101 = buildSheetSceneFor(model, "sheet-e101", { projectName: "MutinyBIM Showcase" });
+    const e101Svg = sceneToSvg(e101);
+    expect(e101Svg).toContain("110.26");
+    expect(e101Svg).toContain('stroke-dasharray="2.2 1.2"');
+
+    // Verify E-001 renders the Standard General Notes library blocks
+    const e001 = buildSheetSceneFor(model, "sheet-e001", { projectName: "MutinyBIM Showcase" });
+    const e001Svg = sceneToSvg(e001);
+    expect(e001Svg).toContain("ELECTRICAL");
+
+    // Verify One-Line diagram renders existing-phase SD-1(E) in halftone and demolished SD-2(D) dashed + halftone
+    const fullOneLine = model.elements["view-oneline"];
+    expect(fullOneLine?.kind).toBe("view");
+    if (fullOneLine?.kind === "view") {
+      const ev = evaluateDiagram(model.elements, fullOneLine);
+      expect(ev?.items.some((it) => it.lineStyle?.tone === "halftone" && it.lineStyle?.pattern !== "dashed")).toBe(true);
+      expect(ev?.items.some((it) => it.lineStyle?.tone === "halftone" && it.lineStyle?.pattern === "dashed")).toBe(true);
+    }
+
+    // Verify Lighting Plan uses 45-degree chamfered wire routing and synced VIA TIME CLOCK home-run callout
+    const ltg = model.elements["view-elec-ltg"];
+    expect(ltg?.kind).toBe("view");
+    if (ltg?.kind === "view") {
+      expect((ltg.props as { circuitGraphics?: { style?: string } } | undefined)?.circuitGraphics?.style).toBe("chamfered");
+    }
+
+    // Verify special-purpose NEMA 6-20R, Twist-Lock, and Hardwired devices + home-run callouts + hideDeviceMarks on E-101
+    expect(model.elements["rec-240v"]?.kind).toBe("part");
+    expect(model.elements["rec-tl"]?.kind).toBe("part");
+    expect(model.elements["hw-mep-1"]?.kind).toBe("part");
+    expect(e101Svg).toContain("240V");
+    expect(e101Svg).toContain("#10 CU");
+    expect(e101Svg).toContain("(BL)");
+    const powerView = model.elements["view-elec-power"];
+    expect(powerView?.kind).toBe("view");
+    if (powerView?.kind === "view") {
+      expect(powerView.props?.hideDeviceMarks).toBe(true);
+    }
+
+    // Verify per-equipment includeEquipmentIds pins RTU-1 (25A) onto the >=60A Distribution One-Line
+    const dist60 = model.elements["view-oneline-dist"];
+    expect(dist60?.kind).toBe("view");
+    if (dist60?.kind === "view") {
+      const ev60 = evaluateDiagram(model.elements, dist60);
+      expect(ev60?.equipment).toContain("rtu-1");
+    }
   });
 });

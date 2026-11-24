@@ -57,10 +57,12 @@ import { drawDimension, drawTag, type AnnotationDrawContext } from "../annotatio
 import { PATTERN_DASH, categoryOf, drawDetailItem } from "../annotation/detailing";
 import type { SheetRevision } from "../documents";
 import type { RunFitting } from "../routing/types";
-import { PartLabelIndex, drawPartSymbol, drawRunFitting, drawRunSegment, isSingleLineRun, partPlanOutline, systemLine, type TextDrawStyle } from "./runs";
+import { PartLabelIndex, drawPartClearancesBatch, drawPartSymbol, drawRunFitting, drawRunSegment, isSingleLineRun, partPlanOutline, systemLine, type BatchedClearanceZone, type TextDrawStyle } from "./runs";
+import { partClearances } from "../spatial";
 import { flexPoints } from "../routing/flex";
 import { INSULATION_DASH, insulationSectionCuts } from "./insulation";
 import { insulationHiddenInView } from "../view-categories";
+import { isBuildingStoryLevel, isRoofDatumLevel } from "../routing/levels-across";
 import { elementCategoryChain, elementLook, elementViewCategory } from "../categories/element";
 import { draftingCategoryId } from "../categories/registry";
 import { DEFAULT_LOOK, categoryLook, hasCategoryOverrides, lookTone, resolveChain, type CategoryLook } from "../categories/resolve";
@@ -465,18 +467,63 @@ export function planViewRangeExcludes(model: ModelState, view: Pick<ViewElement,
 const REACH_EPS_MM = 1;
 
 /**
+ * The automatic upper height limit of a plan view when `viewTopMm` is unset:
+ * - If another building story exists above this level, stop at the lowest
+ *   building story above (multi-story separation).
+ * - Otherwise, if one or more roof levels exist above this level (including
+ *   stepped high-bay roofs like Low Roof / High Roof), reach up to the highest
+ *   roof so high-bay runs beneath a stepped roof are not silently clipped by a
+ *   partial ceiling datum or lower roof.
+ * - Otherwise fall back to `floor + STOREY_REACH_MM`.
+ */
+function planAutoTopLimit(
+  model: ModelState,
+  floorMm: number,
+): { readonly elevationMm: number; readonly levelName: string | null } {
+  let nextStory: { readonly elevationMm: number; readonly name: string } | null = null;
+  let highestRoof: { readonly elevationMm: number; readonly name: string } | null = null;
+  for (const l of modelLevels(model)) {
+    if (l.elevationMm <= floorMm + REACH_EPS_MM) continue;
+    if (isBuildingStoryLevel(l)) {
+      if (!nextStory || l.elevationMm < nextStory.elevationMm) {
+        nextStory = { elevationMm: l.elevationMm, name: l.name };
+      }
+    } else if (isRoofDatumLevel(l)) {
+      if (!highestRoof || l.elevationMm > highestRoof.elevationMm) {
+        highestRoof = { elevationMm: l.elevationMm, name: l.name };
+      }
+    }
+  }
+  if (nextStory) return { elevationMm: nextStory.elevationMm, levelName: nextStory.name };
+  if (highestRoof) return { elevationMm: highestRoof.elevationMm, levelName: highestRoof.name };
+  return { elevationMm: floorMm + STOREY_REACH_MM, levelName: null };
+}
+
+/** Human-readable description of a plan's automatic top limit when `viewTopMm` is unset. */
+export function planAutoTopDescription(
+  model: ModelState,
+  view: Pick<ViewElement, "viewType" | "props">,
+): string | null {
+  const isPlan = view.viewType === "floor_plan" || view.viewType === "ceiling_plan";
+  if (!isPlan || !view.props?.level) return null;
+  const floor = viewFloorMm(model, view.props.level, view.props.levelElevationMm) ?? 0;
+  const auto = planAutoTopLimit(model, floor);
+  const deltaFt = Math.round(((auto.elevationMm - floor) / 304.8) * 10) / 10;
+  return auto.levelName ? `Auto (to ${auto.levelName}, ${deltaFt} ft)` : `Auto (${deltaFt} ft)`;
+}
+
+/**
  * The heights a plan draws other levels' work from, absolute mm: its view
- * range where it sets one; otherwise from its floor up to the next level's
- * floor (or a storey's reach when it is the top level).
+ * range where it sets one; otherwise from its floor up to the next building
+ * story (or highest roof above on a top/single-story floor, else a storey's reach).
  */
 export function planReachRange(model: ModelState, view: Pick<ViewElement, "viewType" | "props">): { readonly lowMm: number; readonly highMm: number } | null {
   const isPlan = view.viewType === "floor_plan" || view.viewType === "ceiling_plan";
   if (!isPlan || !view.props?.level) return null;
   const floor = viewFloorMm(model, view.props.level, view.props.levelElevationMm) ?? 0;
   const range = planHeightRange(view, floor);
-  let next = Infinity;
-  for (const l of modelLevels(model)) if (l.elevationMm > floor + REACH_EPS_MM && l.elevationMm < next) next = l.elevationMm;
-  return { lowMm: range.lowMm ?? floor, highMm: range.highMm ?? (Number.isFinite(next) ? next : floor + STOREY_REACH_MM) };
+  const auto = planAutoTopLimit(model, floor);
+  return { lowMm: range.lowMm ?? floor, highMm: range.highMm ?? auto.elevationMm };
 }
 
 /**
@@ -539,20 +586,54 @@ export function planElements(model: ModelState, view: ViewElement): BimElement[]
   return others.length === 0 ? own : [...own, ...others];
 }
 
+/** Placed parts that actually draw in a plan view (matching discipline, category/element visibility, view range, and organization filters). */
+export function visiblePlanParts(model: ModelState, view: ViewElement): Map<string, PartInstance> {
+  const shown = new Map<string, PartInstance>();
+  if (view.viewType !== "floor_plan" && view.viewType !== "ceiling_plan") return shown;
+  const shownAs = organizationDisplay(model, view);
+  const outsideRange = planViewRangeExcludes(model, view);
+  const reached = new Set<string>();
+  const others: BimElement[] = [];
+  for (const x of otherLevelReach(model, view)) {
+    reached.add(x.el.id);
+    others.push(x.el);
+  }
+  const check = (list: readonly BimElement[]) => {
+    for (const el of list) {
+      if (el.kind !== "part" || el.planned !== undefined) continue;
+      if (leftOutOfDisciplineView(view, el)) continue;
+      if (!elementLook(model, view, el).visible) continue;
+      if (!reached.has(el.id) && outsideRange?.(el)) continue;
+      if (!shownAs(el).visible) continue;
+      shown.set(el.id, el);
+    }
+  };
+  check(levelElements(model, view));
+  if (others.length > 0) check(others);
+  return shown;
+}
+
 /** Lowest and highest point of an element with a body, mm; null for drafting-like kinds that always draw on their level. */
 function elementHeightRange(model: ModelState, el: BimElement, floorMm: number): [number, number] | null {
   if (!kindHasBody(el.kind)) return null;
   const solid = elementSolid(model, el, floorMm);
-  if (!solid) return null;
-  let lo = Infinity;
-  let hi = -Infinity;
-  const take = (z: number) => {
-    if (z < lo) lo = z;
-    if (z > hi) hi = z;
-  };
-  for (const piece of solid.pieces) for (const q of [...piece.r0, ...piece.r1]) take(q.z);
-  if (solid.mesh) for (let i = 2; i < solid.mesh.positions.length; i += 3) take(solid.mesh.positions[i] ?? 0);
-  return Number.isFinite(lo) ? [lo, hi] : null;
+  if (solid) {
+    let lo = Infinity;
+    let hi = -Infinity;
+    const take = (z: number) => {
+      if (z < lo) lo = z;
+      if (z > hi) hi = z;
+    };
+    for (const piece of solid.pieces) for (const q of [...piece.r0, ...piece.r1]) take(q.z);
+    if (solid.mesh) for (let i = 2; i < solid.mesh.positions.length; i += 3) take(solid.mesh.positions[i] ?? 0);
+    if (Number.isFinite(lo)) return [lo, hi];
+  }
+  // A symbol-only part with no 3D solids still sits at its level elevation + offset, so plan view range clips it accurately.
+  if (el.kind === "part" && el.planned === undefined) {
+    const z = ownFloor(model, el, floorMm) + el.offsetMm;
+    return [z, z];
+  }
+  return null;
 }
 
 /** Margin around the window for the quick reject, so ducts and labels straddling the crop edge still draw (and clip). */
@@ -838,6 +919,7 @@ function drawPlan(
   };
   const drawPartList = (list: typeof deferredParts, occlude?: { readonly index: FaceIndex; readonly top: ReadonlyMap<string, number> }): number => {
     const startIdx = list.length > 0 ? p.prims.length : -1;
+    const batchedClearances: BatchedClearanceZone[] = [];
     for (const dp of list) {
       const near = occlude ? occlude.top.get(dp.el.id) : undefined;
       const hasOcclude = occlude !== undefined && near !== undefined;
@@ -865,17 +947,24 @@ function drawPlan(
         partLine = (a, b, pen, dash) => lineIn(p, a, b, dp.projectionPen(pen), dp.tone, dash ?? dp.elementDash);
         partCircle = (c, r, pen) => circleIn(p, c, r, dp.projectionPen(pen), dp.tone, dp.elementDash);
       }
+      const partText = (at: Vec2, text: string, size: number, anchor?: "start" | "middle" | "end", style?: TextDrawStyle) =>
+        textIn(p, at, text, size, anchor ?? "middle", dp.tone, style);
+      const partType = model.elements[dp.el.typeId];
+      const isRepetitiveDevice =
+        partType?.kind === "part_type" &&
+        (partType.definition.category === "electrical_device" || partType.definition.category === "lighting_fixture");
+      const showPartMark = tagsShown && !taggedHere.has(dp.el.id) && !(view.props?.hideDeviceMarks === true && isRepetitiveDevice);
       drawPartSymbol(
         model,
         dp.el,
         partLine,
-        (at, text, size, anchor, style) => textIn(p, at, text, size, anchor ?? "middle", dp.tone, style),
+        partText,
         dp.planSymbol,
         dp.detail,
         {
           scale: frame.scale,
           symbolScale: symScale,
-          showMark: tagsShown && !taggedHere.has(dp.el.id),
+          showMark: showPartMark,
           fill: p.clipPieces
             ? (pts, grey) => {
                 for (const piece of clipFillToPainter(p, pts)) {
@@ -885,9 +974,20 @@ function drawPlan(
             : (pts, grey) => p.prims.push({ kind: "fill", points: pts.map(p.toPaper), grey, ...(dp.tone !== "ink" ? { tone: dp.tone } : {}) }),
           circle: partCircle,
           takenBoxes: takenPartBoxes,
+          skipClearances: true,
         },
       );
+      const clearanceTone = dp.tone === "screened" ? "screened" : "halftone";
+      const clearanceLine: BatchedClearanceZone["line"] = (a, b, pen, dash) => lineIn(p, a, b, pen, clearanceTone, dash);
+      const showClearanceLabels = view.props?.showClearanceLabels !== false;
+      const clearanceText: BatchedClearanceZone["text"] = showClearanceLabels
+        ? (at, text, size, anchor, style) => textIn(p, at, text, size, anchor ?? "middle", clearanceTone, style)
+        : () => {};
+      for (const z of partClearances(model, dp.el)) {
+        batchedClearances.push({ name: z.name, corners: z.corners, line: clearanceLine, text: clearanceText });
+      }
     }
+    if (batchedClearances.length > 0) drawPartClearancesBatch(batchedClearances, frame.scale, takenPartBoxes);
     return startIdx;
   };
   const flushParts = (): number => drawPartList(deferredParts);
@@ -2309,20 +2409,40 @@ function drawItemInModel(p: Painter, item: DrawingItem, a: Vec2, b: Vec2 | undef
   }
   switch (item.shape) {
     case "text": {
-      // The whole box must lie where notes may sit, so nothing prints past the crop.
+      // Plans/sections require the whole note box inside the annotation crop window.
+      // Detail views keep notes whose box or leader target intersects the view window so callouts beside tight geometry crops never vanish on exit.
       const lo = p.toPaper({ x: p.noteMin.x, y: p.noteMax.y });
       const hi = p.toPaper({ x: p.noteMax.x, y: p.noteMin.y });
-      const drawn = noteDrawing(item, p.toPaper, (corners) => corners.every((c) => c.x >= lo.x - 1e-6 && c.x <= hi.x + 1e-6 && c.y >= lo.y - 1e-6 && c.y <= hi.y + 1e-6));
+      const inBox = (pt: Vec2) => pt.x >= lo.x - 1e-6 && pt.x <= hi.x + 1e-6 && pt.y >= lo.y - 1e-6 && pt.y <= hi.y + 1e-6;
+      const fits =
+        ctx.view?.viewType === "detail"
+          ? (corners: readonly Vec2[]) => {
+              let minX = Infinity;
+              let minY = Infinity;
+              let maxX = -Infinity;
+              let maxY = -Infinity;
+              for (const c of corners) {
+                if (c.x < minX) minX = c.x;
+                if (c.y < minY) minY = c.y;
+                if (c.x > maxX) maxX = c.x;
+                if (c.y > maxY) maxY = c.y;
+              }
+              if (maxX >= lo.x - 1e-6 && minX <= hi.x + 1e-6 && maxY >= lo.y - 1e-6 && minY <= hi.y + 1e-6) return true;
+              const leaders = [...(item.note?.leader ? [item.note.leader] : []), ...(item.note?.leaders ?? [])];
+              return leaders.some((l) => inBox(p.toPaper(l.to)) || (l.elbow !== undefined && inBox(p.toPaper(l.elbow))));
+            }
+          : (corners: readonly Vec2[]) => corners.every(inBox);
+      const drawn = noteDrawing(item, p.toPaper, fits);
       if (!drawn) break;
       p.blocks.push(drawn.block);
       for (const pr of drawn.primitives) p.prims.push(pr);
       break;
     }
     case "line":
-      if (b) lineIn(p, a, b, item.lineStyle?.weight ?? "medium", "ink", item.lineStyle?.pattern ? PATTERN_DASH[item.lineStyle.pattern] : undefined);
+      if (b) lineIn(p, a, b, item.lineStyle?.weight ?? "medium", item.lineStyle?.tone ?? "ink", item.lineStyle?.pattern ? PATTERN_DASH[item.lineStyle.pattern] : undefined);
       break;
     case "rect":
-      if (b) polygonIn(p, [a, { x: b.x, y: a.y }, b, { x: a.x, y: b.y }], item.lineStyle?.weight ?? "medium", "ink", item.lineStyle?.pattern ? PATTERN_DASH[item.lineStyle.pattern] : undefined);
+      if (b) polygonIn(p, [a, { x: b.x, y: a.y }, b, { x: a.x, y: b.y }], item.lineStyle?.weight ?? "medium", item.lineStyle?.tone ?? "ink", item.lineStyle?.pattern ? PATTERN_DASH[item.lineStyle.pattern] : undefined);
       break;
     case "dimension":
       if (b) drawLinearDimension(p, a, b, 300, "ink");
@@ -2790,7 +2910,12 @@ export function planAutoPartMarks(model: ModelState, view: ViewElement, frame: V
   const p = painter([], [], [], frame, view, viewCropAndWindow(model, view).crop, []);
   const markParts: { readonly el: PartInstance; readonly planSymbol: boolean | null; readonly detail: DetailLevel }[] = [];
   seedPartLabelObstacles(model, view, p, frame, display, shownAs, candidates, taken, symScale, (el, look) => {
-    if (el.mark && !taggedHere.has(el.id)) markParts.push({ el, planSymbol: look.planSymbol, detail: look.detailLevel ?? display.detail });
+    if (!el.mark || taggedHere.has(el.id)) return;
+    if (view.props?.hideDeviceMarks === true) {
+      const pt = model.elements[el.typeId];
+      if (pt?.kind === "part_type" && (pt.definition.category === "electrical_device" || pt.definition.category === "lighting_fixture")) return;
+    }
+    markParts.push({ el, planSymbol: look.planSymbol, detail: look.detailLevel ?? display.detail });
   });
   const hits: AutoPartMarkHit[] = [];
   const noop = () => {};

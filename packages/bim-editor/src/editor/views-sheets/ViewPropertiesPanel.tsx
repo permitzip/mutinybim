@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { ArrowLeftRight, Scan, Undo2 } from 'lucide-react'
+import { ArrowLeftRight, Eye, Scan, Undo2 } from 'lucide-react'
 import {
   DEFAULT_CUT_HEIGHT_MM,
   STANDARD_SCALES,
@@ -11,9 +11,14 @@ import {
   isViewCategory,
   VISUAL_STYLES,
   VIEW_PROJECTIONS,
+  isBuildingStoryLevel,
+  isRoofDatumLevel,
+  type BimElement,
   type Command,
   type CutPattern,
   type DetailLevel,
+  type Level,
+  type ModelState,
   type Rect,
   type ViewCategory,
   type ViewElement,
@@ -113,13 +118,15 @@ interface Props {
   readonly diagram?: ReactNode
   /** Open the model's Text Types dialog (font, paper height, opaque/transparent background). */
   readonly onOpenTextStyles?: () => void
+  /** Model elements (used to label individually hidden elements so they can be unhidden by name). */
+  readonly elements?: ModelState['elements']
 }
 
 /** The open view's own properties. Each change saves on its own and can be undone. */
 const DRAFTING_LABEL: Record<DraftingCategory, string> = { detail_lines: 'Detail lines', hatching: 'Hatching and fills', masking: 'Masking regions', components: 'Detail components', insulation: 'Insulation', text: 'Text and notes', dimensions: 'Dimensions', tags: 'Tags', clouds: 'Revision clouds' }
 
 /** The on/off settings that tick at once: they show the new value before the view redraws. */
-export type QuickProps = Partial<Pick<ViewPropsPatch, 'hiddenCategories' | 'hiddenDraftingCategories' | 'showHiddenLines' | 'hiddenLineCategories' | 'linkedHiddenLines' | 'showLineCodes' | 'cropView' | 'showCropBox' | 'annotationCrop'>>
+export type QuickProps = Partial<Pick<ViewPropsPatch, 'hiddenCategories' | 'hiddenElementIds' | 'showClearanceLabels' | 'hideDeviceMarks' | 'hiddenDraftingCategories' | 'showHiddenLines' | 'hiddenLineCategories' | 'linkedHiddenLines' | 'showLineCodes' | 'cropView' | 'showCropBox' | 'annotationCrop'>>
 type QuickKey = keyof QuickProps
 type QuickSet = (patch: QuickProps, send: () => string | null) => void
 
@@ -177,7 +184,18 @@ export function useQuickViewProps(view: ViewElement, onRefused: (message: string
   return { view: shown, updating: Object.keys(pending).length > 0, setQuick }
 }
 
-export function ViewPropertiesPanel({ view: saved, canEdit, blockedReason, submit, references, display, onDisplay, onRename, background, hostLevelId = null, levelName = null, phaseFields, crop3d, schedule, diagram, onOpenTextStyles }: Props) {
+function hiddenElementLabel(elements: ModelState['elements'] | undefined, id: string): string {
+  const el: BimElement | undefined = elements?.[id]
+  if (!el) return id
+  if ('mark' in el && typeof el.mark === 'string' && el.mark) return el.mark
+  if (el.kind === 'part') {
+    const type = elements?.[el.typeId]
+    if (type?.kind === 'part_type') return type.definition.typeName
+  }
+  return id
+}
+
+export function ViewPropertiesPanel({ view: saved, canEdit, blockedReason, submit, references, display, onDisplay, onRename, background, hostLevelId = null, levelName = null, phaseFields, crop3d, schedule, diagram, onOpenTextStyles, elements }: Props) {
   const [error, setError] = useState<string | null>(null)
   const quick = useQuickViewProps(saved, setError)
   const view = quick.view
@@ -200,6 +218,10 @@ export function ViewPropertiesPanel({ view: saved, canEdit, blockedReason, submi
   const [simplifyBefore, setSimplifyBefore] = useState<{ readonly linkedMinObjectMm: number } | null>(null)
   const hiddenDrafting = new Set<DraftingCategory>(props.hiddenDraftingCategories ?? [])
   const isPlan = view.viewType === 'floor_plan' || view.viewType === 'ceiling_plan'
+  const levels = useMemo<readonly Level[]>(
+    () => (elements ? Object.values(elements).filter((el): el is Level => el.kind === 'level') : []),
+    [elements],
+  )
   const disabledHint = canEdit ? undefined : blockedReason
 
   return (
@@ -218,6 +240,11 @@ export function ViewPropertiesPanel({ view: saved, canEdit, blockedReason, submi
         <p className="flex items-center gap-1.5 text-xs text-muted-foreground" role="status" aria-live="polite" data-testid="view-updating">
           <Spinner className="size-3" />
           Updating the view…
+        </p>
+      )}
+      {error && (
+        <p className="text-xs text-danger-600" role="alert" data-testid="view-properties-error">
+          {error}
         </p>
       )}
 
@@ -302,7 +329,7 @@ export function ViewPropertiesPanel({ view: saved, canEdit, blockedReason, submi
           </Field>
         )}
 
-        {isPlan && <HeightRangeFields view={view} canEdit={canEdit} set={set} />}
+        {isPlan && <HeightRangeFields view={view} levels={levels} canEdit={canEdit} set={set} />}
 
         {view.viewType === 'section' && props.section && (
           <>
@@ -387,6 +414,38 @@ export function ViewPropertiesPanel({ view: saved, canEdit, blockedReason, submi
               <FieldDescription>{props.discipline ? "Other disciplines print in halftone; plans leave out their runs." : 'Every discipline prints in ink.'}</FieldDescription>
             </Field>
             {isPlan && <CircuitGraphicsFields view={view} canEdit={canEdit} disabledHint={disabledHint} set={set} />}
+            {isPlan && (
+              <FieldSet>
+                <FieldLegend variant="label">Plan annotations</FieldLegend>
+                <FieldGroup className="gap-1.5">
+                  <Field orientation="horizontal">
+                    <Checkbox
+                      id="vp-clearance-labels"
+                      checked={props.showClearanceLabels !== false}
+                      disabled={!canEdit}
+                      data-testid="vp-clearance-labels"
+                      onCheckedChange={(v) => setQuick({ showClearanceLabels: v === true }, v === true ? 'show clearance labels' : 'hide clearance labels')}
+                    />
+                    <FieldLabel htmlFor="vp-clearance-labels" className="font-normal">
+                      Show clearance labels
+                    </FieldLabel>
+                  </Field>
+                  <Field orientation="horizontal">
+                    <Checkbox
+                      id="vp-hide-device-marks"
+                      checked={props.hideDeviceMarks === true}
+                      disabled={!canEdit}
+                      data-testid="vp-hide-device-marks"
+                      onCheckedChange={(v) => setQuick({ hideDeviceMarks: v === true }, v === true ? 'hide repetitive device marks' : 'show device marks')}
+                    />
+                    <FieldLabel htmlFor="vp-hide-device-marks" className="font-normal">
+                      Hide device marks
+                    </FieldLabel>
+                  </Field>
+                </FieldGroup>
+                <FieldDescription>Keep dashed clearances without text, or hide repetitive receptacle/fixture marks while keeping equipment tags.</FieldDescription>
+              </FieldSet>
+            )}
             <LinesFields view={view} canEdit={canEdit} set={set} setQuick={setQuick} onOpenTextStyles={onOpenTextStyles}>
               {references.length > 0 && (
                 <FieldSet data-testid="view-linked-models">
@@ -434,16 +493,57 @@ export function ViewPropertiesPanel({ view: saved, canEdit, blockedReason, submi
                 return send(patch, label)
               }}
             />
+            {(props.hiddenElementIds?.length ?? 0) > 0 && (
+              <FieldSet data-testid="view-hidden-elements">
+                <div className="flex items-center justify-between gap-2">
+                  <FieldLegend variant="label" className="mb-0">
+                    Hidden elements ({props.hiddenElementIds?.length ?? 0})
+                  </FieldLegend>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 px-2 text-xs"
+                    disabled={!canEdit}
+                    onClick={() => setQuick({ hiddenElementIds: [] }, 'show all hidden elements in this view')}
+                  >
+                    <Eye data-icon="inline-start" className="size-3" />
+                    Show all
+                  </Button>
+                </div>
+                <FieldDescription className="text-xs">Elements hidden individually in this view (right-click › Hide element in view).</FieldDescription>
+                <div className="flex max-h-36 flex-col gap-1 overflow-y-auto pt-1">
+                  {(props.hiddenElementIds ?? []).map((id) => {
+                    const label = hiddenElementLabel(elements, id)
+                    return (
+                      <div key={id} className="flex items-center justify-between gap-2 rounded border px-2 py-1 text-xs">
+                        <span className="truncate font-medium" title={label === id ? id : `${label} (${id})`}>
+                          {label}
+                        </span>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-5 px-1.5 text-xs"
+                          disabled={!canEdit}
+                          onClick={() =>
+                            setQuick(
+                              { hiddenElementIds: (props.hiddenElementIds ?? []).filter((x) => x !== id) },
+                              `show ${label} in this view`,
+                            )
+                          }
+                        >
+                          Show
+                        </Button>
+                      </div>
+                    )
+                  })}
+                </div>
+              </FieldSet>
+            )}
           </>
         )}
       </FieldGroup>
       <Separator />
       {view.viewType === 'three_d' && crop3d ? <Crop3dFields controls={crop3d} canEdit={canEdit} disabledHint={disabledHint} /> : <CropFields view={view} canEdit={canEdit} disabledHint={disabledHint} onCrop={setCrop} onQuickCrop={setQuickCrop} />}
-      {error && (
-        <p className="text-xs text-danger-600" role="alert">
-          {error}
-        </p>
-      )}
       </>
       )}
     </div>
@@ -734,9 +834,31 @@ function LinesFields({ view, canEdit, set, setQuick, onOpenTextStyles, children 
  * the bottom, and how far below the bottom it still sees. Applies to our model
  * and to the linked models alike. Top and bottom are blank until set (no limit).
  */
-function HeightRangeFields({ view, canEdit, set }: { view: ViewElement; canEdit: boolean; set: (patch: ViewPropsPatch, label: string) => void }) {
+function autoTopHint(view: ViewElement, levels: readonly Level[]): { readonly short: string; readonly full: string } {
+  const levelName = view.props?.level
+  if (!levelName) return { short: 'Auto', full: 'Auto' }
+  const own = levels.find((l) => l.name === levelName)
+  const floorMm = own?.elevationMm ?? view.props?.levelElevationMm ?? 0
+  let nextStory: Level | null = null
+  let highestRoof: Level | null = null
+  for (const l of levels) {
+    if (l.elevationMm <= floorMm + 1) continue
+    if (isBuildingStoryLevel(l)) {
+      if (!nextStory || l.elevationMm < nextStory.elevationMm) nextStory = l
+    } else if (isRoofDatumLevel(l)) {
+      if (!highestRoof || l.elevationMm > highestRoof.elevationMm) highestRoof = l
+    }
+  }
+  const target = nextStory ?? highestRoof
+  if (!target) return { short: 'Auto', full: 'Auto (story reach)' }
+  const ft = Math.round(((target.elevationMm - floorMm) / FT) * 10) / 10
+  return { short: `Auto (${ft} ft)`, full: `Auto to ${target.name} (${ft} ft)` }
+}
+
+function HeightRangeFields({ view, levels, canEdit, set }: { view: ViewElement; levels: readonly Level[]; canEdit: boolean; set: (patch: ViewPropsPatch, label: string) => void }) {
   const props = view.props ?? {}
   const cut = props.cutHeightMm ?? DEFAULT_CUT_HEIGHT_MM
+  const autoTop = autoTopHint(view, levels)
   return (
     <FieldSet id="view-range" data-testid="view-range" className="scroll-mt-4">
       <FieldLegend variant="label">What this view shows</FieldLegend>
@@ -749,10 +871,10 @@ function HeightRangeFields({ view, canEdit, set }: { view: ViewElement; canEdit:
           value={props.viewTopMm === undefined ? null : props.viewTopMm / FT}
           disabled={!canEdit}
           optional
-          placeholder="No limit"
-          description="Above this, nothing shows."
+          placeholder={autoTop.short}
+          description={props.viewTopMm === undefined ? `${autoTop.full}.` : 'Above this, nothing shows.'}
           onCommit={(ft) => set({ viewTopMm: ft * FT }, 'change the top of the view')}
-          onClear={() => set({ viewTopMm: null }, 'show everything above the cut')}
+          onClear={() => set({ viewTopMm: null }, 'reset top of the view to automatic')}
         />
         <NumberField
           key={`vp-cut:${cut}`}

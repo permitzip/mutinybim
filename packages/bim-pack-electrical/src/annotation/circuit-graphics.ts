@@ -768,11 +768,49 @@ export function collinearOverlap(p: Vec2, q: Vec2, r: Vec2, s: Vec2, tolerance: 
 
 const pathLength = (path: readonly Vec2[]) => path.reduce((s, p, i) => (i === 0 ? 0 : s + dist(path[i - 1]!, p)), 0);
 
-/** The square line a..b that stacks on the fewest drawn runs (then the shortest, then the first L): the corner is chosen per line. */
-function squareJoin(a: Node, b: Node, waypoints: readonly Vec2[] | undefined, drawn: DrawnRuns, step: number): Vec2[] {
+/** Round 90° corners of an orthogonal polyline with crisp 45° chamfers (Binoy drafting standard). */
+function chamferOrthogonalPath(pts: readonly Vec2[], chamferMm: number): Vec2[] {
+  if (pts.length < 3 || chamferMm < 20) return [...pts];
+  const out: Vec2[] = [pts[0]!];
+  for (let i = 1; i < pts.length - 1; i++) {
+    const prev = pts[i - 1]!;
+    const curr = pts[i]!;
+    const next = pts[i + 1]!;
+    const d1 = dist(prev, curr);
+    const d2 = dist(curr, next);
+    if (d1 < 1 || d2 < 1) {
+      out.push(curr);
+      continue;
+    }
+    const u1x = (curr.x - prev.x) / d1;
+    const u1y = (curr.y - prev.y) / d1;
+    const u2x = (next.x - curr.x) / d2;
+    const u2y = (next.y - curr.y) / d2;
+    const dot = u1x * u2x + u1y * u2y;
+    // Only bevel near-orthogonal bends (skip collinear or sharp reverse points).
+    if (Math.abs(dot) > 0.25) {
+      out.push(curr);
+      continue;
+    }
+    const bevel = Math.min(chamferMm, d1 * 0.35, d2 * 0.35);
+    if (bevel < 20) {
+      out.push(curr);
+      continue;
+    }
+    out.push({ x: curr.x - u1x * bevel, y: curr.y - u1y * bevel });
+    out.push({ x: curr.x + u2x * bevel, y: curr.y + u2y * bevel });
+  }
+  out.push(pts[pts.length - 1]!);
+  return out;
+}
+
+/** The orthogonal (or 45°-chamfered) line a..b that stacks on the fewest drawn runs (then the shortest, then the first L). */
+function squareJoin(a: Node, b: Node, waypoints: readonly Vec2[] | undefined, drawn: DrawnRuns, step: number, chamfer: boolean): Vec2[] {
+  const chamferMm = Math.max(140, step * 0.85);
+  const finish = (pts: Vec2[]) => (chamfer ? chamferOrthogonalPath(pts, chamferMm) : pts);
   if (waypoints && waypoints.length === 1) {
     const bend = waypoints[0]!;
-    return squarePath(a, b, [{ x: bend.x, y: a.point.y }, { x: bend.x, y: b.point.y }]);
+    return finish(squarePath(a, b, [{ x: bend.x, y: a.point.y }, { x: bend.x, y: b.point.y }]));
   }
   if (waypoints && waypoints.length > 1) {
     const corners: Vec2[] = [];
@@ -783,7 +821,7 @@ function squareJoin(a: Node, b: Node, waypoints: readonly Vec2[] | undefined, dr
       prev = wp;
     }
     if (Math.abs(b.point.x - prev.x) > 1 && Math.abs(b.point.y - prev.y) > 1) corners.push({ x: prev.x, y: b.point.y });
-    return squarePath(a, b, corners);
+    return finish(squarePath(a, b, corners));
   }
   let best: Vec2[] | null = null;
   let bestOverlap = Infinity;
@@ -800,12 +838,12 @@ function squareJoin(a: Node, b: Node, waypoints: readonly Vec2[] | undefined, dr
     // Candidates come shortest first, so the first clear one is the answer.
     if (over === 0) break;
   }
-  return best ?? squarePath(a, b, []);
+  return finish(best ?? squarePath(a, b, []));
 }
 
 /** The joining line between two members in the view's style, trimmed cleanly at each symbol's rendered boundary. */
 function joinPath(style: CircuitGraphicStyle, a: Node, b: Node, waypoints: readonly Vec2[] | undefined, flip: boolean, drawn: DrawnRuns, step: number): Vec2[] {
-  if (style === "orthogonal") return squareJoin(a, b, waypoints, drawn, step);
+  if (style === "orthogonal" || style === "chamfered") return squareJoin(a, b, waypoints, drawn, step, style === "chamfered");
   if (waypoints && waypoints.length === 1) return trimPolylineEnds(arcThrough(a.point, waypoints[0]!, b.point), a.outline, b.outline);
   if (waypoints && waypoints.length > 1) return trimPolylineEnds(splineThrough([a.point, ...waypoints, b.point]), a.outline, b.outline);
   const pa = exitPoint(a.outline, a.point, b.point);
@@ -1006,22 +1044,49 @@ function linkGraphic(model: ModelState, link: ServiceLink, shown: ReadonlyMap<st
         hrPath = [from, tip];
       }
     }
+    const buildHomeRunLabel = (l: ServiceLink, baseName: string, isTyp: boolean, explicitNote?: string): string => {
+      const parts: string[] = [isTyp ? `${baseName} TYP.` : baseName];
+      const note = explicitNote?.trim();
+      if (note) {
+        parts.push(note.toUpperCase());
+      } else {
+        const desc = (l.description ?? "").toUpperCase();
+        const designRec = (l.design?.electrical ?? l.electrical) as Record<string, unknown> | undefined;
+        const tags: string[] = [];
+        if (designRec?.breaker_lock === true || designRec?.breakerLock === true || /\bBREAKER\s+LOCK\b|\[BL\]/.test(desc)) {
+          tags.push("BL");
+        }
+        if (designRec?.shunt_trip === true || designRec?.shuntTrip === true || /\bSHUNT\s+TRIP\b/.test(desc)) {
+          tags.push("SHUNT TRIP");
+        }
+        const viaMatch = desc.match(/\bVIA\s+(?:TIME\s*CLOCK|CONTACTOR|RELAY|PHOTOCELL|EM\s*TRANSFER|UPS)\b/);
+        if (viaMatch) tags.push(viaMatch[0]);
+        const cond = l.electrical?.conductors;
+        const rating = l.electrical?.ratingA;
+        if (cond && rating && ((rating <= 20 && cond.phaseSize !== "12" && cond.phaseSize !== "14") || (rating <= 30 && cond.phaseSize !== "10" && cond.phaseSize !== "12"))) {
+          tags.push(`#${cond.phaseSize} ${cond.material.toUpperCase()}`);
+        }
+        if (tags.length > 0) parts.push(`(${tags.join(", ")})`);
+      }
+      return parts.join(" ");
+    };
+
     const labelAt = hrHint?.labelOffset ? { x: tip.x + hrHint.labelOffset.x, y: tip.y + hrHint.labelOffset.y } : undefined;
     homeRun = {
       memberId: home.id,
       from,
       tip,
       ...(hrPath.length > 2 ? { path: hrPath } : {}),
-      label: typ ? `${name} TYP.` : name,
+      label: buildHomeRunLabel(link, name, typ, hrHint?.note),
       ...(labelAt ? { labelAt } : {}),
     };
     drawn.add(hrPath);
   }
-  if (settings.style === "arcs" || settings.style === "orthogonal") {
+  if (settings.style === "arcs" || settings.style === "orthogonal" || settings.style === "chamfered") {
     for (const [a, b] of joinPairs(settings.style, home, nodes.filter((n) => n !== home))) {
       const k = bendKey(a.id, b.id);
       const path = joinPath(settings.style, a, b, spanWaypoints(hint, a.id, b.id), hint?.flipArc?.[k] === true, drawn, SQUARE_RUN_OFFSET_MM * scale);
-      if (settings.style === "orthogonal") drawn.add(path);
+      if (settings.style === "orthogonal" || settings.style === "chamfered") drawn.add(path);
       paths.push(path);
       joins.push([a.id, b.id]);
     }

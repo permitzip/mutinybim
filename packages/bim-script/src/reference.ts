@@ -305,26 +305,38 @@ export interface CropBoxSpec {
 }
 export interface PlanViewSpec {
   level: string; name: string; discipline?: string; scale?: number; cutHeight?: Measure;
+  viewTop?: Measure; viewBottom?: Measure; viewDepth?: Measure;
   detailLevel?: "coarse" | "medium" | "fine";
   visualStyle?: "wireframe" | "hidden_line" | "shaded" | "shaded_edges";
   showLineCodes?: boolean;
   offsetStackedRuns?: boolean;
   showReferenceDisciplines?: readonly string[];
+  symbolScale?: number;
   hide?: string[];
+  hideElements?: readonly string[];
+  showClearanceLabels?: boolean;
+  hideDeviceMarks?: boolean;
   categoryOverrides?: Readonly<Record<string, CategoryOverrideSpec>>;
   crop?: { from: PlanPoint; to: PlanPoint };
+  cropPolygon?: readonly PlanPoint[];
   id?: string;
 }
 export interface ViewChanges {
   discipline?: string | null; scale?: number; cutHeight?: Measure;
+  viewTop?: Measure | null; viewBottom?: Measure | null; viewDepth?: Measure;
   detailLevel?: "coarse" | "medium" | "fine";
   visualStyle?: "wireframe" | "hidden_line" | "shaded" | "shaded_edges";
   showLineCodes?: boolean;
   offsetStackedRuns?: boolean;
   showReferenceDisciplines?: readonly string[];
+  symbolScale?: number;
   hide?: string[];
+  hideElements?: readonly string[];
+  showClearanceLabels?: boolean;
+  hideDeviceMarks?: boolean;
   /** Replaces the view's category override map; pass {} to clear all overrides. */
   categoryOverrides?: Readonly<Record<string, CategoryOverrideSpec>>;
+  cropPolygon?: readonly PlanPoint[] | null;
 }
 export interface VerticalViewSpec {
   name: string; from: PlanPoint; to: PlanPoint; direction?: 1 | -1; depth?: Measure;

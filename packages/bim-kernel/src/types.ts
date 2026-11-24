@@ -382,6 +382,8 @@ export interface Level extends ModelElementBase {
   readonly name: string;
   /** Floor elevation above project zero. */
   readonly elevationMm: number;
+  /** True for an occupied floor story, false for a ceiling/soffit/roof/parapet reference datum. When absent, inferred from the level name. */
+  readonly buildingStory?: boolean;
   /** The linked model storey it was made from or matched to; a re-sync updates the level from it. Absent: drawn by a person. */
   readonly source?: LevelSource;
   /** Per linked model (its link id), the storey a person said this level is, when the names and heights don't settle it (`set_level_linked_storey`). */

@@ -159,6 +159,7 @@ import { addOns, loadAddOns } from '../contracts/building-model/add-ons'
 
 import { MemoRibbon, useStableCommands, useStableRibbonTabs } from './ribbon/stable-ribbon'
 import { useModelPacks } from './state/use-model-packs'
+import { getStandardNoteSet, standardNoteParagraphs } from '@permitzip/bim-library'
 import { buildingModelQuickCommands, buildingModelRibbon, PROJECTION_SHORTCUT, type BoxCategory, type BuildingModelTool, type RibbonSelection } from './building-model-ribbon'
 import { OrientationControls } from './orientation/OrientationControls'
 import { OrbitPointMarker } from './orientation/OrbitPointMarker'
@@ -2742,6 +2743,32 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
       }
     : null
 
+  const standardNotesOwnerId = drawingOpen === 'sheet' && openSheet ? openSheet.id : drawingOpen === 'detail' && openView ? openView.id : null
+  const placeStandardNotes = standardNotesOwnerId
+    ? {
+        disabledReason: editBlocked,
+        run: (setId: string) => {
+          const set = getStandardNoteSet(setId)
+          if (!set) return
+          const isSheet = drawingOpen === 'sheet'
+          const at = isSheet ? { x: 45, y: 55 } : { x: 0, y: 0 }
+          const refusal = submitWithUndo(
+            {
+              type: 'create_text_note',
+              itemId: newId('note'),
+              ownerId: standardNotesOwnerId,
+              at,
+              width: isSheet ? 170 : 120,
+              paragraphs: standardNoteParagraphs(setId),
+            },
+            `place ${set.title.toLowerCase()}`,
+          )
+          if (refusal) toast.error(refusal)
+          else toast(`Placed ${set.title} (${set.notes.length} notes) — drag it into position.`)
+        },
+      }
+    : null
+
   /** Views › Schedules › Load schedules: each opens the model's own, or says why it can't be made yet. */
   // Checking a definition opens it (every row), so that runs on the click, not on every edit.
   const loadScheduleLists = LOAD_SCHEDULE_IDS.map((id) => ({
@@ -2906,6 +2933,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
     lastDetailShape,
     draft,
     tagAll,
+    placeStandardNotes,
     request: onPanelRequest,
     sectionDrawing: drawingSection,
     toggleSection: () => (drawingSection ? setVerticalViewTool(null) : startSection()),
@@ -3635,31 +3663,35 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
                   const view = index?.views.find((v) => v.id === viewId)
                   return view ? workflows.viewProperties(view) : null
                 }}
-                viewProperties={
-                  openView ? (
+                viewProperties={(() => {
+                  const activeSheetView = openSheet && sheetModelView ? (index?.views.find((v) => v.id === sheetModelView) ?? null) : null
+                  const inspectedView = openView ?? activeSheetView
+                  if (!inspectedView) return undefined
+                  return (
                     <ViewProperties
-                      view={openView}
+                      view={inspectedView}
                       canEdit={canEdit}
                       blockedReason={blockedReason}
                       submit={submitWithUndo}
                       references={references.map((r) => ({ id: r.id, label: r.label }))}
                       display={viewDisplay}
                       onDisplay={chooseDisplay}
-                      onRename={() => setRequest({ kind: 'rename_view', view: openView })}
-                      background={backgroundStates[openView.id]}
+                      onRename={() => setRequest({ kind: 'rename_view', view: inspectedView })}
+                      background={backgroundStates[inspectedView.id]}
                       hostLevelId={viewLevelId}
-                      levelName={model ? (canonicalViewLevel(model, openView.props?.level) ?? null) : null}
-                      phaseFields={viewPhaseFields(openView)}
+                      levelName={model ? (canonicalViewLevel(model, inspectedView.props?.level) ?? null) : null}
+                      phaseFields={viewPhaseFields(inspectedView)}
                       onOpenTextStyles={() => setTextStylesOpen(true)}
-                      schedule={workflows.viewProperties(openView)}
+                      elements={model?.elements}
+                      schedule={workflows.viewProperties(inspectedView)}
                       diagram={
-                        openView.props?.diagram ? (
+                        inspectedView.props?.diagram ? (
                           <ModelFromStore store={modelStore}>
                             {(shown) =>
                               shown && (
                                 <DiagramProperties
                                   model={shown}
-                                  view={openView}
+                                  view={inspectedView}
                                   selectedIds={selectedIds}
                                   canEdit={canEdit}
                                   blockedReason={blockedReason}
@@ -3672,8 +3704,8 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
                         ) : undefined
                       }
                     />
-                  ) : undefined
-                }
+                  )
+                })()}
               />
             </div>
                 )
@@ -3712,6 +3744,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
                 editBlocked={canEdit ? null : blockedReason}
                 onOpenSheet={(sheetId) => openItem({ kind: 'sheet', id: sheetId })}
                 onOpenFormEditor={sharedValue<(kind: string, elementId: string) => boolean>(workflows.shared, 'openFormView') ?? undefined}
+                backSheet={backSheet ? { number: backSheet.number, onBack: () => openItem({ kind: 'sheet', id: backSheet.id }) } : null}
               />
                 )}
               </ModelFromStore>
@@ -3777,7 +3810,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
           {showDrawing && <TrackpadHint />}
           {viewer && !showDrawing && !scheduleGridOpen && <OrbitPointMarker viewer={viewer} enabled={!planOpen} />}
           {viewer && !showDrawing && !scheduleGridOpen && <ZoomThroughNotice viewer={viewer} />}
-          {backSheet && !showDrawing && !drawingSection && (
+          {backSheet && !showDrawing && !drawingSection && !scheduleGridOpen && (
             <Button size="sm" variant="secondary" className="absolute left-3 top-3 shadow-sm" onClick={() => openItem({ kind: 'sheet', id: backSheet.id })} data-testid="back-to-sheet">
               <ArrowLeft data-icon="inline-start" />
               Back to {backSheet.number}
@@ -3935,6 +3968,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
                   onRename={() => setRequest({ kind: 'rename_view', view: openView })}
                   phaseFields={viewPhaseFields(openView)}
                   crop3d={openView.viewType === 'three_d' ? crop3dControls : undefined}
+                  elements={model?.elements}
                   schedule={workflows.viewProperties(openView)}
                 />
               ) : null}

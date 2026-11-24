@@ -93,7 +93,7 @@ function missingGraphMessage(kind: string): string {
 /** A drawn piece of pipe is easy to hit: its box is at least this far from the line on every side (drawing mm). */
 const PIPE_HIT_MM = 1.2;
 
-function toSpecNode(n: DiagramNode): OneLineNode {
+function toSpecNode(n: DiagramNode, showLoads = false): OneLineNode {
   const [first, ...rest] = n.lines;
   return {
     id: n.id,
@@ -109,11 +109,12 @@ function toSpecNode(n: DiagramNode): OneLineNode {
             ...(n.feed.conductors ? { conductors: n.feed.conductors } : {}),
             ...(n.feed.lengthFt !== undefined ? { length_ft: n.feed.lengthFt } : {}),
             ...(n.feed.typeMark ? { type_mark: n.feed.typeMark } : {}),
+            ...(showLoads && n.feed.load ? { load: n.feed.load } : {}),
           },
         }
       : {}),
-    ...(n.emergency ? { emergency: toSpecNode(n.emergency) } : {}),
-    ...(n.children.length > 0 ? { children: n.children.map(toSpecNode) } : {}),
+    ...(n.emergency ? { emergency: toSpecNode(n.emergency, showLoads) } : {}),
+    ...(n.children.length > 0 ? { children: n.children.map((c) => toSpecNode(c, showLoads)) } : {}),
     ...(n.placeholder || n.planned ? { placeholder: true } : {}),
   };
 }
@@ -401,7 +402,10 @@ function itemId(viewId: string, i: number): ElementId {
   return asElementId(`${viewId}~dg~${i}`);
 }
 
-function toDrawingItems(viewId: string, items: readonly OneLineItem[]): DrawingItem[] {
+type NodeVisual = { readonly tone?: "ink" | "halftone"; readonly dashed?: boolean };
+const HALFTONE_TEXT_COLOR = "#7f7f7f";
+
+function toDrawingItems(viewId: string, items: readonly OneLineItem[], nodeVisuals?: ReadonlyMap<string, NodeVisual>): DrawingItem[] {
   const base = (i: number) => ({ id: itemId(viewId, i), version: 0, authoredRev: {}, kind: "drawing_item" as const, ownerId: asElementId(viewId) });
   const note = (i: number, at: Vec2, width: number, size: number, paragraphs: readonly NoteParagraph[]): DrawingItem => ({
     ...base(i),
@@ -413,21 +417,41 @@ function toDrawingItems(viewId: string, items: readonly OneLineItem[]): DrawingI
   const out: DrawingItem[] = [];
   let n = 0;
   for (const item of items) {
+    const vis = nodeVisuals?.get(item.nodeId);
+    const tone = vis?.tone === "halftone" ? ("halftone" as const) : undefined;
+    const isDashed = (item.shape === "line" || item.shape === "polyline" ? item.dashed : false) || vis?.dashed === true;
     switch (item.shape) {
       case "component":
-        out.push({ ...base(n++), shape: "component", points: [item.at], component: { symbolId: item.symbolId, widthMm: item.widthMm, heightMm: item.heightMm, ...(item.rotationDeg ? { rotationDeg: item.rotationDeg } : {}) } });
+        out.push({
+          ...base(n++),
+          shape: "component",
+          points: [item.at],
+          component: { symbolId: item.symbolId, widthMm: item.widthMm, heightMm: item.heightMm, ...(item.rotationDeg ? { rotationDeg: item.rotationDeg } : {}) },
+          ...(tone || isDashed ? { lineStyle: { ...(tone ? { tone } : {}), ...(isDashed ? { pattern: "dashed" as const } : {}) } } : {}),
+        });
         break;
       case "line":
-        out.push({ ...base(n++), shape: "line", points: [...item.points], lineStyle: { weight: item.weight, ...(item.dashed ? { pattern: "dashed" as const } : {}) } });
+        out.push({
+          ...base(n++),
+          shape: "line",
+          points: [...item.points],
+          lineStyle: { weight: item.weight, ...(isDashed ? { pattern: "dashed" as const } : {}), ...(tone ? { tone } : {}) },
+        });
         break;
       case "polyline":
-        out.push({ ...base(n++), shape: "polyline", points: [...item.points], lineStyle: { weight: item.weight, ...(item.dashed ? { pattern: "dashed" as const } : {}) }, ...(item.closed ? { closed: true } : {}) });
+        out.push({
+          ...base(n++),
+          shape: "polyline",
+          points: [...item.points],
+          lineStyle: { weight: item.weight, ...(isDashed ? { pattern: "dashed" as const } : {}), ...(tone ? { tone } : {}) },
+          ...(item.closed ? { closed: true } : {}),
+        });
         break;
       case "oval": {
         const pts = ovalOutline(item.center, item.widthMm, item.heightMm);
         if (item.mask) out.push({ ...base(n++), shape: "region", points: pts, fill: { pattern: "solid", masking: true } });
-        out.push({ ...base(n++), shape: "polyline", points: pts, closed: true, lineStyle: { weight: "thin" } });
-        out.push(note(n++, round({ x: item.center.x - item.widthMm / 2, y: item.center.y + ONE_LINE_TEXT_MM * 0.75 }), item.widthMm, ONE_LINE_TEXT_MM * 0.85, [{ runs: [{ text: item.text }], align: "center" }]));
+        out.push({ ...base(n++), shape: "polyline", points: pts, closed: true, lineStyle: { weight: "thin", ...(isDashed ? { pattern: "dashed" as const } : {}), ...(tone ? { tone } : {}) } });
+        out.push(note(n++, round({ x: item.center.x - item.widthMm / 2, y: item.center.y + ONE_LINE_TEXT_MM * 0.75 }), item.widthMm, ONE_LINE_TEXT_MM * 0.85, [{ runs: [{ text: item.text, ...(tone ? { color: HALFTONE_TEXT_COLOR } : {}) }], align: "center" }]));
         break;
       }
       case "text": {
@@ -447,7 +471,7 @@ function toDrawingItems(viewId: string, items: readonly OneLineItem[]): DrawingI
             fill: { pattern: "solid", masking: true },
           });
         }
-        out.push(note(n++, item.at, item.widthMm, ONE_LINE_TEXT_MM, item.lines.map((l) => ({ runs: [{ text: l.text, ...(l.bold ? { bold: true } : {}) }], ...(item.align === "center" ? { align: "center" as const } : {}) }))));
+        out.push(note(n++, item.at, item.widthMm, ONE_LINE_TEXT_MM, item.lines.map((l) => ({ runs: [{ text: l.text, ...(l.bold ? { bold: true } : {}), ...(tone ? { color: HALFTONE_TEXT_COLOR } : {}) }], ...(item.align === "center" ? { align: "center" as const } : {}) }))));
         break;
       }
     }
@@ -491,7 +515,8 @@ function layoutFor(elements: Elements, def: DiagramDefinition, graph: DiagramGra
     return laidFrom(result, row);
   }
   if (def.kind === "one_line") {
-    const spec: OneLineSpec = { roots: roots.map(toSpecNode), ...(hints.title ? { title: hints.title } : {}), ...(hints.notes?.length ? { notes: [...hints.notes] } : {}) };
+    const showLoads = hints.showLoads === true;
+    const spec: OneLineSpec = { roots: roots.map((r) => toSpecNode(r, showLoads)), ...(hints.title ? { title: hints.title } : {}), ...(hints.notes?.length ? { notes: [...hints.notes] } : {}) };
     return { layout: layoutOneLine(spec, { orientation: hints.orientation ?? "vertical" }), pieces: {}, serviceSections: true };
   }
   return { layout: layoutRiser(roots, riserLevels(elements)), pieces: {}, serviceSections: true };
@@ -559,7 +584,13 @@ function evaluateUncached(elements: Elements, viewId: string, def: DiagramDefini
   if (hints.style === "box3d") drawBoxes(items);
   if (hints.showWarnings !== false) drawWarnings(items, graph.warnings);
   const boxes: DiagramNodeBox[] = [];
+  const nodeVisuals = new Map<string, NodeVisual>();
   for (const n of all) {
+    if (n.tone || n.dashed) {
+      const vis: NodeVisual = { ...(n.tone ? { tone: n.tone } : {}), ...(n.dashed ? { dashed: true } : {}) };
+      nodeVisuals.set(n.id, vis);
+      if (n.feed?.linkId) nodeVisuals.set(n.feed.linkId, vis);
+    }
     if (!n.elementId) continue;
     const b = boundsOf(items, 0, items.length, new Set([n.id]), moved);
     if (b) boxes.push({ elementId: n.elementId, name: n.name, min: b.min, max: b.max });
@@ -567,7 +598,7 @@ function evaluateUncached(elements: Elements, viewId: string, def: DiagramDefini
   boxes.push(...pipeBoxes(items, pipeRefs));
   return {
     kind: def.kind,
-    items: toDrawingItems(viewId, items),
+    items: toDrawingItems(viewId, items, nodeVisuals),
     boxes,
     texts: texts.map((t) => {
       const it = items[t.index];

@@ -56,6 +56,11 @@ import {
 import { openSchedule, scheduleV1ToV2, ScheduleDefinitionError, type ColumnValues, type RowSet } from "@permitzip/bim-kernel/schedules";
 import { measureIn, type Measure } from "@permitzip/bim-units";
 import { ScriptRunError, type ScriptContext } from "./context";
+import {
+  formatStandardNoteSet,
+  listStandardNoteSets,
+  type FormatStandardNoteOptions,
+} from "./standard-notes";
 import { drafting, type DetailViewSpec } from "./kit-drafting";
 import { onWorking } from "./working";
 
@@ -238,7 +243,7 @@ export type TextStyleChanges = Omit<UpdateTextStyle, "type" | "styleId">;
 
 /** Plan-level circuit & control wiring display settings (`ViewProps.circuitGraphics`). */
 export interface CircuitGraphicsSettingsSpec {
-  readonly style?: "arcs" | "orthogonal" | "numbers" | "off";
+  readonly style?: "arcs" | "chamfered" | "orthogonal" | "numbers" | "off";
   /** Draw branch power circuits & home runs. Set `false` with `switchLegs: true` for a dedicated controls schematic plan. */
   readonly showCircuits?: boolean;
   readonly homeRuns?: boolean;
@@ -422,6 +427,12 @@ export interface PlanViewSpec {
   /** Drawing scale as a ratio (48 is 1/4" = 1'-0"). */
   readonly scale?: number;
   readonly cutHeight?: Measure;
+  /** Plans: upper height limit above the level (above this, nothing shows). */
+  readonly viewTop?: Measure;
+  /** Plans: lower height limit above the level (negative is below). */
+  readonly viewBottom?: Measure;
+  /** Plans: view depth below `viewBottom`. */
+  readonly viewDepth?: Measure;
   /** Coarse: all runs single-line schematic. Medium: duct double-line, pipe/conduit single-line schematic. Fine: all double-line. */
   readonly detailLevel?: DetailLevel;
   /** Visual style: wireframe, hidden_line, shaded, shaded_edges. */
@@ -436,6 +447,12 @@ export interface PlanViewSpec {
   readonly symbolScale?: number;
   /** Categories the view hides. */
   readonly hide?: ViewProps["hiddenCategories"];
+  /** Individual element ids hidden in this view only. */
+  readonly hideElements?: readonly string[];
+  /** Plans: draw text labels inside clearance zones (dashed outlines always draw). Default true. */
+  readonly showClearanceLabels?: boolean;
+  /** Plans: hide automatic per-instance marks on repetitive devices (receptacles, switches, fixtures) while keeping equipment & manual tags visible. Default false. */
+  readonly hideDeviceMarks?: boolean;
   /** Per-category or per-service overrides (`pipe`, `service:sanitary`, `duct`…): detailLevel, singleLineBelow, lineWeights, pattern, halftone, visible. */
   readonly categoryOverrides?: Readonly<Record<string, CategoryOverrideSpec>>;
   /** Optional crop box corners on plan (model coordinates). */
@@ -449,6 +466,12 @@ export interface ViewChanges {
   readonly discipline?: string | null;
   readonly scale?: number;
   readonly cutHeight?: Measure;
+  /** Plans: upper height limit above the level (`null` clears the limit). */
+  readonly viewTop?: Measure | null;
+  /** Plans: lower height limit above the level (`null` clears the limit). */
+  readonly viewBottom?: Measure | null;
+  /** Plans: view depth below `viewBottom`. */
+  readonly viewDepth?: Measure;
   readonly detailLevel?: DetailLevel;
   readonly visualStyle?: VisualStyle;
   readonly showLineCodes?: boolean;
@@ -457,6 +480,12 @@ export interface ViewChanges {
   /** Multiplier for annotative paper-space symbols and `minPaperMm` floors in this plan (0.5–3.0). */
   readonly symbolScale?: number;
   readonly hide?: ViewProps["hiddenCategories"];
+  /** Replaces the individual element ids hidden in this view (`[]` shows all). */
+  readonly hideElements?: readonly string[];
+  /** Plans: draw text labels inside clearance zones (dashed outlines always draw). */
+  readonly showClearanceLabels?: boolean;
+  /** Plans: hide automatic per-instance marks on repetitive devices (receptacles, switches, fixtures) while keeping equipment & manual tags visible. */
+  readonly hideDeviceMarks?: boolean;
   /** Replaces the view's per-category and per-service (`"service:<id>"`) graphics overrides map. Pass `{}` to clear all overrides. */
   readonly categoryOverrides?: Readonly<Record<string, CategoryOverrideSpec>>;
   /** Optional custom closed polygon crop boundary (model coordinates, >= 3 corners); `null` resets to rectangular crop. */
@@ -616,6 +645,9 @@ function view(ctx: ScriptContext, viewType: CreateView["viewType"], spec: PlanVi
     ...(spec.discipline ? { discipline: spec.discipline } : {}),
     ...(spec.scale ? { scale: spec.scale } : {}),
     ...(spec.cutHeight ? { cutHeightMm: mm(spec.cutHeight, "Cut height") } : {}),
+    ...(spec.viewTop !== undefined ? { viewTopMm: mm(spec.viewTop, "View top") } : {}),
+    ...(spec.viewBottom !== undefined ? { viewBottomMm: mm(spec.viewBottom, "View bottom") } : {}),
+    ...(spec.viewDepth !== undefined ? { viewDepthMm: mm(spec.viewDepth, "View depth") } : {}),
     ...(spec.detailLevel ? { detailLevel: spec.detailLevel } : {}),
     ...(spec.visualStyle ? { visualStyle: spec.visualStyle } : {}),
     ...(spec.showLineCodes !== undefined ? { showLineCodes: spec.showLineCodes } : {}),
@@ -623,6 +655,9 @@ function view(ctx: ScriptContext, viewType: CreateView["viewType"], spec: PlanVi
     ...(spec.showReferenceDisciplines ? { showReferenceDisciplines: [...spec.showReferenceDisciplines] } : {}),
     ...(spec.symbolScale !== undefined ? { symbolScale: spec.symbolScale } : {}),
     ...(spec.hide ? { hiddenCategories: spec.hide } : {}),
+    ...(spec.hideElements ? { hiddenElementIds: [...spec.hideElements] } : {}),
+    ...(spec.showClearanceLabels !== undefined ? { showClearanceLabels: spec.showClearanceLabels } : {}),
+    ...(spec.hideDeviceMarks !== undefined ? { hideDeviceMarks: spec.hideDeviceMarks } : {}),
     ...(spec.categoryOverrides ? { categoryOverrides: toCategoryOverrides(spec.categoryOverrides) } : {}),
     ...(cropPolygon ? { cropPolygon } : {}),
   };
@@ -1003,6 +1038,9 @@ export const documents = {
         ...(changes.discipline !== undefined ? { discipline: changes.discipline } : {}),
         ...(changes.scale !== undefined ? { scale: changes.scale } : {}),
         ...(changes.cutHeight !== undefined ? { cutHeightMm: mm(changes.cutHeight, "Cut height") } : {}),
+        ...(changes.viewTop !== undefined ? { viewTopMm: changes.viewTop === null ? null : mm(changes.viewTop, "View top") } : {}),
+        ...(changes.viewBottom !== undefined ? { viewBottomMm: changes.viewBottom === null ? null : mm(changes.viewBottom, "View bottom") } : {}),
+        ...(changes.viewDepth !== undefined ? { viewDepthMm: mm(changes.viewDepth, "View depth") } : {}),
         ...(changes.detailLevel !== undefined ? { detailLevel: changes.detailLevel } : {}),
         ...(changes.visualStyle !== undefined ? { visualStyle: changes.visualStyle } : {}),
         ...(changes.showLineCodes !== undefined ? { showLineCodes: changes.showLineCodes } : {}),
@@ -1010,6 +1048,9 @@ export const documents = {
         ...(changes.showReferenceDisciplines !== undefined ? { showReferenceDisciplines: [...changes.showReferenceDisciplines] } : {}),
         ...(changes.symbolScale !== undefined ? { symbolScale: changes.symbolScale } : {}),
         ...(changes.hide !== undefined ? { hiddenCategories: changes.hide } : {}),
+        ...(changes.hideElements !== undefined ? { hiddenElementIds: [...changes.hideElements] } : {}),
+        ...(changes.showClearanceLabels !== undefined ? { showClearanceLabels: changes.showClearanceLabels } : {}),
+        ...(changes.hideDeviceMarks !== undefined ? { hideDeviceMarks: changes.hideDeviceMarks } : {}),
         ...(changes.categoryOverrides !== undefined ? { categoryOverrides: toCategoryOverrides(changes.categoryOverrides) } : {}),
         ...(cropPolygon !== undefined ? { cropPolygon } : {}),
       },
@@ -1552,5 +1593,32 @@ export const documents = {
   /** Gives elements a keynote (its key, "P1"): a keynote tag on a view prints it and the sheet's keynote list words it. */
   keynote(ctx: ScriptContext, elementIds: readonly string[], key: string): void {
     ctx.edit({ type: "set_element_values", elementIds: [...elementIds], values: { [KEYNOTE_FIELD]: key } });
+  },
+  /** Lists the reusable standard general-notes & specification sets available by discipline so scripts never rewrite boilerplate from scratch. */
+  listStandardNoteSets(discipline?: string) {
+    return listStandardNoteSets(discipline);
+  },
+  /** Places a formatted, code-grounded standard general-notes block from the reusable library onto a sheet or view. */
+  placeStandardNotes(
+    ctx: ScriptContext,
+    ownerRef: string,
+    setId: string,
+    at: { readonly x: Measure; readonly y: Measure },
+    opts: FormatStandardNoteOptions & { readonly id?: string; readonly width?: Measure } = {},
+  ): string {
+    const text = formatStandardNoteSet(setId, opts);
+    const itemId = opts.id ?? ctx.id(`notes-${setId}`);
+    const paragraphs = text.split("\n").map((line, idx) => ({
+      runs: [{ text: line, ...(idx === 0 ? { bold: true } : {}) }],
+    }));
+    ctx.edit({
+      type: "create_text_note",
+      itemId,
+      ownerId: ownerRef,
+      at: { x: measureIn(at.x, "mm"), y: measureIn(at.y, "mm") },
+      width: opts.width ? measureIn(opts.width, "mm") : 165,
+      paragraphs,
+    });
+    return itemId;
   },
 };

@@ -15,8 +15,8 @@ import {
   nearestWallFace,
   paperToDrawing,
   planAutoPartMarks,
-  viewLevelElements,
   viewModelLevel,
+  visiblePlanParts,
   type AutoPartMarkHit,
   type ModelState,
   type PartInstance,
@@ -197,10 +197,8 @@ export function ModelDrawingLayer({ model, view, bridge, paperOf, paperMmPerPx, 
   const snapTolerance = toleranceMm(view, paperMmPerPx, SNAP_PX)
   const isPlanView = view.view.viewType === 'floor_plan' || view.view.viewType === 'ceiling_plan'
   const shownPlanParts = useMemo(() => {
-    const shown = new Map<string, PartInstance>()
-    if (!isPlanView) return shown
-    for (const el of viewLevelElements(model, view.view)) if (el.kind === 'part') shown.set(el.id, el)
-    return shown
+    if (!isPlanView) return new Map<string, PartInstance>()
+    return visiblePlanParts(model, view.view)
   }, [isPlanView, model, view.view])
   // Circuit & switch-leg spans on paper (plans only): drag to bend/reshape, right-click to add/remove spline vertices.
   const wireJoins = useMemo(() => {

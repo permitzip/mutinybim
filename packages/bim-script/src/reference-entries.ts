@@ -553,10 +553,17 @@ export const KIT_ENTRIES: readonly KitEntry[] = [
   },
   {
     name: "building.unlock",
-    summary: "Unpin / unlock previously locked elements.",
+    summary: "Unpin / unlock previously locked elements (building, structure, parts, or MEP runs).",
     signature: "unlock(ctx: ScriptContext, elementIds: string | readonly string[]): void",
     example: layout(`${WALLS}\n    building.lock(ctx, walls.element(1));\n    building.unlock(ctx, walls.element(1));`),
     topics: ["unlock", "unpin", "selection", "architecture"],
+  },
+  {
+    name: "building.lockCategory",
+    summary: "Lock or unlock an entire view category across the model (e.g. lighting_fixtures, equipment) to prevent accidental or agent edits.",
+    signature: "lockCategory(ctx: ScriptContext, category: string, locked?: boolean): void",
+    example: layout(`building.lockCategory(ctx, "lighting_fixtures", true);`),
+    topics: ["lock", "category", "freeze", "protect"],
   },
   {
     name: "building.elements",
@@ -944,6 +951,20 @@ export const KIT_ENTRIES: readonly KitEntry[] = [
     topics: ["keynote", "key note", "general note", "legend", "note number"],
   },
   {
+    name: "documents.listStandardNoteSets",
+    summary: "Lists reusable discipline general-notes and specification sets (electrical-general, electrical-demolition, mechanical-general, plumbing-general, fire-protection-general, architectural-general, structural-steel-concrete) so scripts pull standard notes instead of regenerating boilerplate.",
+    signature: "listStandardNoteSets(discipline?: string): readonly StandardNoteSetSummary[]",
+    example: layout(`    const sets = documents.listStandardNoteSets("electrical");\n    ctx.label(\`Sets: \${sets.map((s) => s.id).join(", ")}\`);`, "{ ids: [] }"),
+    topics: ["general notes", "standard notes", "spec library", "boilerplate", "sheet notes"],
+  },
+  {
+    name: "documents.placeStandardNotes",
+    summary: "Places a formatted, numbered standard general-notes block from the reusable library onto a sheet or view, with optional custom title, extra project-specific notes, or excluded starter note numbers.",
+    signature: "placeStandardNotes(ctx: ScriptContext, ownerRef: string, setId: string, at: { x: Measure; y: Measure }, opts?: FormatStandardNoteOptions & { id?: string; width?: Measure }): string",
+    example: layout(`    documents.placeStandardNotes(ctx, "sh-e101", "electrical-general", { x: units.mm(650), y: units.mm(500) }, { extraNotes: ["COORDINATE FLOOR BOXES WITH FURNITURE LAYOUT."] });`, "{ ids: [] }"),
+    topics: ["general notes", "standard notes", "spec library", "sheet notes", "place notes"],
+  },
+  {
     name: "ctx.editSteps",
     summary: "Sends a plan's edit as an add-on read or proposer returned it (one edit, or a batch such as a room template's circuits or a rebalance's moves), step by step. One approval still covers them.",
     signature: "editSteps(command: unknown): void",
@@ -1094,7 +1115,7 @@ export const KIT_ENTRIES: readonly KitEntry[] = [
   },
   {
     name: "documents.diagram",
-    summary: "Creates a live diagram view derived from the model by any active pack (`\"one_line\"`, `\"electrical_riser\"`, `\"controls_diagram\"`, `\"air_schematic\"`, `\"plumbing_riser\"`, `\"plumbing_isometric\"`, …; `documents.diagramKinds(ctx)` lists all available kinds). For `one_line`, pass `hints: { faultCurrent: true, lengthMode: \"shortest\" | \"manhattan\" | \"explicit\", showLoads: true }` to annotate live 3D-estimated feeder lengths and available fault current (AFC vs kAIC). Returns the view's id.",
+    summary: "Creates a live diagram view derived from the model by any active pack (`\"one_line\"`, `\"electrical_riser\"`, `\"controls_diagram\"`, `\"air_schematic\"`, `\"plumbing_riser\"`, `\"plumbing_isometric\"`, …; `documents.diagramKinds(ctx)` lists all available kinds). For `one_line`, pass `hints: { faultCurrent: true, lengthMode: \"shortest\" | \"manhattan\" | \"explicit\", showLoads: true, minBreakerA: 60, phaseScope: \"all\" | \"new\" | \"existing\" | \"demolition\" }` to annotate live 3D-estimated feeder lengths, available fault current (AFC vs kAIC), filter branch loads by breaker size, or generate new-work vs demolition single-lines. Returns the view id.",
     signature: "diagram(ctx: ScriptContext, spec: { name: string; kind: string; hints?: DiagramHints; id?: string }): string",
     example: layout(`    const sld = documents.diagram(ctx, { name: "E-201 One-Line Diagram", kind: "one_line", hints: { faultCurrent: true, lengthMode: "shortest", showLoads: true } });\n    const sheet = documents.sheet(ctx, { number: "E-201", name: "Electrical Diagrams", discipline: "electrical", sortOrder: 502 });\n    documents.place(ctx, sheet, sld, { x: units.mm(300), y: units.mm(300) }, 1);`),
     topics: ["diagram", "live diagram", "controls diagram", "lighting controls diagram", "one-line", "fault current", "afc", "feeder length", "riser", "isometric", "air schematic"],

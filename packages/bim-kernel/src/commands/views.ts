@@ -9,7 +9,7 @@ import { peerReads } from "../elements/feature";
 import { parseLinkedElementKey } from "../reference-geometry/index-geometry";
 import { ANNOTATION_LINKED_ANCHORS_FEATURE } from "../reference-geometry/linked-anchors";
 import { TAGS_MASK_LEADER_FEATURE } from "../organization/model";
-import { DIAGRAM_FAULT_CURRENT_FEATURE } from "../diagrams/definition";
+import { DIAGRAM_FAULT_CURRENT_FEATURE, DIAGRAM_FILTERS_FEATURE } from "../diagrams/definition";
 import { viewGraphicsHintsRefusal, viewGraphicsRowByKey, type ViewGraphicsHints } from "../layout/view-graphics-point";
 import {
   CUT_PATTERNS,
@@ -25,6 +25,7 @@ import {
   SCHEDULE_FILTER_OPS,
   TITLE_BLOCK_TYPES,
   VIEW_CATEGORIES,
+  VIEW_HIDDEN_ELEMENTS_FEATURE,
   VIEWPORT_NORTH_ARROW_OFFSET_FEATURE,
   type DrawingItem,
   type SheetProps,
@@ -250,6 +251,9 @@ const viewPropsPatchObject = z
     viewTopMm: z.number().finite().min(0).max(60000).nullable(),
     discipline: disciplineSchema.nullable(),
     hiddenCategories: z.array(z.enum(VIEW_CATEGORIES)).max(VIEW_CATEGORIES.length),
+    hiddenElementIds: z.array(id).max(5000),
+    showClearanceLabels: z.boolean(),
+    hideDeviceMarks: z.boolean(),
     hiddenDraftingCategories: z.array(z.enum(DRAFTING_CATEGORIES)).max(DRAFTING_CATEGORIES.length),
     references: z.record(id, referenceDisplaySchema),
     linkedHiddenLines: z.boolean(),
@@ -771,8 +775,13 @@ function replacedScheduleKinds(current: ViewProps | undefined, patch: z.infer<ty
 
 /** Patch fields replace; `discipline: null` clears the discipline (everything prints in ink). */
 function mergeProps(current: ViewProps | undefined, patch: z.infer<typeof viewPropsPatch>): ViewProps {
-  const { discipline, workingAngleDeg, viewBottomMm, viewTopMm, categoryOverrides, cropPolygon, ...rest } = patch;
+  const { discipline, workingAngleDeg, viewBottomMm, viewTopMm, categoryOverrides, cropPolygon, hiddenElementIds, ...rest } = patch;
   let merged: ViewProps = { ...current, ...rest };
+  if (hiddenElementIds !== undefined) {
+    const { hiddenElementIds: _oldHidden, ...withoutHidden } = merged;
+    const deduped = [...new Set(hiddenElementIds)];
+    merged = deduped.length === 0 ? withoutHidden : { ...withoutHidden, hiddenElementIds: deduped };
+  }
   if (cropPolygon !== undefined) {
     const { cropPolygon: _oldPoly, ...withoutPoly } = merged;
     if (cropPolygon === null) {
@@ -860,9 +869,19 @@ function checkProps(viewType: ViewElement["viewType"], props: ViewProps, viewId:
   }
   if (viewType !== "section" && viewType !== "elevation" && props.section) fail("Only section and elevation views have a cut line.", [viewId]);
   const isPlan = viewType === "floor_plan" || viewType === "ceiling_plan";
-  if (props.diagram?.hints?.faultCurrent !== undefined && !peerReads(DIAGRAM_FAULT_CURRENT_FEATURE)) fail("Show fault current can't be saved yet: the model server this model is open on is an older version. Try again once it is updated.", [viewId]);
+  if (props.diagram?.hints?.faultCurrent !== undefined && !peerReads(DIAGRAM_FAULT_CURRENT_FEATURE)) fail("Show fault current can't be saved yet: the model server this model is open on is an older version. Try again once the server is updated.", [viewId]);
+  if (
+    (props.diagram?.hints?.minBreakerA !== undefined ||
+      props.diagram?.hints?.phaseScope !== undefined ||
+      props.diagram?.hints?.includeEquipmentIds !== undefined ||
+      props.diagram?.hints?.excludeEquipmentIds !== undefined) &&
+    !peerReads(DIAGRAM_FILTERS_FEATURE)
+  ) {
+    fail("Diagram filters can't be saved yet: the model server this model is open on is an older version. Try again once the server is updated.", [viewId]);
+  }
   if (props.showLineCodes !== undefined && !peerReads(VIEW_SCHEMATIC_DETAIL_FEATURE)) fail("Inline service code settings can't be saved yet: the model server this model is open on is an older version. Try again once it is updated.", [viewId]);
   if (props.symbolScale !== undefined && !peerReads(VIEW_SYMBOL_SCALE_FEATURE)) fail("View symbol scale can't be saved yet: the model server this model is open on is an older version. Try again once it is updated.", [viewId]);
+  if (props.hiddenElementIds && props.hiddenElementIds.length > 0 && !peerReads(VIEW_HIDDEN_ELEMENTS_FEATURE)) fail("Hiding individual elements in a view can't be saved yet: the model server this model is open on is an older version. Try again once it is updated.", [viewId]);
   if (!isPlan && (props.viewBottomMm !== undefined || props.viewTopMm !== undefined)) fail("Only plans have a top and bottom to what they show. A section's reach is its far clip depth.", [viewId]);
   if (isPlan && props.viewTopMm !== undefined && props.viewTopMm < (props.cutHeightMm ?? DEFAULT_CUT_HEIGHT_MM)) fail(`The top of the view must be at or above the cut height (${Math.round((props.cutHeightMm ?? DEFAULT_CUT_HEIGHT_MM) / 30.48) / 10} ft).`, [viewId]);
   if (isPlan && viewType === "floor_plan" && props.viewBottomMm !== undefined && props.viewBottomMm > (props.cutHeightMm ?? DEFAULT_CUT_HEIGHT_MM)) fail(`The bottom of the view must be at or below the cut height (${Math.round((props.cutHeightMm ?? DEFAULT_CUT_HEIGHT_MM) / 30.48) / 10} ft).`, [viewId]);

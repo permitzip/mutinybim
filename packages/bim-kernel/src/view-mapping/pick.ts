@@ -1,5 +1,5 @@
 import type { Rect } from "../crop";
-import { otherLevelElementsInRange, viewCropAndWindow } from "../drawing/views";
+import { otherLevelElementsInRange, planViewRangeExcludes, viewCropAndWindow } from "../drawing/views";
 import { columnVerticalSpan } from "../placement/top-tie";
 import { partPlanOutline } from "../drawing/runs";
 import { elementSolid, hull2 } from "../drawing/solids";
@@ -369,6 +369,7 @@ function shownFilter(model: ModelState, view: ViewElement): (el: BimElement) => 
   const names = viewLevelNames(model, view.props?.level, view.props?.levelElevationMm);
   const level = viewModelLevel(model, view.props?.level, view.props?.levelElevationMm);
   const reached = names ? new Set(otherLevelElementsInRange(model, view).map((el) => el.id)) : null;
+  const outsideRange = planViewRangeExcludes(model, view);
   const display = displayResolver(model, displayContextOf(view));
   return (el) => {
     if (!PICKABLE.has(el.kind) && !rowPicks(el.kind)) return false;
@@ -388,6 +389,7 @@ function shownFilter(model: ModelState, view: ViewElement): (el: BimElement) => 
       }
       if (!spansLevel) return false;
     }
+    if (outsideRange?.(el)) return false;
     if (!elementLook(model, view, el).visible) return false;
     return display(el).visible;
   };
