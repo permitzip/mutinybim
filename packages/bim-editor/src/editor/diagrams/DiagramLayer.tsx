@@ -131,18 +131,21 @@ export function DiagramLayer({ model, view, toPaper, toDrawing, paperOf, selecte
   const boxes = evaluation.boxes.map((b, i) => ({ b, i })).sort((x, y) => (y.b.max.x - y.b.min.x) * (y.b.max.y - y.b.min.y) - (x.b.max.x - x.b.min.x) * (x.b.max.y - x.b.min.y) || x.i - y.i)
   const paperRects = boxes.map(({ b }) => rectOf(b, toPaper))
   const warned = new Set(evaluation.warnings.map((w) => w.elementId))
-  // Keep every node and standalone label directly draggable in one gesture, while letting unselected run targets take clicks before their callout label.
-  const coversUnselectedRun = (t: DiagramTextBox) => {
+  // Keep every node, standalone, moved, and selected-owner label directly draggable in one gesture, while letting an unselected run take clicks before its own unmoved callout label.
+  const isUnselectedOwnRunCallout = (t: DiagramTextBox) => {
+    if (t.elementId === null || t.moved) return false
+    const ownerId = t.elementId
     const tr = rectOf(t, toPaper)
     return boxes.some(({ b, i }, idx) => {
       if (!b.pipe || lit.has(i)) return false
+      if (b.elementId !== ownerId && !b.pipe.elementIds.includes(ownerId)) return false
       const br = paperRects[idx]!
       const cx = br.x + br.w / 2
       const cy = br.y + br.h / 2
       return cx >= tr.x - 0.5 && cx <= tr.x + tr.w + 0.5 && cy >= tr.y - 0.5 && cy <= tr.y + tr.h + 0.5
     })
   }
-  const movableTexts = evaluation.texts.filter((t) => t.text.trim() !== '' && !coversUnselectedRun(t))
+  const movableTexts = evaluation.texts.filter((t) => t.text.trim() !== '' && !isUnselectedOwnRunCallout(t))
   const startDrag = (e: React.PointerEvent<SVGRectElement>, d: Omit<Drag, 'from' | 'to' | 'root'>) => {
     // Left button only (a right-click opens the menu).
     if (e.button > 0) return
