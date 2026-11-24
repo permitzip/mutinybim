@@ -344,6 +344,20 @@ test("migrateSqliteToSupabase copies records and remaps foreign keys when an ema
   });
   await sqlite.createModel({ id: "mdl-1", ownerId: legacyUser.id, name: "Studio" });
   await sqlite.linkIdentity("org", "sub-1", legacyUser.id);
+  await sqlite.createSession("tok-hash", legacyUser.id, new Date(Date.now() + 60_000), "password");
+  await sqlite.saveOAuthClient("org", "https://app.example.test/auth/org/callback", "cid-1");
+  await sqlite.createAgentKey({ id: "ak-1", userId: legacyUser.id, keyHash: "kh-1", label: "CLI", last4: "1234" });
+  await sqlite.saveAssistantClient({ clientId: "ac-1", clientName: "Claude", redirectUris: ["https://claude.ai/cb"], kind: "registered" });
+  await sqlite.saveLinkedGrant({
+    userId: legacyUser.id,
+    provider: "org",
+    clientId: "cid-1",
+    accessCipher: "enc-a",
+    refreshCipher: "enc-r",
+    accessExpiresAt: new Date(Date.now() + 60_000),
+    refreshExpiresAt: new Date(Date.now() + 120_000),
+  });
+  await sqlite.replaceLinkedModels(legacyUser.id, "org", [{ remoteModelId: "rm-1", remoteProjectId: "rp-1", label: "Tower", canEdit: true, openUrl: "https://org.example.test/m/1" }], () => "lm-1");
   await sqlite.close();
 
   const posted: { path: string; method: string; body: unknown }[] = [];
@@ -363,7 +377,19 @@ test("migrateSqliteToSupabase copies records and remaps foreign keys when an ema
   expect(summary.remappedUsers).toBe(1);
   expect(summary.tables.models).toBe(1);
   expect(summary.tables.identities).toBe(1);
+  expect(summary.tables.sessions).toBe(1);
+  expect(summary.tables.oauth_clients).toBe(1);
+  expect(summary.tables.agent_keys).toBe(1);
+  expect(summary.tables.assistant_clients).toBe(1);
+  expect(summary.tables.linked_grants).toBe(1);
+  expect(summary.tables.linked_models).toBe(1);
 
+  expect(posted.find((p) => p.path === "/rest/v1/sessions")?.body).toEqual([expect.objectContaining({ token_hash: "tok-hash", user_id: existingPgId, via: "password" })]);
+  expect(posted.find((p) => p.path === "/rest/v1/oauth_clients")?.body).toEqual([expect.objectContaining({ provider: "org", client_id: "cid-1" })]);
+  expect(posted.find((p) => p.path === "/rest/v1/agent_keys")?.body).toEqual([expect.objectContaining({ id: "ak-1", user_id: existingPgId, key_hash: "kh-1", label: "CLI", last4: "1234" })]);
+  expect(posted.find((p) => p.path === "/rest/v1/assistant_clients")?.body).toEqual([expect.objectContaining({ client_id: "ac-1", redirect_uris: ["https://claude.ai/cb"] })]);
+  expect(posted.find((p) => p.path === "/rest/v1/linked_grants")?.body).toEqual([expect.objectContaining({ user_id: existingPgId, provider: "org", access_cipher: "enc-a", state: "ok" })]);
+  expect(posted.find((p) => p.path === "/rest/v1/linked_models")?.body).toEqual([expect.objectContaining({ user_id: existingPgId, remote_model_id: "rm-1", can_edit: true })]);
   const modelPost = posted.find((p) => p.path === "/rest/v1/models");
   expect(modelPost?.body).toEqual([expect.objectContaining({ id: "mdl-1", owner_id: existingPgId, name: "Studio" })]);
   const identityPost = posted.find((p) => p.path === "/rest/v1/identities");

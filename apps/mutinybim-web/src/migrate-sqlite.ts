@@ -1,9 +1,8 @@
 /**
  * One-shot, idempotent migration of app metadata from local SQLite (`<dataDir>/accounts.sqlite`)
- * into Supabase Postgres (PostgREST). Run before enabling `MUTINYBIM_WEB_SUPABASE_SECRET_KEY`
- * on a deployment that already has accounts or models in SQLite:
+ * into Supabase Postgres (PostgREST). Run when moving an existing deployment off SQLite:
  *
- *   node --import tsx apps/mutinybim-web/src/migrate-sqlite.ts [--dry-run]
+ *   node --import tsx apps/mutinybim-web/src/migrate-sqlite.ts [--dry-run] [--sqlite=/path/to/accounts.sqlite]
  *
  * Reads `MUTINYBIM_WEB_DATA` (default `./mutinybim-web-data`), `MUTINYBIM_WEB_SUPABASE_URL`,
  * and `MUTINYBIM_WEB_SUPABASE_SECRET_KEY`. Existing Postgres rows are never overwritten;
@@ -47,6 +46,15 @@ function asIsoOrNull(value: unknown): string | null {
 
 function asBool(value: unknown): boolean {
   return value === true || value === 1 || value === "1";
+}
+
+function parseJsonValue(value: unknown, fallback: unknown): unknown {
+  if (typeof value !== "string") return value ?? fallback;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return fallback;
+  }
 }
 
 function remap(map: ReadonlyMap<string, string>, id: unknown): string | null {
@@ -102,8 +110,9 @@ export async function migrateSqliteToSupabase(options: MigrateOptions): Promise<
   try {
     const counts: Record<string, number> = {};
     const userIdMap = new Map<string, string>();
+    const nowIso = new Date().toISOString();
 
-    // 1. Users — check existing Postgres users by email so pre-existing OAuth users merge cleanly.
+    // 1. Users — merge by lowercase email when a user already exists in Postgres.
     const existingUsersRaw = await request("/rest/v1/users?select=id,email,password_hash");
     const existingByEmail = new Map<string, { id: string; passwordHash: string | null }>();
     if (Array.isArray(existingUsersRaw)) {
@@ -118,9 +127,8 @@ export async function migrateSqliteToSupabase(options: MigrateOptions): Promise<
       }
     }
 
-    const sqliteUsers = readTable(sqlite, "users");
     const usersToInsert: Row[] = [];
-    for (const u of sqliteUsers) {
+    for (const u of readTable(sqlite, "users")) {
       const id = String(u.id);
       const email = String(u.email).trim().toLowerCase();
       const existing = existingByEmail.get(email);
@@ -140,7 +148,7 @@ export async function migrateSqliteToSupabase(options: MigrateOptions): Promise<
           display_name: String(u.display_name ?? email.split("@")[0] ?? "User"),
           password_hash: typeof u.password_hash === "string" ? u.password_hash : null,
           color_scheme: u.color_scheme === "light" || u.color_scheme === "dark" ? u.color_scheme : "system",
-          created_at: asIsoOrNull(u.created_at) ?? new Date().toISOString(),
+          created_at: asIsoOrNull(u.created_at) ?? nowIso,
         });
       }
     }
@@ -154,12 +162,11 @@ export async function migrateSqliteToSupabase(options: MigrateOptions): Promise<
         provider: String(r.provider),
         subject: String(r.subject),
         user_id: remap(userIdMap, r.user_id),
-        created_at: asIsoOrNull(r.created_at) ?? new Date().toISOString(),
+        created_at: asIsoOrNull(r.created_at) ?? nowIso,
       })),
     );
 
-    // 3. Active sessions (unexpired only, so existing signed-in users aren't kicked out)
-    const nowIso = new Date().toISOString();
+    // 3. Unexpired sessions
     counts.sessions = await upsertBatch(
       "sessions",
       "token_hash",
@@ -168,9 +175,9 @@ export async function migrateSqliteToSupabase(options: MigrateOptions): Promise<
         .map((r) => ({
           token_hash: String(r.token_hash),
           user_id: remap(userIdMap, r.user_id),
-          signed_in_via: String(r.signed_in_via ?? "password"),
           created_at: asIsoOrNull(r.created_at) ?? nowIso,
           expires_at: String(r.expires_at),
+          via: typeof r.via === "string" && r.via ? r.via : "password",
         })),
     );
 
@@ -203,11 +210,12 @@ export async function migrateSqliteToSupabase(options: MigrateOptions): Promise<
     // 6. Dynamically registered OAuth clients
     counts.oauth_clients = await upsertBatch(
       "oauth_clients",
-      "issuer",
+      "provider,redirect_uri",
       readTable(sqlite, "oauth_clients").map((r) => ({
-        issuer: String(r.issuer),
+        provider: String(r.provider),
+        redirect_uri: String(r.redirect_uri),
         client_id: String(r.client_id),
-        created_at: asIsoOrNull(r.created_at) ?? nowIso,
+        registered_at: asIsoOrNull(r.registered_at) ?? nowIso,
       })),
     );
 
@@ -218,12 +226,11 @@ export async function migrateSqliteToSupabase(options: MigrateOptions): Promise<
       readTable(sqlite, "agent_keys").map((r) => ({
         id: String(r.id),
         user_id: remap(userIdMap, r.user_id),
-        name: String(r.name),
-        token_hash: String(r.token_hash),
-        token_prefix: String(r.token_prefix),
+        key_hash: String(r.key_hash),
+        label: String(r.label),
+        last4: String(r.last4),
         created_at: asIsoOrNull(r.created_at) ?? nowIso,
         last_used_at: asIsoOrNull(r.last_used_at),
-        revoked_at: asIsoOrNull(r.revoked_at),
       })),
     );
 
@@ -234,7 +241,13 @@ export async function migrateSqliteToSupabase(options: MigrateOptions): Promise<
       readTable(sqlite, "assistant_clients").map((r) => ({
         client_id: String(r.client_id),
         client_name: String(r.client_name),
-        redirect_uris: String(r.redirect_uris),
+        redirect_uris: parseJsonValue(r.redirect_uris, []),
+        kind: r.kind === "metadata" ? "metadata" : "registered",
+        token_auth_method:
+          r.token_auth_method === "client_secret_post" || r.token_auth_method === "client_secret_basic"
+            ? r.token_auth_method
+            : "none",
+        secret_hash: typeof r.secret_hash === "string" ? r.secret_hash : null,
         created_at: asIsoOrNull(r.created_at) ?? nowIso,
       })),
     );
@@ -245,33 +258,31 @@ export async function migrateSqliteToSupabase(options: MigrateOptions): Promise<
       "id",
       readTable(sqlite, "assistant_grants").map((r) => ({
         id: String(r.id),
-        client_id: String(r.client_id),
         user_id: remap(userIdMap, r.user_id),
-        label: String(r.label),
+        client_id: String(r.client_id),
+        client_name: String(r.client_name),
+        resource: String(r.resource),
         scope: String(r.scope),
         access_hash: String(r.access_hash),
         access_expires_at: String(r.access_expires_at),
-        refresh_hash: typeof r.refresh_hash === "string" ? r.refresh_hash : null,
-        refresh_expires_at: asIsoOrNull(r.refresh_expires_at),
+        refresh_hash: String(r.refresh_hash),
         previous_refresh_hash: typeof r.previous_refresh_hash === "string" ? r.previous_refresh_hash : null,
+        refresh_expires_at: String(r.refresh_expires_at),
         created_at: asIsoOrNull(r.created_at) ?? nowIso,
         last_used_at: asIsoOrNull(r.last_used_at),
-        revoked_at: asIsoOrNull(r.revoked_at),
       })),
     );
 
     // 10. Kept scripts
-    counts.kept_scripts = await upsertBatch(
-      "kept_scripts",
+    counts.assistant_kept_scripts = await upsertBatch(
+      "assistant_kept_scripts",
       "id",
-      readTable(sqlite, "kept_scripts").map((r) => ({
+      readTable(sqlite, "assistant_kept_scripts").map((r) => ({
         id: String(r.id),
         user_id: remap(userIdMap, r.user_id),
-        name: String(r.name),
-        source: String(r.source),
-        summary: String(r.summary ?? ""),
-        created_at: asIsoOrNull(r.created_at) ?? nowIso,
-        updated_at: asIsoOrNull(r.updated_at) ?? nowIso,
+        body: parseJsonValue(r.body, {}),
+        expires_at: Number(r.expires_at),
+        saved_at: Number(r.saved_at),
       })),
     );
 
@@ -282,27 +293,31 @@ export async function migrateSqliteToSupabase(options: MigrateOptions): Promise<
       readTable(sqlite, "linked_grants").map((r) => ({
         user_id: remap(userIdMap, r.user_id),
         provider: String(r.provider),
-        scope: String(r.scope),
-        access_enc: String(r.access_enc),
-        access_expires_at: asIsoOrNull(r.access_expires_at),
-        refresh_enc: typeof r.refresh_enc === "string" ? r.refresh_enc : null,
-        state: r.state === "reconnect" ? "reconnect" : "active",
+        client_id: String(r.client_id),
+        access_cipher: String(r.access_cipher),
+        refresh_cipher: String(r.refresh_cipher),
+        access_expires_at: String(r.access_expires_at),
+        refresh_expires_at: String(r.refresh_expires_at),
+        state: r.state === "reconnect" ? "reconnect" : "ok",
+        last_error: typeof r.last_error === "string" ? r.last_error : null,
+        created_at: asIsoOrNull(r.created_at) ?? nowIso,
         updated_at: asIsoOrNull(r.updated_at) ?? nowIso,
       })),
     );
 
     counts.linked_models = await upsertBatch(
       "linked_models",
-      "user_id,provider,remote_id",
+      "user_id,provider,remote_model_id",
       readTable(sqlite, "linked_models").map((r) => ({
         alias_id: String(r.alias_id),
         user_id: remap(userIdMap, r.user_id),
         provider: String(r.provider),
-        remote_id: String(r.remote_id),
+        remote_model_id: String(r.remote_model_id),
+        remote_project_id: String(r.remote_project_id),
         label: String(r.label),
-        open_url: typeof r.open_url === "string" ? r.open_url : null,
         can_edit: asBool(r.can_edit),
-        updated_at: asIsoOrNull(r.updated_at) ?? nowIso,
+        open_url: typeof r.open_url === "string" ? r.open_url : null,
+        seen_at: asIsoOrNull(r.seen_at) ?? nowIso,
       })),
     );
 
