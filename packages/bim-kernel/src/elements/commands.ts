@@ -5,7 +5,7 @@ import { activeClassRegistry } from "../registry";
 import { builtinRegistry } from "../registry/builtin";
 import { recognizes } from "../registry/recognition";
 import { withPackParameters } from "../fields/pack-parameters";
-import { PACK_PARAMETER_KEY, PARTS_PACK_VALUES_FEATURE } from "../parts";
+import { PACK_PARAMETER_KEY, PARAM_TEXT_DEFAULT_MAX, PARAM_TEXT_LONG_MAX, PARTS_LONG_TEXT_VALUES_FEATURE, PARTS_PACK_VALUES_FEATURE } from "../parts";
 import "../part-model/unit-gate";
 import "./discipline-gate";
 import "./class-refresh";
@@ -44,7 +44,7 @@ import { ELEMENTS_LINKED_COPY_FEATURE } from "../reference-geometry/linked-copy-
 const idSchema = z.string().min(1).max(200);
 const vec2Schema = z.object({ x: z.number().finite(), y: z.number().finite() }).strict();
 const paramKey = z.string().max(REGISTRY_ID_MAX_LENGTH).regex(REGISTRY_ID_PATTERN, "a parameter key (zz.section, material.layer_set)");
-const paramValue = z.union([z.number().finite(), z.string().max(400), z.boolean()]);
+const paramValue = z.union([z.number().finite(), z.string().max(PARAM_TEXT_LONG_MAX), z.boolean()]);
 const MAX_IDS = 500;
 const MAX_POINTS = 2000;
 
@@ -53,7 +53,17 @@ const vertical = z.enum(["top", "center", "bottom"]);
 const offset = z.number().finite().min(-1_000_000).max(1_000_000);
 
 export const geometricPlacementSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("point"), levelId: idSchema, position: vec2Schema, offsetMm: offset, rotationDeg: z.number().finite().min(-3600).max(3600) }).strict(),
+  z
+    .object({
+      kind: z.literal("point"),
+      levelId: idSchema,
+      position: vec2Schema,
+      offsetMm: offset,
+      rotationDeg: z.number().finite().min(-3600).max(3600),
+      topLevelId: idSchema.optional(),
+      topOffsetMm: offset.optional(),
+    })
+    .strict(),
   z
     .object({
       kind: z.literal("line"),
@@ -247,8 +257,11 @@ function packPartValueRefusal(model: ModelState, part: PartInstance, key: string
       return typeof value === "boolean" ? null : `${field.label} is yes or no`;
     case "choice":
       return typeof value === "string" && (field.choices ?? []).includes(value) ? null : `${field.label} is one of ${(field.choices ?? []).join(", ")}`;
-    default:
-      return typeof value === "string" ? null : `${field.label} is text`;
+    default: {
+      if (typeof value !== "string") return `${field.label} is text`;
+      const limit = field.maxLength ?? PARAM_TEXT_DEFAULT_MAX;
+      return value.length <= limit ? null : `${field.label} must be at most ${limit} characters`;
+    }
   }
 }
 
@@ -277,8 +290,14 @@ type PlacementInput = z.infer<typeof geometricPlacementSchema>;
 function toPlacement(p: PlacementInput): GeometricPlacement {
   const levelId = asElementId(p.levelId);
   switch (p.kind) {
-    case "point":
-      return { ...p, levelId };
+    case "point": {
+      const { topLevelId, topOffsetMm, ...rest } = p;
+      return {
+        ...rest,
+        levelId,
+        ...(topLevelId !== undefined ? { topLevelId: asElementId(topLevelId), ...(topOffsetMm ? { topOffsetMm } : {}) } : {}),
+      };
+    }
     case "line": {
       const { topLevelId, topOffsetMm, topSurface, baseSurface, ...rest } = p;
       return {
@@ -375,7 +394,7 @@ function checkPlacement(reader: TrackedReader, el: CoreElement, p: GeometricPlac
   if (!allowed.includes(p.kind)) refuse("unsupported_geometry", `${name} can't be placed as ${p.kind === "area" ? "an area" : `a ${p.kind}`}; it takes ${allowed.map((k) => (k === "area" ? "an area" : `a ${k}`)).join(" or ")}`, [el.id]);
   const level = reader.find(asElementId(p.levelId));
   if (level?.kind !== "level") refuse("element_not_found", `${name} can't be placed on ${p.levelId}: it isn't a level in this model`, [el.id]);
-  if (p.kind === "line" && p.topLevelId !== undefined && reader.find(asElementId(p.topLevelId))?.kind !== "level") refuse("element_not_found", `${name}'s top level ${p.topLevelId} isn't a level in this model`, [el.id]);
+  if ((p.kind === "line" || p.kind === "point") && p.topLevelId !== undefined && reader.find(asElementId(p.topLevelId))?.kind !== "level") refuse("element_not_found", `${name}'s top level ${p.topLevelId} isn't a level in this model`, [el.id]);
   if (p.kind === "line") checkSurfaceBindings(reader, el.kind, name, el.id, p);
   if (p.kind === "line" && sameVec(p.start, p.end)) refuse("invalid_value", `${name} would start and end at the same point`, [el.id]);
   if (p.kind === "path" && p.profile) {
@@ -419,7 +438,7 @@ function withTopOrHeight(reader: TrackedReader, el: CoreElement, heightMm: numbe
     if (tied === null && tiedHeightMm(p, elevation) === null) refuse("invalid_value", `${levelName(reader, p.topLevelId)} isn't above ${levelName(reader, p.levelId)}, so ${name} would have no height; pick a level above it`, [el.id]);
     const next = tied && isCoreElement(tied) ? tied : el;
     // A peer that doesn't store ties (`walls:top_constraint`) is sent the height it works out to.
-    if (peerReads(WALLS_TOP_CONSTRAINT_FEATURE) || next.placement?.kind !== "line") return next;
+    if (peerReads(WALLS_TOP_CONSTRAINT_FEATURE) || (next.placement?.kind !== "line" && next.placement?.kind !== "point")) return next;
     const { topLevelId: _top, topOffsetMm: _offset, ...untied } = next.placement;
     return { ...next, placement: untied };
   }
@@ -552,6 +571,9 @@ export function executeElementCommand(model: ModelState, command: ElementCommand
               if (why) refuse("invalid_value", why, [el.id]);
             }
             if (!peerReads(PARTS_PACK_VALUES_FEATURE)) refuse("invalid_value", `${elementName(el)} can't take pack parameters yet: the model server this model is open on is an older version that doesn't store them. Try again once the server is updated`, [el.id]);
+            if (Object.values(command.values).some((v) => typeof v === "string" && v.length > PARAM_TEXT_DEFAULT_MAX) && !peerReads(PARTS_LONG_TEXT_VALUES_FEATURE)) {
+              refuse("invalid_value", `${elementName(el)} can't store text values longer than ${PARAM_TEXT_DEFAULT_MAX} characters yet: the model server is an older version. Try again once the server is updated`, [el.id]);
+            }
             const values: Record<string, ParamValue> = { ...el.values };
             for (const [k, v] of Object.entries(command.values)) {
               if (v === null) delete values[k];
@@ -564,6 +586,7 @@ export function executeElementCommand(model: ModelState, command: ElementCommand
             const raw = el as BimElement & { readonly values?: Record<string, ParamValue> };
             const values: Record<string, ParamValue> = { ...(raw.values ?? {}) };
             for (const [k, v] of Object.entries(command.values)) {
+              if (typeof v === "string" && v.length > PARAM_TEXT_DEFAULT_MAX) refuse("invalid_value", `${k} must be at most ${PARAM_TEXT_DEFAULT_MAX} characters`, [el.id]);
               if (v === null) delete values[k];
               else values[k] = v;
             }
@@ -574,6 +597,7 @@ export function executeElementCommand(model: ModelState, command: ElementCommand
           const base = current(el);
           const values: Record<string, ParamValue> = { ...(base.values ?? {}) };
           for (const [k, v] of Object.entries(command.values)) {
+            if (typeof v === "string" && v.length > PARAM_TEXT_DEFAULT_MAX) refuse("invalid_value", `${k} must be at most ${PARAM_TEXT_DEFAULT_MAX} characters`, [el.id]);
             if (v === null) delete values[k];
             else values[k] = v;
           }
@@ -605,7 +629,7 @@ export function executeElementCommand(model: ModelState, command: ElementCommand
         // Unbound now: the body profile its surfaces gave goes with them.
         const next = tied.kind === "wall" && tied.bodyProfile !== undefined && !surfaceBoundPlacement(tied) ? withoutProfile(tied) : tied;
         write(el, next);
-        summary = p.kind === "line" && p.topSurface ? `${coreElementName(el)}'s top now runs to ${surfaceBindingWords(p.topSurface)}` : p.kind === "line" && p.topLevelId !== undefined ? `${coreElementName(el)} now runs up to ${levelName(reader, p.topLevelId)}` : command.heightMm !== undefined ? `${coreElementName(el)} is now ${Math.round(command.heightMm)} mm tall, not tied to a level` : `Placed ${coreElementName(el)} as ${p.kind === "area" ? "an area" : `a ${p.kind}`}`;
+        summary = p.kind === "line" && p.topSurface ? `${coreElementName(el)}'s top now runs to ${surfaceBindingWords(p.topSurface)}` : (p.kind === "line" || p.kind === "point") && p.topLevelId !== undefined ? `${coreElementName(el)} now runs up to ${levelName(reader, p.topLevelId)}` : command.heightMm !== undefined ? `${coreElementName(el)} is now ${Math.round(command.heightMm)} mm tall, not tied to a level` : `Placed ${coreElementName(el)} as ${p.kind === "area" ? "an area" : `a ${p.kind}`}`;
         break;
       }
       case "set_element_thickness": {

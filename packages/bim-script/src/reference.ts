@@ -278,7 +278,13 @@ export interface AssemblyThermalSummary {
   readonly missingThermalMaterials: readonly string[];
 }
 export interface ChainHandle { readonly prefix: string; element(n: number): string }
-export interface OpeningSpec { wall: string; along: Measure; width?: Measure; height?: Measure; sill?: Measure; side?: 1 | -1; typeId?: string; mark?: string; material?: string; values?: Record<string, string | number | boolean>; id?: string }
+export type DoorOperation = "SINGLE_SWING_LEFT" | "SINGLE_SWING_RIGHT" | "DOUBLE_DOOR_SINGLE_SWING" | "DOUBLE_SWING_LEFT" | "DOUBLE_SWING_RIGHT" | "DOUBLE_DOOR_DOUBLE_SWING" | "SLIDING_TO_LEFT" | "SLIDING_TO_RIGHT" | "DOUBLE_DOOR_SLIDING" | "FOLDING_TO_LEFT" | "FOLDING_TO_RIGHT" | "DOUBLE_DOOR_FOLDING" | "REVOLVING" | "ROLLINGUP" | "SWING_FIXED_LEFT" | "SWING_FIXED_RIGHT" | "USERDEFINED" | "NOTDEFINED" | "single_left" | "single_right" | "double" | "double_swing" | "double_acting_left" | "double_acting_right" | "double_acting_pair" | "sliding_left" | "sliding_right" | "sliding_double" | "folding_left" | "folding_right" | "folding_double" | "bifold_left" | "bifold_right" | "bifold_double" | "overhead" | "rolling" | "revolving" | "swing_fixed_left" | "swing_fixed_right";
+export type DoorSwing = "inward" | "outward" | "INWARD" | "OUTWARD";
+export type DoorHanding = "LH" | "RH" | "LHR" | "RHR";
+export type WindowPartitioning = "SINGLE_PANEL" | "DOUBLE_PANEL_VERTICAL" | "DOUBLE_PANEL_HORIZONTAL" | "TRIPLE_PANEL_VERTICAL" | "TRIPLE_PANEL_HORIZONTAL" | "TRIPLE_PANEL_BOTTOM" | "TRIPLE_PANEL_TOP" | "TRIPLE_PANEL_LEFT" | "TRIPLE_PANEL_RIGHT" | "USERDEFINED" | "NOTDEFINED" | "single" | "double_vertical" | "double_hung" | "double_horizontal" | "triple_vertical" | "triple_horizontal" | "triple_bottom" | "triple_top" | "triple_left" | "triple_right";
+export interface OpeningSpec { wall: string; along: Measure; width?: Measure; height?: Measure; sill?: Measure; side?: 1 | -1; typeId?: string; mark?: string; material?: string; frameDepth?: Measure; external?: boolean; values?: Record<string, string | number | boolean>; id?: string }
+export interface DoorSpec extends OpeningSpec { operation?: DoorOperation; hinge?: "left" | "right"; swing?: DoorSwing; handing?: DoorHanding; fireRating?: string }
+export interface WindowSpec extends OpeningSpec { partitioning?: WindowPartitioning }
 export interface PlacedPart { readonly id: string; connector(connectorId: string): RouteEnd }
 export type SystemLinePattern = "solid" | "dashed" | "dotted" | "dash_dot" | "dash_dot_dot" | "dash_dot_dot_dot" | "long_dash";
 export type SystemLineWeight = "thin" | "medium" | "wide" | "heavy";
@@ -302,6 +308,8 @@ export interface PlanViewSpec {
   detailLevel?: "coarse" | "medium" | "fine";
   visualStyle?: "wireframe" | "hidden_line" | "shaded" | "shaded_edges";
   showLineCodes?: boolean;
+  offsetStackedRuns?: boolean;
+  showReferenceDisciplines?: readonly string[];
   hide?: string[];
   categoryOverrides?: Readonly<Record<string, CategoryOverrideSpec>>;
   crop?: { from: PlanPoint; to: PlanPoint };
@@ -312,6 +320,8 @@ export interface ViewChanges {
   detailLevel?: "coarse" | "medium" | "fine";
   visualStyle?: "wireframe" | "hidden_line" | "shaded" | "shaded_edges";
   showLineCodes?: boolean;
+  offsetStackedRuns?: boolean;
+  showReferenceDisciplines?: readonly string[];
   hide?: string[];
   /** Replaces the view's category override map; pass {} to clear all overrides. */
   categoryOverrides?: Readonly<Record<string, CategoryOverrideSpec>>;
@@ -321,10 +331,11 @@ export interface VerticalViewSpec {
   crop?: { from: PlanPoint; to: PlanPoint };
   headExt?: Measure; tailExt?: Measure; splitGap?: boolean;
   levelLeftExtMm?: number; levelRightExtMm?: number;
+  showInDisciplines?: readonly string[];
   level?: string; discipline?: string; scale?: number; hide?: string[]; id?: string;
 }
-export interface EnlargedPlanSpec { parent: string; name: string; from: PlanPoint; to: PlanPoint; scale?: number; label?: string; head?: PlanPoint; discipline?: string; cutHeight?: Measure; id?: string; calloutId?: string }
-export interface CalloutRefSpec { view: string; target: string; from: PlanPoint; to: PlanPoint; head?: PlanPoint; label?: string; id?: string }
+export interface EnlargedPlanSpec { parent: string; name: string; from?: PlanPoint; to?: PlanPoint; polygon?: readonly PlanPoint[]; showLabel?: boolean; scale?: number; label?: string; head?: PlanPoint; discipline?: string; cutHeight?: Measure; id?: string; calloutId?: string }
+export interface CalloutRefSpec { view: string; target: string; from?: PlanPoint; to?: PlanPoint; polygon?: readonly PlanPoint[]; showLabel?: boolean; head?: PlanPoint; label?: string; id?: string }
 export interface Point3Spec { readonly x: Measure; readonly y: Measure; readonly z: Measure }
 export type LookFrom3d = "south_west" | "south_east" | "north_west" | "north_east" | "south" | "north" | "east" | "west" | "top";
 export interface Camera3dSpec {
@@ -335,6 +346,147 @@ export interface View3dSpec extends Camera3dSpec {
   name: string; fitElements?: readonly string[]; fitRegion?: { min: Point3Spec; max: Point3Spec };
   cropBox?: { center: Point3Spec; halfSize: Point3Spec; rotationDeg?: number };
   cropView?: boolean; showCropBox?: boolean; id?: string;
+}
+export type LuminaireEmergencyMode = "none" | "battery_pack" | "generator_circuit" | "inverter";
+export type PhotometricOverlayMode = "off" | "normal" | "egress";
+export type PhotometricsCalculationMode = "simplified" | "detailed" | "surfaces";
+export type RadiosityMethod = "patch_radiosity" | "cavity";
+export type DaylightSkyModel = "cie_overcast" | "cie_clear" | "cie_intermediate";
+export interface DaylightSpec {
+  enabled?: boolean; skyModel?: DaylightSkyModel; outdoorHorizontalFc?: number;
+  sunAzimuthDeg?: number; sunElevationDeg?: number; directSunNormalFc?: number; includeElectric?: boolean;
+}
+export interface LuminaireIesSpec {
+  profile?: string; iesText?: string; saveAsProfile?: string;
+  emergencyMode?: LuminaireEmergencyMode; emergencyLumens?: number; emergencyBallastFactor?: number;
+  egressFixture?: boolean; lld?: number; ldd?: number; llf?: number; tiltDeg?: number;
+}
+export interface PhotometricsRunSpec {
+  level?: string; spaceIds?: readonly string[]; gridSpacing?: Measure | number; workplaneHeight?: Measure | number;
+  calculationMode?: PhotometricsCalculationMode; useMaterialReflectances?: boolean;
+  includeFurnitureOcclusion?: boolean; includeTaskSurfaces?: boolean;
+  interReflectance?: boolean; radiosityMethod?: RadiosityMethod; daylight?: DaylightSpec;
+  reflectances?: { ceiling?: number; wall?: number; floor?: number };
+}
+export interface DaylightAnalysisSpec extends Omit<PhotometricsRunSpec, "daylight"> {
+  skyModel?: DaylightSkyModel; outdoorHorizontalFc?: number; sunAzimuthDeg?: number;
+  sunElevationDeg?: number; directSunNormalFc?: number; includeElectric?: boolean;
+}
+export interface RadianceExportSpec {
+  skyModel?: DaylightSkyModel; sunAzimuthDeg?: number; sunElevationDeg?: number;
+  includeLuminaires?: boolean; gridSpacing?: Measure | number; workplaneHeight?: Measure | number;
+}
+export interface EgressLightingCheckSpec {
+  level?: string; gridSpacing?: Measure | number; workplaneHeight?: Measure | number;
+  calculationMode?: PhotometricsCalculationMode; includeFurnitureOcclusion?: boolean;
+  interReflectance?: boolean; battery90MinDerate?: number;
+  egressPaths?: readonly { id: string; name: string; levelId?: string; levelName?: string; outline?: readonly { x: Measure | number; y: Measure | number }[]; polyline?: readonly { x: Measure | number; y: Measure | number }[]; widthFt?: number }[];
+  explicitOnly?: boolean;
+}
+export interface PhotometricOverlaySpec {
+  mode: PhotometricOverlayMode; showContours?: boolean; showGridValues?: boolean; showFailingHighlights?: boolean;
+  gridSpacing?: Measure | number; workplaneHeight?: Measure | number; contourLevels?: readonly number[];
+}
+export type SymbolPrimitive = NonNullable<PartTypeDefinition["planSymbols"]>[number];
+export type CeilingGridSpec =
+  | { readonly preset: "2x4" | "2x2"; readonly origin?: PlanPoint; readonly rotationDeg?: number }
+  | { readonly preset?: undefined; readonly spacingX: Measure; readonly spacingY: Measure; readonly origin?: PlanPoint; readonly rotationDeg?: number };
+export interface WallMountSpec { readonly wall: string; readonly along?: Measure; readonly side?: 1 | -1; readonly toward?: PlanPoint; readonly offset?: Measure }
+export interface CalloutBoundarySpec { readonly from?: PlanPoint; readonly to?: PlanPoint; readonly polygon?: readonly PlanPoint[]; readonly head?: PlanPoint; readonly showLabel?: boolean; readonly syncViewCrop?: boolean }
+export type TextStyleRole = "part_mark" | "link_label" | "tag" | "dimension" | "note" | "space_label";
+export interface CircuitGraphicsSettingsSpec {
+  readonly style?: "arcs" | "orthogonal" | "numbers" | "off";
+  readonly showCircuits?: boolean; readonly homeRuns?: boolean; readonly switchLegs?: boolean;
+  readonly switchLegLabels?: boolean; readonly allCopies?: boolean;
+  readonly hashMarks?: "off" | "hots_neutral" | "hots_neutral_ground";
+  readonly hashMarksOn?: "home_runs" | "home_runs_and_switch_legs" | "all_runs";
+  readonly typLabelsOnce?: boolean;
+}
+export interface HomeRunSpec {
+  readonly member?: string;
+  readonly tipOffset?: { readonly x: Measure; readonly y: Measure };
+  readonly bendOffset?: { readonly x: Measure; readonly y: Measure };
+  readonly labelOffset?: { readonly x: Measure; readonly y: Measure };
+}
+export type DiagramHints = NonNullable<NonNullable<NonNullable<Extract<EditCommand, { type: "create_view" }>["props"]>["diagram"]>["hints"]>;
+export type ClashType = "hard" | "self" | "soft" | "clearance" | "dedicated_space" | "ceiling" | "placement" | "connectors";
+export interface ClashCheckSpec {
+  readonly ruleset?: "default" | "coordination" | "documents" | "issue";
+  readonly types?: readonly ClashType[];
+  readonly minSeverity?: "error" | "warning" | "info";
+  readonly scope?: "touched" | "level" | "all";
+  readonly level?: string;
+  readonly ids?: readonly string[];
+  readonly tolerance?: Measure;
+  readonly softClearance?: Measure;
+  readonly structureClearance?: Measure;
+  readonly maxFindings?: number;
+  readonly skipRules?: readonly string[];
+}
+export interface ClashReport {
+  readonly scope: "touched" | "level" | "all";
+  readonly detail: "summary" | "compact" | "full";
+  readonly total: number;
+  readonly shown: number;
+  readonly by_severity: { readonly error: number; readonly warning: number; readonly info: number };
+  readonly by_rule: Readonly<Record<string, number>>;
+  readonly findings?: readonly unknown[];
+}
+export type DetailLineStyleId = "thin" | "medium" | "wide" | "heavy" | "hidden" | "overhead" | "dashed" | "match" | "center" | "phantom" | "dotted";
+export type LineWeight2D = "thin" | "medium" | "wide" | "heavy";
+export type LinePattern2D = "solid" | "dashed" | "hidden" | "center" | "phantom" | "dotted";
+export type DraftingCategory = "detail_lines" | "detail_regions" | "detail_components" | "insulation" | "centerlines" | "hidden_lines" | "reference";
+export type HatchPattern = "solid" | "diagonal" | "diagonal_reverse" | "crosshatch" | "horizontal" | "vertical" | "dots" | "concrete" | "earth" | "insulation_rigid" | "masonry" | "steel_section" | "gravel" | "sand" | "gypsum" | "wood_grain" | "metal_deck" | "roofing_membrane" | "acoustic";
+export type RegionTone = "ink" | "halftone" | "screened";
+export type NoteLeaderArrow = "arrow" | "filled_arrow" | "dot" | "filled_dot" | "tick" | "none";
+export type NoteAlign = "left" | "center" | "right";
+export interface DraftStyleSpec { lineStyle?: DetailLineStyleId; weight?: LineWeight2D; pattern?: LinePattern2D; category?: DraftingCategory; group?: string }
+export type DraftRectGeometry = { corner: PlanPoint; opposite: PlanPoint } | { at: PlanPoint; width: Measure; height: Measure };
+export interface DetailViewSpec { name: string; scale?: number; discipline?: string; crop?: { from: PlanPoint; to: PlanPoint }; id?: string }
+export interface DraftLeaderSpec { to: PlanPoint; elbow?: "auto" | PlanPoint | null; arrow?: NoteLeaderArrow }
+export interface DraftNoteSpec {
+  view: string; at: PlanPoint; text?: string;
+  paragraphs?: readonly { align?: NoteAlign; list?: "bullet" | "number"; runs: readonly { text: string; bold?: boolean; italic?: boolean; underline?: boolean; size?: number }[] }[];
+  width?: Measure; textHeight?: Measure; align?: NoteAlign; bold?: boolean; italic?: boolean; underline?: boolean;
+  mask?: boolean; textStyleId?: string; leaders?: readonly DraftLeaderSpec[]; id?: string;
+}
+export interface CalloutStackEntry { text: string; to?: PlanPoint | readonly PlanPoint[]; arrow?: NoteLeaderArrow; bold?: boolean; id?: string }
+export interface DraftCalloutStackSpec {
+  view: string; side: "left" | "right"; x: Measure; topY: Measure;
+  width?: Measure; textHeight?: Measure; gap?: Measure; mask?: boolean; arrow?: NoteLeaderArrow;
+  notes: readonly CalloutStackEntry[];
+}
+export type DraftModifyOp =
+  | { op: "move"; dx: Measure; dy: Measure; disjoin?: boolean }
+  | { op: "copy"; dx: Measure; dy: Measure }
+  | { op: "rotate"; center: PlanPoint; angleDeg: number; copy?: boolean }
+  | { op: "scale"; center: PlanPoint; factor: number }
+  | { op: "mirror"; axisFrom: PlanPoint; axisTo: PlanPoint; copy?: boolean }
+  | { op: "linear_array"; dx: Measure; dy: Measure; count: number; group?: boolean }
+  | { op: "radial_array"; center: PlanPoint; angleDeg: number; count: number; group?: boolean }
+  | { op: "align"; from: PlanPoint; axisFrom: PlanPoint; axisTo: PlanPoint }
+  | { op: "offset"; distance: Measure; side: PlanPoint; copy?: boolean }
+  | { op: "trim_corner"; keepA: PlanPoint; keepB: PlanPoint }
+  | { op: "trim_single"; boundaryId: string; pick: PlanPoint }
+  | { op: "trim_multiple"; boundaryId: string; picks: readonly PlanPoint[] }
+  | { op: "trim"; boundaryId: string; keep: PlanPoint }
+  | { op: "extend"; boundaryId: string; near: PlanPoint }
+  | { op: "split"; at: PlanPoint; to?: PlanPoint }
+  | { op: "split_gap"; at: PlanPoint; gap: Measure }
+  | { op: "fillet"; radius: Measure; near1?: PlanPoint; near2?: PlanPoint }
+  | { op: "chamfer"; distanceA: Measure; distanceB?: Measure; near1?: PlanPoint; near2?: PlanPoint }
+  | { op: "drag_end"; end: 0 | 1 | "start" | "end"; to: PlanPoint; disjoin?: boolean }
+  | { op: "pin" | "unpin" | "delete" }
+  | { op: "match_type"; sourceId: string };
+export interface DetailAudit {
+  readonly ok: boolean; readonly clean: boolean; readonly viewId: string; readonly scale: number;
+  readonly itemCount: number; readonly noteCount: number; readonly dimensionCount: number; readonly dimCount: number;
+  readonly boundsMm: { readonly min: { readonly x: number; readonly y: number }; readonly max: { readonly x: number; readonly y: number } } | null;
+  readonly textOverlaps: readonly { readonly aId: string; readonly aText: string; readonly bId: string; readonly bText: string; readonly overlapAreaMm2: number }[];
+  readonly lineCrossings: readonly { readonly itemId: string; readonly text: string; readonly crossingCount: number }[];
+  readonly clippedItems: readonly string[];
+  readonly orphanedDimensions: readonly string[];
+  readonly issues: readonly string[];
 }
 `;
 

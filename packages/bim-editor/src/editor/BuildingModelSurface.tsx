@@ -10,7 +10,7 @@ import type { ConnectionStatus, Presence, SaveState } from '@permitzip/bim-sync'
 import { type ConnectionProblem } from './operator-messages'
 import { SHEET_FIRM_NAME, type SheetTitle } from '../contracts/building-model/sheet-title'
 import { panButtonOf } from '@permitzip/bim-viewer-3d/pan-buttons'
-import type { LoadedReference, ModelViewer3D, Pick as ViewerPick } from '@permitzip/bim-viewer-3d'
+import type { LoadedReference, ModelViewer3D, Pick as ViewerPick, SceneLightingPreset } from '@permitzip/bim-viewer-3d'
 import { elevationCut, kernelToScene, livePlanCutMm, liveView, type Projection } from '@permitzip/bim-viewer-3d/light'
 import { Alert, AlertDescription, AlertTitle } from '../ui/alert'
 import { Avatar, AvatarFallback } from '../ui/avatar'
@@ -320,6 +320,19 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
   /** Print dialog: the saved revision and how many of your unsaved edits touch the sheet, taken when it opened. */
   const [printing, setPrinting] = useState<{ savedRevision: number; pendingOnSheet: number } | null>(null)
   const [viewer, setViewer] = useState<ModelViewer3D | null>(null)
+  const [lightingPreset, setLightingPresetState] = useState<SceneLightingPreset>('noon')
+  const applyLightingPreset = useCallback((next: SceneLightingPreset) => {
+    setLightingPresetState(next)
+    viewer?.setLightingPreset(next)
+  }, [viewer])
+  const setViewerScalarHeatmap = useCallback(
+    (overlay: Parameters<ModelViewer3D['setScalarHeatmap']>[0]) => viewer?.setScalarHeatmap(overlay),
+    [viewer],
+  )
+  const setViewerLightEmitters = useCallback(
+    (emitters: Parameters<ModelViewer3D['setLightEmitters']>[0]) => viewer?.setLightEmitters(emitters),
+    [viewer],
+  )
   const mutinyTheme = useMutinyTheme()
   const presentation = useMutinyPresentation()
   const bimRoot = useMutinyPortalContainer()
@@ -2056,8 +2069,6 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
         else requestDelete(toDelete.id)
         return
       }
-      // Drawings handle their own Tab, Escape and drafting keys (`ModelDrawingLayer`, `DrawingCanvas`).
-      if (showDrawing) return
       if (tool === 'select' && session && !e.metaKey && !e.ctrlKey && !e.altKey) {
         const ids = selection?.kind === 'group' ? selection.ids : selection?.kind === 'authored' ? [selection.element.id] : []
         if (ids.length > 0 && !e.defaultPrevented && isNudgeKey(e.key)) {
@@ -2065,6 +2076,10 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
           setToolHint(session.nudgeSelection(ids, e.key, e.shiftKey))
           return
         }
+      }
+      // Drawings handle their own Tab, Escape and drafting keys (`ModelDrawingLayer`, `DrawingCanvas`).
+      if (showDrawing) return
+      if (tool === 'select' && session && !e.metaKey && !e.ctrlKey && !e.altKey) {
         if ((e.key === 'a' || e.key === 'A') && canEdit && selection?.kind === 'authored' && (selection.element.kind === 'run_segment' || selection.element.kind === 'run_fitting')) {
           e.preventDefault()
           routeLike(selection.element)
@@ -2572,6 +2587,10 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
     choosePlace: () => chooseTool('place'),
     routeAs,
     previewParts: previewProposal,
+    setScalarHeatmap: setViewerScalarHeatmap,
+    setLightEmitters: setViewerLightEmitters,
+    setLightingPreset: applyLightingPreset,
+    lightingPreset,
     subscribeHover: (listener) => sessionRef.current?.onHoverChange(listener) ?? (() => undefined),
     setClickHandler: (claimer) => {
       clickClaimerRef.current = claimer
@@ -3574,6 +3593,10 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
                 blockedReason={blockedReason}
                 submit={submitWithUndo}
                 onOpenView={(id) => {
+                  const clickedView = index?.views.find((v) => v.id === id)
+                  const openForm = sharedValue<(kind: string, elementId: string) => boolean>(workflows.shared, 'openFormView')
+                  const form = clickedView?.props?.formSchedule
+                  if (form?.kind && form.elementId && openForm?.(form.kind, form.elementId)) return
                   const from = openSheet?.id ?? null
                   openItem({ kind: 'view', id })
                   setReturnSheet(from)
@@ -3601,7 +3624,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
                   if (placingNewOnDrawing) chooseTool('select')
                   else stopPlannedPlacing(plannedPlacing ? `Stopped placing ${plannedPlacing.label}; nothing changed.` : null)
                 }}
-                spaces={{ projectId, mode: spacesTool.mode, onDrawn: spacesTool.onDrawn, onCancel: spacesTool.stop, onSeparatorLine: spacesTool.onSeparatorLine }}
+                spaces={{ projectId, mode: spacesTool.mode, drawerOpen: spacesOpen, onDrawn: spacesTool.onDrawn, onCancel: spacesTool.stop, onSeparatorLine: spacesTool.onSeparatorLine }}
                 ceilings={ceilingTool.canvas}
                 questions={{ onOpen: openQuestion, focusedQuestionId: questionFocus?.questionId ?? null }}
                 blockFreshness={openSheet ? (itemId) => <SheetFreshness projectId={projectId} modelId={config?.authority?.modelId ?? shownModel.modelId} sheetNumber={openSheet.number} revision={shownModel.revision} blockId={itemId} /> : undefined}
@@ -3688,6 +3711,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
                 submit={submitWithUndo}
                 editBlocked={canEdit ? null : blockedReason}
                 onOpenSheet={(sheetId) => openItem({ kind: 'sheet', id: sheetId })}
+                onOpenFormEditor={sharedValue<(kind: string, elementId: string) => boolean>(workflows.shared, 'openFormView') ?? undefined}
               />
                 )}
               </ModelFromStore>
@@ -3971,6 +3995,8 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
         {!scheduleGridOpen && (
           <SelectionLocksBar
             viewer={viewer}
+            lightingPreset={lightingPreset}
+            onLightingPresetChange={applyLightingPreset}
             is3d={!showDrawing && !planOpen}
             hasSelection={selectedIds.length > 0}
             selectionLocked={selectedIds.length > 0 && selectedIds.every((id) => lockOf(model?.elements[id]) !== null)}

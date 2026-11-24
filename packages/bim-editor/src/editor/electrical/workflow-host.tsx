@@ -21,6 +21,10 @@ function inputFrom(s: WorkflowServices) {
     ...(s.openNewSchedule ? { openNewSchedule: s.openNewSchedule } : {}),
     openDiagram: s.openDiagram,
     previewParts: s.previewParts,
+    ...(s.setScalarHeatmap ? { setScalarHeatmap: s.setScalarHeatmap } : {}),
+    ...(s.setLightEmitters ? { setLightEmitters: s.setLightEmitters } : {}),
+    ...(s.setLightingPreset ? { setLightingPreset: s.setLightingPreset } : {}),
+    ...(s.lightingPreset ? { lightingPreset: s.lightingPreset } : {}),
     ...(s.subscribeHover ? { subscribeHover: s.subscribeHover } : {}),
     ...(s.setClickHandler ? { setClickHandler: s.setClickHandler } : {}),
     framePlan: s.framePlan,
@@ -35,7 +39,20 @@ function inputFrom(s: WorkflowServices) {
 export function WorkflowHost({ services, outlet }: WorkflowHostProps): ReactNode {
   const workflow = useElectricalWorkflow(inputFrom(services))
   usePublishWorkflow(outlet, {
-    data: { ribbon: workflow.ribbon, autoTab: workflow.autoTab, shared: { circuitRules: workflow.nec, necEdition: workflow.necEdition, newScheduleForms: workflow.newScheduleForms } },
+    data: {
+      ribbon: workflow.ribbon,
+      autoTab: workflow.autoTab,
+      shared: {
+        circuitRules: workflow.nec,
+        necEdition: workflow.necEdition,
+        newScheduleForms: workflow.newScheduleForms,
+        openFormView: (kind: string, elementId: string) => {
+          if (kind !== 'panel') return false
+          workflow.openPanelView(elementId)
+          return true
+        },
+      },
+    },
     properties: workflow.properties,
     viewProperties: workflow.scheduleProperties,
   })

@@ -62,6 +62,7 @@ export function DiagramLayer({ model, view, toPaper, toDrawing, paperOf, selecte
   const evaluation = useMemo(() => evaluateDiagram(model.elements, view), [model.elements, view])
   const [drag, setDrag] = useState<Drag | null>(null)
   const [hover, setHover] = useState<number | null>(null)
+  const [hoverText, setHoverText] = useState<string | null>(null)
   const selected = useMemo(() => new Set(selectedIds), [selectedIds])
   const index = useMemo(() => (evaluation ? diagramSelectionIndex(evaluation) : null), [evaluation])
   const lit = useMemo(() => new Set(index ? index.entriesFor(selectedIds).flatMap((e) => e.boxes) : []), [index, selectedIds])
@@ -90,14 +91,12 @@ export function DiagramLayer({ model, view, toPaper, toDrawing, paperOf, selecte
       if (!command) return
       const refusal = submit(command, `move the text "${d.name}" on ${view.name}`)
       if (refusal) toast.error(refusal)
-      else hint(`Moved "${d.name}". It still reads the model; Reset positions in the view's properties puts it back.`)
       return
     }
     const command = pinCommand(view, d.id, { x: b.x - a.x, y: b.y - a.y })
     if (!command) return
     const refusal = submit(command, `move ${d.name} on ${view.name}`)
     if (refusal) toast.error(refusal)
-    else hint(`Moved ${d.name} on this diagram. Reset positions in the view's properties puts it back.`)
   }
 
   // While a press is held the window follows the pointer, so a drag that leaves the box keeps going.
@@ -128,13 +127,25 @@ export function DiagramLayer({ model, view, toPaper, toDrawing, paperOf, selecte
   })
 
   if (!evaluation) return null
-  // Bigger boxes first, so a panel's own target sits over the bus of what feeds it (and a pipe over the floor it crosses).
+  // Bigger boxes first, so a node's own target sits over the bus of what feeds it (and a run over the floor it crosses).
   const boxes = evaluation.boxes.map((b, i) => ({ b, i })).sort((x, y) => (y.b.max.x - y.b.min.x) * (y.b.max.y - y.b.min.y) - (x.b.max.x - x.b.min.x) * (x.b.max.y - x.b.min.y) || x.i - y.i)
+  const paperRects = boxes.map(({ b }) => rectOf(b, toPaper))
   const warned = new Set(evaluation.warnings.map((w) => w.elementId))
-  // Text of what is selected, and text that labels nothing in the model, can be dragged on its own.
-  // Text that labels nothing is a target only where it doesn't cover a piece of equipment or pipe (their clicks come first).
-  const overBox = (t: DiagramTextBox) => evaluation.boxes.some((b) => b.min.x < t.max.x && t.min.x < b.max.x && b.min.y < t.max.y && t.min.y < b.max.y)
-  const movableTexts = evaluation.texts.filter((t) => t.text.trim() !== '' && (t.elementId === null ? !overBox(t) : selected.has(t.elementId) || evaluation.boxes.some((b, i) => b.pipe && b.elementId === t.elementId && lit.has(i))))
+  // Keep every node, standalone, moved, and selected-owner label directly draggable in one gesture, while letting an unselected run take clicks before its own unmoved callout label.
+  const isUnselectedOwnRunCallout = (t: DiagramTextBox) => {
+    if (t.elementId === null || t.moved) return false
+    const ownerId = t.elementId
+    const tr = rectOf(t, toPaper)
+    return boxes.some(({ b, i }, idx) => {
+      if (!b.pipe || lit.has(i)) return false
+      if (b.elementId !== ownerId && !b.pipe.elementIds.includes(ownerId)) return false
+      const br = paperRects[idx]!
+      const cx = br.x + br.w / 2
+      const cy = br.y + br.h / 2
+      return cx >= tr.x - 0.5 && cx <= tr.x + tr.w + 0.5 && cy >= tr.y - 0.5 && cy <= tr.y + tr.h + 0.5
+    })
+  }
+  const movableTexts = evaluation.texts.filter((t) => t.text.trim() !== '' && !isUnselectedOwnRunCallout(t))
   const startDrag = (e: React.PointerEvent<SVGRectElement>, d: Omit<Drag, 'from' | 'to' | 'root'>) => {
     // Left button only (a right-click opens the menu).
     if (e.button > 0) return
@@ -147,6 +158,8 @@ export function DiagramLayer({ model, view, toPaper, toDrawing, paperOf, selecte
   const textRect = (t: DiagramTextBox) => {
     const r = rectOf(t, toPaper)
     const live = drag?.textKey === t.key
+    const isHovered = hoverText === t.key
+    const isOwnerSelected = t.elementId !== null && (selected.has(t.elementId) || evaluation.boxes.some((b, i) => b.pipe && b.elementId === t.elementId && lit.has(i)))
     const offset = live && drag ? { x: drag.to.x - drag.from.x, y: drag.to.y - drag.from.y } : { x: 0, y: 0 }
     return (
       <rect
@@ -157,38 +170,59 @@ export function DiagramLayer({ model, view, toPaper, toDrawing, paperOf, selecte
         height={r.h + 1}
         rx={0.4}
         fill={PRIMARY}
-        fillOpacity={live ? 0.08 : 0}
+        fillOpacity={live ? 0.12 : isHovered ? 0.08 : 0}
         stroke={PRIMARY}
-        strokeWidth={0.3}
-        strokeDasharray="1 0.8"
-        strokeOpacity={live || t.moved ? 0.9 : 0.5}
+        strokeWidth={0.35}
+        strokeDasharray="1.2 0.8"
+        strokeOpacity={live || isHovered ? 0.95 : t.moved || isOwnerSelected ? 0.55 : 0}
         style={{ cursor: canEdit ? 'move' : 'default' }}
         data-testid="diagram-text"
         data-text-key={t.key}
         data-moved={t.moved ? 'true' : 'false'}
+        onPointerEnter={() => setHoverText(t.key)}
+        onPointerLeave={() => setHoverText((cur) => (cur === t.key ? null : cur))}
         onPointerDown={(e) => startDrag(e, { id: t.elementId ?? '', name: t.text, pipe: true, textKey: t.key })}
       >
-        <title>{`${t.text}: drag to move this text on the diagram; it keeps reading the model`}</title>
+        <title>{`${t.text}: drag to reposition this label on the diagram (stays live to the model)`}</title>
       </rect>
     )
   }
 
   return (
     <g data-testid="diagram-layer" data-diagram-kind={evaluation.kind}>
-      {boxes.map(({ b, i }) => {
-        const r = rectOf(b, toPaper)
+      {boxes.map(({ b, i }, idx) => {
+        const r = paperRects[idx]!
         const pipe = b.pipe !== undefined
-        // The shared selection highlight, never a colour of its own per pipe.
+        // Clamp the 1 mm click halo against adjacent sibling nodes so stacked targets never overlap each other.
+        let padL = pipe ? 0 : 1
+        let padR = pipe ? 0 : 1
+        let padT = pipe ? 0 : 1
+        let padB = pipe ? 0 : 1
+        if (!pipe) {
+          for (let j = 0; j < boxes.length; j++) {
+            if (j === idx || boxes[j]!.b.pipe !== undefined) continue
+            const o = paperRects[j]!
+            if (o.x < r.x + r.w && r.x < o.x + o.w) {
+              if (o.y + o.h <= r.y) padT = Math.min(padT, Math.max(0, (r.y - (o.y + o.h)) / 2))
+              if (r.y + r.h <= o.y) padB = Math.min(padB, Math.max(0, (o.y - (r.y + r.h)) / 2))
+            }
+            if (o.y < r.y + r.h && r.y < o.y + o.h) {
+              if (o.x + o.w <= r.x) padL = Math.min(padL, Math.max(0, (r.x - (o.x + o.w)) / 2))
+              if (r.x + r.w <= o.x) padR = Math.min(padR, Math.max(0, (o.x - (r.x + r.w)) / 2))
+            }
+          }
+        }
+        // The shared selection highlight, never a colour of its own per run.
         const isSelected = lit.has(i)
         const hovered = hover === i
         const offset = !pipe && !drag?.textKey && drag?.id === b.elementId ? { x: drag.to.x - drag.from.x, y: drag.to.y - drag.from.y } : { x: 0, y: 0 }
         return (
           <rect
             key={`${b.elementId}:${i}`}
-            x={r.x - (pipe ? 0 : 1) + offset.x}
-            y={r.y - (pipe ? 0 : 1) + offset.y}
-            width={r.w + (pipe ? 0 : 2)}
-            height={r.h + (pipe ? 0 : 2)}
+            x={r.x - padL + offset.x}
+            y={r.y - padT + offset.y}
+            width={r.w + padL + padR}
+            height={r.h + padT + padB}
             rx={pipe ? 0.6 : 1}
             fill={isSelected || hovered ? PRIMARY : 'transparent'}
             fillOpacity={isSelected ? (pipe ? 0.3 : 0.12) : hovered ? 0.08 : 0}

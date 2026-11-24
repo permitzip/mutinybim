@@ -114,11 +114,20 @@ export function PrintedPdfLayer({
   frame?: string
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const lastWholeRef = useRef<{ readonly scene: SheetScene; readonly widthPx: number } | null>(null)
   const [rendered, setRendered] = useState<Rendered | null>(null)
   const [placement, setPlacement] = useState<Placement>({ left: 0, top: 0, width: 1, height: 1 })
 
   useEffect(() => {
     if (widthPx <= 0) return
+    // When the previous render already drew the entire page in one full-resolution bitmap and only pan position (`frame`)
+    // changed, skip re-rendering completely so panning never causes a flicker or wasted pdf.js work.
+    if (lastWholeRef.current && lastWholeRef.current.scene === scene && Math.abs(lastWholeRef.current.widthPx - widthPx) < 0.5) {
+      return
+    }
+    // Starting a replacement render invalidates the previous whole-page cache so a subsequent failure
+    // cannot leave a stale cache entry that bypasses recovery when zooming back to the prior width.
+    lastWholeRef.current = null
     let cancelled = false
     let finished = false
     let deadline: ReturnType<typeof setTimeout> | undefined
@@ -135,7 +144,8 @@ export function PrintedPdfLayer({
           const { PDF_WORKER_SRC } = await import('@permitzip/bim-editor/assets/pdf-worker')
           const { pdfjs } = await import('react-pdf')
           pdfjs.GlobalWorkerOptions.workerSrc = PDF_WORKER_SRC
-          const doc = await pdfjs.getDocument({ data: bytes }).promise
+          const loadingTask = pdfjs.getDocument({ data: bytes })
+          const doc = await loadingTask.promise
           try {
             const page = await doc.getPage(1)
             const base = page.getViewport({ scale: 1 })
@@ -145,8 +155,9 @@ export function PrintedPdfLayer({
             const win = printedWindow(base.width, base.height, widthPx, ratio, visibleOnPaper(shown.parentElement, viewportRef?.current ?? null))
             const viewport = page.getViewport({ scale: win.scale, offsetX: win.offsetX, offsetY: win.offsetY })
             const whole = win.placement.width === 1 && win.placement.height === 1
-            // A window is drawn off screen first, so the picture on screen stays put while a pan re-renders.
-            const target = whole ? shown : document.createElement('canvas')
+            // Always double-buffer offscreen before swapping onto `shown`: resizing the live canvas directly
+            // wipes it transparent while pdf.js renders, which caused a visible blink after every pan/zoom.
+            const target = document.createElement('canvas')
             target.width = win.canvasW
             target.height = win.canvasH
             const context = target.getContext('2d')
@@ -159,18 +170,23 @@ export function PrintedPdfLayer({
             await rendering.promise
             task = null
             if (cancelled) return
-            if (!whole) {
-              shown.width = win.canvasW
-              shown.height = win.canvasH
-              const onScreen = shown.getContext('2d')
-              if (!onScreen) throw new Error('This browser has no 2D drawing surface.')
-              onScreen.drawImage(target, 0, 0)
-            }
+            shown.width = win.canvasW
+            shown.height = win.canvasH
+            const onScreen = shown.getContext('2d')
+            if (!onScreen) throw new Error('This browser has no 2D drawing surface.')
+            if (typeof onScreen.drawImage === 'function') onScreen.drawImage(target, 0, 0)
+            lastWholeRef.current = whole ? { scene, widthPx } : null
             finished = true
             setPlacement(win.placement)
             setRendered({ kind: 'ready', scene })
           } finally {
-            await doc.destroy()
+            // pdfjs-dist v6 removed PDFDocumentProxy.destroy() in favor of loadingTask.destroy().
+            if (typeof loadingTask.destroy === 'function') {
+              await loadingTask.destroy()
+            } else {
+              const legacyDoc = doc as { destroy?: () => Promise<void> }
+              await legacyDoc.destroy?.()
+            }
           }
         } catch (err) {
           if (cancelled) return

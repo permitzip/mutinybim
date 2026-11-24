@@ -1,7 +1,7 @@
 'use client'
 
-import { Check, ChevronDown, Crosshair, Magnet, RotateCw, X } from 'lucide-react'
-import { DETAIL_LINE_STYLES, HATCH_PATTERNS, SNAP_KINDS, detailLineStyleOf, type HatchPattern, type SnapKind } from '@permitzip/bim-kernel'
+import { Check, ChevronDown, Crosshair, Magnet, Pencil, PenTool, RotateCcw, RotateCw, X } from 'lucide-react'
+import { DETAIL_LINE_STYLES, HATCH_PATTERNS, REGION_TONES, SNAP_KINDS, detailLineStyleOf, type HatchPattern, type RegionTone, type SnapKind } from '@permitzip/bim-kernel'
 import { Button } from '../../../ui/button'
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuGroup, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from '../../../ui/dropdown-menu'
 import { Input } from '../../../ui/input'
@@ -26,7 +26,16 @@ import { CLOSES_AT_ONCE, handKeyboardToDrawing } from '../../menu-close'
  * indicator).
  */
 
-const SNAP_LABEL: Record<SnapKind, string> = { endpoint: 'Endpoints', midpoint: 'Midpoints', center: 'Centres', intersection: 'Intersections', perpendicular: 'Perpendicular', nearest: 'Nearest point on a line' }
+const SNAP_LABEL: Record<SnapKind, string> = {
+  endpoint: 'Endpoints',
+  midpoint: 'Midpoints',
+  center: 'Centres',
+  quadrant: 'Quadrants',
+  tangent: 'Tangents',
+  intersection: 'Intersections',
+  perpendicular: 'Perpendicular',
+  nearest: 'Nearest point',
+}
 const POLAR_STEPS = [15, 30, 45, 90] as const
 
 /** Snaps, Ortho and polar tracking: beside the drawing whichever drawing tool is in hand. */
@@ -98,10 +107,32 @@ const HATCH_LABEL: Record<HatchPattern, string> = {
   concrete: 'Concrete',
   earth: 'Earth',
   insulation_rigid: 'Rigid insulation',
-  masonry: 'Masonry',
+  masonry: 'Masonry / CMU',
+  steel_section: 'Steel section',
+  gravel: 'Gravel',
+  sand: 'Sand / plaster',
+  gypsum: 'Gypsum board',
+  wood_grain: 'Wood grain',
+  metal_deck: 'Metal deck',
+  roofing_membrane: 'Roofing membrane',
+  acoustic: 'Acoustic liner',
 }
-const CATEGORY_LABEL: Record<string, string> = { insulation: 'Insulation', duct: 'Duct', pipe: 'Pipe', supports: 'Hangers and supports', valves: 'Valves', anchors: 'Anchors', structure: 'Structure' }
-const LINEWORK = new Set(['line', 'rect', 'arc', 'circle', 'polyline', 'polygon', 'spline', 'region'])
+const TONE_LABEL: Record<RegionTone, string> = {
+  ink: 'Ink (black)',
+  halftone: 'Halftone (50%)',
+  screened: 'Screened (32%)',
+}
+const CATEGORY_LABEL: Record<string, string> = {
+  insulation: 'Insulation',
+  duct: 'Duct',
+  pipe: 'Pipe',
+  supports: 'Hangers and supports',
+  valves: 'Valves',
+  anchors: 'Anchors',
+  structure: 'Structure',
+  annotation: 'Annotation',
+}
+const LINEWORK = new Set(['line', 'rect', 'arc', 'arc_radius', 'arc_tangent', 'circle', 'polyline', 'polygon', 'spline', 'region'])
 
 /** One line style per line, the way BIM drafting views pick linework. */
 function LineStylePicker({ settings, set }: { settings: DraftSettings; set: (patch: Partial<DraftSettings>) => void }) {
@@ -146,11 +177,24 @@ function Check2({ id, label, checked, onChange }: { id: string; label: string; c
   )
 }
 
-/** A region's boundary sketch: what to do, Finish and Cancel. */
+/** A region or callout boundary sketch: what to do, Finish, optional extra actions, and Cancel. */
 export interface BoundarySketch {
   readonly prompt: string
   readonly onFinish: () => void
   readonly onCancel: () => void
+  readonly finishLabel?: string
+  readonly onSketchNew?: () => void
+  readonly onResetRect?: () => void
+}
+
+/** Floating quick actions for a selected enlarged-plan callout right on the sheet/view. */
+export interface CalloutSelectionActions {
+  readonly isPolygon: boolean
+  readonly canEdit: boolean
+  readonly onEditBoundary: () => void
+  readonly onSketchNew: () => void
+  readonly onResetRect?: () => void
+  readonly onOpenView?: () => void
 }
 
 function Choice<T extends string>({ id, label, value, options, labels, onChange }: { id: string; label: string; value: T; options: readonly T[]; labels: Record<T, string>; onChange: (v: T) => void }) {
@@ -198,6 +242,9 @@ export function DraftOptionsBar({
   prompt,
   onCancel,
   sketch = null,
+  calloutMode,
+  onCalloutMode,
+  calloutActions = null,
   className = '',
 }: {
   tool: string
@@ -209,6 +256,9 @@ export function DraftOptionsBar({
   prompt: string | null
   onCancel: () => void
   sketch?: BoundarySketch | null
+  calloutMode?: 'rect' | 'pline'
+  onCalloutMode?: (mode: 'rect' | 'pline') => void
+  calloutActions?: CalloutSelectionActions | null
   /** Placement over the drawing (the bar is absolutely positioned by its parent). */
   className?: string
 }) {
@@ -216,7 +266,8 @@ export function DraftOptionsBar({
   const setP = (patch: Partial<ModifyParams>) => onParams({ ...params, ...patch })
   const op = pending?.kind === 'modify' ? pending.op : null
   const drawing = !pending && (isDraftShape(tool) || LINEWORK.has(tool))
-  const aids = drawing || op !== null || tool === 'dimension'
+  const isCalloutTool = !pending && tool === 'callout'
+  const aids = drawing || op !== null || tool === 'dimension' || isCalloutTool
   const frame = `pointer-events-auto flex max-w-full flex-wrap items-center gap-3 rounded-md border bg-background/95 px-3 py-1.5 text-sm shadow-sm ${className}`
   if (sketch) {
     return (
@@ -224,9 +275,21 @@ export function DraftOptionsBar({
         <span className="font-medium" role="status" aria-live="polite" data-testid="boundary-prompt">
           {sketch.prompt}
         </span>
+        {sketch.onSketchNew && (
+          <Button size="sm" variant="outline" onClick={sketch.onSketchNew} data-testid="boundary-sketch-new">
+            <PenTool data-icon="inline-start" />
+            Sketch new P-line
+          </Button>
+        )}
+        {sketch.onResetRect && (
+          <Button size="sm" variant="outline" onClick={sketch.onResetRect} data-testid="boundary-reset-rect">
+            <RotateCcw data-icon="inline-start" />
+            Reset rectangle
+          </Button>
+        )}
         <Button size="sm" onClick={sketch.onFinish} data-testid="boundary-finish">
           <Check data-icon="inline-start" />
-          Finish edit (Enter)
+          {sketch.finishLabel ?? 'Finish edit (Enter)'}
         </Button>
         <Button size="sm" variant="ghost" onClick={sketch.onCancel} data-testid="boundary-cancel">
           <X data-icon="inline-start" />
@@ -235,13 +298,53 @@ export function DraftOptionsBar({
       </div>
     )
   }
-  if (!pending && !drawing && !prompt && !aids) return null
+  if (!pending && !drawing && !prompt && !aids && !calloutActions) return null
+  if (!pending && !drawing && !prompt && !aids && calloutActions) {
+    return (
+      <div className={frame} data-testid="draft-options">
+        <span className="text-xs font-medium text-muted-foreground">{calloutActions.isPolygon ? 'Custom P-Line Callout' : 'Callout Boundary'}</span>
+        {calloutActions.canEdit && (
+          <>
+            <Button size="sm" variant="outline" onClick={calloutActions.onEditBoundary} data-testid="callout-bar-edit-boundary">
+              <Pencil data-icon="inline-start" />
+              Edit Boundary (P-Line)
+            </Button>
+            <Button size="sm" variant="outline" onClick={calloutActions.onSketchNew} data-testid="callout-bar-sketch-pline">
+              <PenTool data-icon="inline-start" />
+              Sketch P-Line
+            </Button>
+            {calloutActions.isPolygon && calloutActions.onResetRect && (
+              <Button size="sm" variant="ghost" onClick={calloutActions.onResetRect} data-testid="callout-bar-reset-rect">
+                <RotateCcw data-icon="inline-start" />
+                Reset Rectangle
+              </Button>
+            )}
+          </>
+        )}
+        {calloutActions.onOpenView && (
+          <Button size="sm" variant="secondary" onClick={calloutActions.onOpenView} data-testid="callout-bar-open-view">
+            Open View
+          </Button>
+        )}
+      </div>
+    )
+  }
   return (
     <div className={frame} data-testid="draft-options">
       {prompt && (
         <span className="font-medium" role="status" aria-live="polite" data-testid="draft-prompt">
           {prompt}
         </span>
+      )}
+      {isCalloutTool && calloutMode && onCalloutMode && (
+        <ToggleGroup type="single" size="sm" variant="outline" value={calloutMode} onValueChange={(v) => v && onCalloutMode(v === 'pline' ? 'pline' : 'rect')} aria-label="Callout shape" data-testid="callout-shape-mode">
+          <ToggleGroupItem value="rect" className="h-7 px-2 text-xs" title="Drag a rectangular enlarged callout (snaps to walls & grids)">
+            Rectangle
+          </ToggleGroupItem>
+          <ToggleGroupItem value="pline" className="h-7 px-2 text-xs" title="Sketch a custom L-shape or P-line callout snapping to walls & grids">
+            Sketch P-Line
+          </ToggleGroupItem>
+        </ToggleGroup>
       )}
       {drawing && LINEWORK.has(tool) && !(tool === 'region' && settings.masking) && (
         <>
@@ -269,7 +372,12 @@ export function DraftOptionsBar({
               Masking (hides what&apos;s under it)
             </Label>
           </div>
-          {!settings.masking && <Choice id="draft-hatch" label="Hatch" value={settings.hatch} options={HATCH_PATTERNS} labels={HATCH_LABEL} onChange={(hatch) => set({ hatch })} />}
+          {!settings.masking && (
+            <>
+              <Choice id="draft-hatch" label="Hatch" value={settings.hatch} options={HATCH_PATTERNS} labels={HATCH_LABEL} onChange={(hatch) => set({ hatch })} />
+              <Choice id="draft-region-tone" label="Tone" value={settings.regionTone} options={REGION_TONES} labels={TONE_LABEL} onChange={(regionTone) => set({ regionTone })} />
+            </>
+          )}
         </>
       )}
       {drawing && (tool === 'component' || tool === 'repeat') && (
@@ -317,7 +425,13 @@ export function DraftOptionsBar({
       {op === 'split' && <Check2 id="draft-delete-inner" label="Delete inner segment" checked={params.deleteInner} onChange={(deleteInner) => setP({ deleteInner })} />}
       {op === 'split_gap' && <Typed id="draft-gap" label="Gap" value={params.gap} width="w-16" onChange={(gap) => setP({ gap })} />}
       {op === 'fillet_arc' && <Typed id="draft-arc-radius" label="Radius" value={params.arcRadius} width="w-16" onChange={(arcRadius) => setP({ arcRadius })} />}
-      {(op === 'rotate' || op === 'mirror') && (
+      {op === 'chamfer' && (
+        <>
+          <Typed id="draft-chamfer-d1" label="D1" value={params.chamferD1} width="w-16" onChange={(chamferD1) => setP({ chamferD1 })} />
+          <Typed id="draft-chamfer-d2" label="D2" value={params.chamferD2} width="w-16" onChange={(chamferD2) => setP({ chamferD2 })} />
+        </>
+      )}
+      {(op === 'rotate' || op === 'mirror' || op === 'mirror_pick') && (
         <div className="flex items-center gap-1.5">
           <Switch id="draft-copy" checked={params.copy} onCheckedChange={(copy) => setP({ copy })} />
           <Label htmlFor="draft-copy" className="text-xs">

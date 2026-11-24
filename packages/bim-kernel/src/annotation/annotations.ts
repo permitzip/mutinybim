@@ -18,6 +18,9 @@ import { paramNamed } from "../parts";
 import { addOnMarkedPoint, addOnRun, addOnTagCategory, addOnTagText, isAddOnRecord } from "./addon-kinds";
 import { tagFieldAliases } from "./tag-types";
 import { outlineAreaMm2, spaceAreaM2, spaceOutlines } from "../spaces/space-geometry";
+import { ceilingForm, ceilingHeightAtPoint, ceilingRole } from "../ceilings/read";
+import { columnVerticalSpan } from "../placement/top-tie";
+import { wallBaseAtMm } from "../placement/surface-bind";
 import { partPlanOutline, type PlanOutline } from "../drawing/part-outline";
 import { parseLinkedElementKey } from "../reference-geometry/index-geometry";
 import { linkedAnchorInSection, linkedAnchorItem, linkedAnchorPoint, missingLinkedAnchorWords } from "../reference-geometry/linked-anchors";
@@ -105,7 +108,7 @@ export interface TagSpec {
   readonly elbow?: Vec2 | "auto";
 }
 
-export const LEADER_ARROWS = ["arrow", "dot", "tick", "none"] as const;
+export const LEADER_ARROWS = ["arrow", "filled_arrow", "dot", "filled_dot", "tick", "none"] as const;
 
 const vec2 = z.object({ x: z.number().finite(), y: z.number().finite() });
 export const anchorRefSchema = z.object({ elementId: z.string().min(1).max(200), anchor: z.enum(ANCHORS), index: z.number().int().min(0).max(49).optional() }).strict();
@@ -205,6 +208,14 @@ function lineOf(model: Pick<ModelState, "elements">, el: BimElement): [Point3, P
         { ...el.start, z: 0 },
         { ...el.end, z: 0 },
       ];
+    case "beam": {
+      const p = el.placement?.kind === "line" ? el.placement : null;
+      const lvlZ = p ? levelZ(model, p.levelId) : (viewModelLevel(model, el.partition?.level)?.elevationMm ?? 0);
+      return [
+        { ...el.start, z: lvlZ + (p?.startOffsetMm ?? 0) },
+        { ...el.end, z: lvlZ + (p?.endOffsetMm ?? 0) },
+      ];
+    }
     default: {
       void model;
       const run = addOnRun(el);
@@ -394,8 +405,14 @@ function pointOf(model: Pick<ModelState, "elements">, el: BimElement): Point3 | 
     case "part":
       return { ...el.position, z: levelZ(model, el.levelId) + el.offsetMm };
     case "column": {
-      const colLvl = el.placement?.kind === "point" ? levelZ(model, el.placement.levelId) : (viewModelLevel(model, el.partition?.level)?.elevationMm ?? 0);
-      return { ...el.position, z: colLvl + 1500 };
+      const fallback = viewModelLevel(model, el.partition?.level)?.elevationMm ?? 0;
+      const span = columnVerticalSpan(model.elements, el, fallback);
+      return { ...el.position, z: (span.baseZMm + span.topZMm) / 2 };
+    }
+    case "component": {
+      const lvlZ = el.placement?.kind === "point" ? levelZ(model, el.placement.levelId) : (viewModelLevel(model, el.partition?.level)?.elevationMm ?? 0);
+      const off = el.placement?.kind === "point" ? el.placement.offsetMm : 0;
+      return { ...el.position, z: lvlZ + off };
     }
     case "opening": {
       const host = model.elements[el.hostId];
@@ -403,9 +420,10 @@ function pointOf(model: Pick<ModelState, "elements">, el: BimElement): Point3 | 
         host?.kind === "wall" && host.placement?.kind === "line"
           ? levelZ(model, host.placement.levelId)
           : (viewModelLevel(model, host?.partition?.level ?? el.partition?.level)?.elevationMm ?? 0);
+      const hostBase = host ? wallBaseAtMm(host, el.offset) : 0;
       const rawSill = (el as unknown as { readonly values?: Readonly<Record<string, unknown>> }).values?.["opening.sill_mm"];
       const sillMm = typeof rawSill === "number" ? rawSill : el.openingType === "window" ? 915 : 0;
-      return { ...el.position, z: hostZ + sillMm + el.height / 2 };
+      return { ...el.position, z: hostZ + hostBase + sillMm + el.height / 2 };
     }
     case "run_fitting":
       return el.position;
@@ -415,6 +433,12 @@ function pointOf(model: Pick<ModelState, "elements">, el: BimElement): Point3 | 
       const at = outline ? outlineCentroid(outline) : null;
       const span = areaElevationSpan(model, el);
       return at && span ? { ...at, z: (span.z0 + span.z1) / 2 } : null;
+    }
+    case "ceiling": {
+      if (el.outline.length < 3) return null;
+      const at = outlineCentroid(el.outline);
+      if (!at) return null;
+      return { ...at, z: levelZ(model, el.levelId) + ceilingHeightAtPoint(el, at) };
     }
     default: {
       const at = addOnMarkedPoint(el);
@@ -651,7 +675,7 @@ function linearSegment(ctx: AnnotationDrawContext, itemId: string, pa: Vec2, pb:
   const mid = mul(add(a2, b2), 0.5);
   // Unidirectional text (always horizontal): above a horizontal or sloped line, beside a vertical one.
   const vertical = Math.abs(axis.x) < 0.3;
-  const side = offset >= 0 ? 1 : -1;
+  const side = n.x * (offset >= 0 ? 1 : -1) >= 0 ? 1 : -1;
   const textAt = vertical ? { x: mid.x + side * 1.5, y: mid.y + style.textSizeMm / 2 } : { x: mid.x, y: mid.y - 1.2 };
   const anchor: "start" | "middle" | "end" = vertical ? (side > 0 ? "start" : "end") : "middle";
   ctx.prims.push({ kind: "text", at: textAt, text: label, size: style.textSizeMm, anchor });
@@ -1043,6 +1067,10 @@ export function tagTextSizeMm(model: Pick<ModelState, "elements">, spec: TagSpec
   if (style?.textStyleId) return resolveTextStyle({ elements: model.elements, connections: [] }, "tag", style.textStyleId)?.textSizeMm ?? style.textSizeMm;
   if (style) return style.textSizeMm;
   if (spec.textSizeMm !== undefined) return spec.textSizeMm;
+  const host = model.elements[spec.elementId];
+  if (host && (host.kind === "room" || host.kind === "space")) {
+    return resolveTextStyle({ elements: model.elements, connections: [] }, "space_label")?.textSizeMm ?? 2.5;
+  }
   return resolveTextStyle({ elements: model.elements, connections: [] }, "tag")?.textSizeMm ?? 2.4;
 }
 
@@ -1065,7 +1093,8 @@ export function tagLines(model: Pick<ModelState, "elements">, spec: TagSpec): st
   const style = styleOfTag(model, spec);
   if (style) {
     const lines = renderTagStyleLines(model, el, style.lines, { units: style.units, prefix: style.prefix, suffix: style.suffix });
-    return lines.length > 0 ? lines : ["?"];
+    if (lines.length > 0) return lines;
+    // If a mark-only style (e.g. `tst-mark-clean`) was attached to a space, room, ceiling, or run with no `mark`, fall back to the element's template text instead of printing "?".
   }
   const template = spec.template === "auto" ? autoTemplate(model, el) : spec.template;
   const mark = "mark" in el && typeof el.mark === "string" ? el.mark : "";
@@ -1075,7 +1104,7 @@ export function tagLines(model: Pick<ModelState, "elements">, spec: TagSpec): st
   switch (template) {
     case "duct_size":
     case "pipe_size":
-      if (el.kind === "run_segment") return [sizeLabel(el.size)];
+      if (el.kind === "run_segment") return [el.flex ? `${sizeLabel(el.size)} FLEX` : sizeLabel(el.size)];
       return [addOnTagText(el, model.elements) ?? (mark || "?")];
     case "gas_pipe": {
       // A gas segment tag: size and developed length of the piece (`1" 3 LF`); off gas pipe, a size tag.
@@ -1098,6 +1127,15 @@ export function tagLines(model: Pick<ModelState, "elements">, spec: TagSpec): st
     case "fixture":
       return [mark || typeName || "?"];
     case "mark":
+      if (el.kind === "ceiling") {
+        const form = ceilingForm(el);
+        const role = ceilingRole(el);
+        const mid = outlineCentroid(el.outline);
+        const mm = mid ? ceilingHeightAtPoint(el, mid) : el.heightMm;
+        const totalIn = Math.round(Math.abs(mm) / 25.4);
+        const ftIn = `${mm < 0 ? "-" : ""}${Math.floor(totalIn / 12)}'-${totalIn % 12}"`;
+        return [form === "open_to_structure" ? "OPEN TO STRUCTURE" : `${role.id === "ceiling" ? "" : `${role.label.toUpperCase()} `}${ftIn}`];
+      }
       return [mark || "?"];
     case "fields":
       return (spec.fields ?? ["mark"]).map((f) => param(f) || "-");
@@ -1134,6 +1172,7 @@ export function tagShape(model: Pick<ModelState, "elements">, spec: TagSpec): Ta
   if (style) return style.box;
   const el = model.elements[spec.elementId];
   if (!el) return "box";
+  if (el.kind === "ceiling") return "none";
   const t = spec.template === "auto" ? autoTemplate(model, el) : spec.template;
   return t !== "duct_size" && t !== "duct_size_insulation" && t !== "pipe_size" && t !== "pipe_size_insulation" && t !== "gas_pipe" && t !== "name_number" ? "box" : "none";
 }
@@ -1305,17 +1344,19 @@ export function drawTag(ctx: AnnotationDrawContext, item: DrawingItem): Annotati
   const head = item.points[0];
   if (!spec || !head) return [];
   const tagStyle = styleOfTag(ctx.model, spec);
-  const textLook = resolveTextStyle(ctx.model, "tag", tagStyle?.textStyleId);
+  const hostEl = ctx.model.elements[spec.elementId];
+  const isSpaceTag = hostEl !== undefined && (hostEl.kind === "room" || hostEl.kind === "space");
+  const textLook = resolveTextStyle(ctx.model, isSpaceTag ? "space_label" : "tag", tagStyle?.textStyleId);
   const size = tagTextSizeMm(ctx.model, spec);
   const leader = tagHasLeader(ctx.model, spec);
   const rawLines = tagLines(ctx.model, spec) ?? ["?"];
-  const lines = textLook?.uppercase ? rawLines.map((l) => l.toUpperCase()) : rawLines;
+  const lines = textLook?.uppercase || isSpaceTag ? rawLines.map((l) => l.toUpperCase()) : rawLines;
   const at = ctx.toPaper(head);
   const rotation = tagRotationDeg(ctx.model, ctx.view, spec, ctx.toPaper);
   const shape = tagShape(ctx.model, spec);
   const box = tagHeadBox(item.id, lines, at, size, rotation, shape);
   const { w, h } = tagHeadSize(lines, size);
-  const masked = spec.mask ?? tagStyle?.mask ?? (textLook ? textLook.mask : false);
+  const masked = spec.mask ?? tagStyle?.mask ?? (textLook ? textLook.mask : isSpaceTag);
   // The mask goes down first so the outline and words print over it and the linework drawn before it is hidden.
   if (masked) {
     const under = tagOutline(shape === "none" ? "box" : shape, w, h).map((p) => add(at, turn(p, rotation)));
@@ -1441,6 +1482,7 @@ export function leaderPrims(from: Vec2, to: Vec2, elbow: Vec2 | undefined, arrow
   const head = Math.min(2.5, l / 3);
   switch (arrow ?? "arrow") {
     case "arrow":
+    case "filled_arrow":
       segs.push([to, add(sub(to, mul(u, head)), mul(n, head * 0.35))], [to, sub(sub(to, mul(u, head)), mul(n, head * 0.35))]);
       break;
     case "tick": {
@@ -1448,7 +1490,8 @@ export function leaderPrims(from: Vec2, to: Vec2, elbow: Vec2 | undefined, arrow
       segs.push([sub(to, t), add(to, t)]);
       break;
     }
-    case "dot": {
+    case "dot":
+    case "filled_dot": {
       const r = 0.6;
       for (let i = 0; i < 8; i++) {
         const a0 = (i * Math.PI) / 4;
@@ -1461,4 +1504,39 @@ export function leaderPrims(from: Vec2, to: Vec2, elbow: Vec2 | undefined, arrow
       break;
   }
   return segs;
+}
+
+/** A leader on paper as full drawing primitives, including solid filled NCS arrowheads and dots. */
+export function leaderPrimitives(from: Vec2, to: Vec2, elbow: Vec2 | undefined, arrow: (typeof LEADER_ARROWS)[number] | undefined): Primitive[] {
+  const kind = arrow ?? "arrow";
+  if (kind !== "filled_arrow" && kind !== "filled_dot") {
+    return leaderPrims(from, to, elbow, kind).map(([a, b]) => ({ kind: "line", a, b, pen: "thin" }));
+  }
+  const pts = elbow ? [from, elbow, to] : [from, to];
+  const out: Primitive[] = [];
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1];
+    const b = pts[i];
+    if (a && b) out.push({ kind: "line", a, b, pen: "thin" });
+  }
+  const last = pts[pts.length - 2] ?? from;
+  const d = sub(to, last);
+  const l = len(d);
+  if (l < 1) return out;
+  const u = mul(d, 1 / l);
+  const n = { x: -u.y, y: u.x };
+  if (kind === "filled_arrow") {
+    const head = Math.min(2.6, l / 2.5);
+    const back = sub(to, mul(u, head));
+    const half = head * 0.28;
+    out.push({ kind: "fill", points: [to, add(back, mul(n, half)), sub(back, mul(n, half))], grey: 0 });
+  } else {
+    const r = 0.65;
+    out.push({
+      kind: "fill",
+      points: Array.from({ length: 10 }, (_, i) => add(to, { x: r * Math.cos((i * Math.PI) / 5), y: r * Math.sin((i * Math.PI) / 5) })),
+      grey: 0,
+    });
+  }
+  return out;
 }

@@ -30,7 +30,7 @@ export function isVerticalView(viewType: ViewType): boolean {
 }
 
 /** Categories a view can switch off. Linked models are switched per reference in `references`. */
-export const VIEW_CATEGORIES = ["duct", "duct_fitting", "pipe", "air_terminal", "equipment", "walls", "doors_windows", "rooms", "grids", "structure", "tags", "dimensions", "electrical_devices", "lighting_fixtures", "electrical_equipment", "insulation"] as const;
+export const VIEW_CATEGORIES = ["duct", "duct_fitting", "pipe", "air_terminal", "equipment", "walls", "doors_windows", "rooms", "grids", "structure", "tags", "dimensions", "electrical_devices", "lighting_fixtures", "electrical_equipment", "insulation", "opening_tags"] as const;
 export type ViewCategory = (typeof VIEW_CATEGORIES)[number];
 
 export type DetailLevel = "coarse" | "medium" | "fine";
@@ -94,6 +94,10 @@ export interface SectionCut {
   readonly tailExtMm?: number;
   /** Revit split/broken section line: hides the middle dash across the interior of the plan while keeping head & tail stubs. */
   readonly splitGap?: boolean;
+  /** Optional explicit source plan view id this section/elevation references back to (overrides automatic sheet lookup). */
+  readonly referencingViewId?: string;
+  /** Optional discipline ids of plans on which this section/elevation mark should appear (absent: all matching-level plans). */
+  readonly showInDisciplines?: readonly string[];
 }
 
 /** Everything about a view a person can set; absent fields take the view type's default. */
@@ -131,6 +135,10 @@ export interface ViewProps extends ViewGraphicsHints {
   readonly detailLevel?: DetailLevel;
   /** Plans: print repeating inline service codes (CW, SAN, G…) inside single-line runs when the service or system defines one. Absent: on. */
   readonly showLineCodes?: boolean;
+  /** Plans: visually offset horizontally stacked single-line runs at different elevations so coincident lines stay readable without moving 3D geometry. Absent: on for single-line runs. */
+  readonly offsetStackedRuns?: boolean;
+  /** Plans: limit which section/elevation view disciplines show reference marks on this plan (absent: all allowed by each vertical view). */
+  readonly showReferenceDisciplines?: readonly string[];
   /** Plans: multiplier for annotative paper-space symbols and `minPaperMm` floors in this view (0.5–3.0). Absent: 1. */
   readonly symbolScale?: number;
   /** Absent: hidden line. */
@@ -153,8 +161,10 @@ export interface ViewProps extends ViewGraphicsHints {
   /** Sections: how cut duct and pipe are filled. Absent: cross. */
   readonly cutPattern?: CutPattern;
   readonly section?: SectionCut;
-  /** Crop view: only what is inside the crop box draws and prints. Absent: on. Off: the view shows all its content. */
+  /** Crop view: only what is inside the crop box (or `cropPolygon` when set) draws and prints. Absent: on. Off: the view shows all its content. */
   readonly cropView?: boolean;
+  /** Optional closed polygonal crop boundary (model mm, >= 3 vertices) for custom L-shape / P-line enlarged plan crops; falls back to rectangular `cropMin`/`cropMax` when absent. */
+  readonly cropPolygon?: readonly Vec2[];
   /** Show the crop box boundary while editing (never printed). Absent: on. */
   readonly showCropBox?: boolean;
   /** Let notes, tags and dimensions reach past the crop box by `annotationCropOffsetMm` of paper. Absent: off. */
@@ -193,12 +203,20 @@ export interface ViewProps extends ViewGraphicsHints {
 export const VIEW_HASH_MARKS_FEATURE = "views:hash_marks";
 /** Peers that store a view's "label repeated typicals once" switch (round 13; an older peer's strict schema refuses the field). */
 export const VIEW_TYP_LABELS_FEATURE = "views:typ_labels";
+/** Peers that store and draw pack-contributed spatial analysis overlays on plan views. */
+export const VIEW_ANALYSIS_OVERLAY_FEATURE = "views:analysis_overlay";
+/** Peers that store per-viewport north-arrow sheet offsets and accept offset-only `set_viewport_north_arrow` commands. */
+export const VIEWPORT_NORTH_ARROW_OFFSET_FEATURE = "documents:viewport_north_arrow_offset";
 
-/** A callout: a box around part of a plan, bound to the view that shows it enlarged; its head reads that view's number and sheet, live. */
+/** A callout: a box or custom closed polygon around part of a plan, bound to the view that shows it enlarged; its head reads that view's number and sheet, live. */
 export interface CalloutSpec {
   readonly viewId: string;
   /** Replaces the view's detail number in the head (e.g. "EEP"). */
   readonly label?: string;
+  /** Optional custom closed polygon boundary (owner model mm, >= 3 vertices) for L-shape or P-line callouts. When absent, `points[0..1]` define a rectangle. */
+  readonly boundary?: readonly Vec2[];
+  /** Whether to print the referenced view's name beside the callout bubble (default true). */
+  readonly showLabel?: boolean;
 }
 
 /** Schedule definitions live with the schedule engine; re-exported here so existing imports keep working. */
@@ -238,6 +256,12 @@ export interface SheetProps {
   readonly fields?: Readonly<Record<string, string>>;
   /** The revision table, oldest first. Prints in the title block above the sheet number. */
   readonly revisions?: readonly SheetRevision[];
+  /** Optional discipline id for organizing sheets in the browser and print set (e.g. `"general"`, `"coordination"`). */
+  readonly discipline?: string;
+  /** Optional custom folder/group label for browser grouping (e.g. `"General"`, `"Life Safety"`). */
+  readonly group?: string;
+  /** Optional explicit sort order within its group or sheet list (lower sorts first; falls back to sheet number). */
+  readonly sortOrder?: number;
 }
 
 /** A view placed on a sheet at a scale. One view sits on at most one sheet. */
@@ -261,6 +285,8 @@ export interface Viewport {
   readonly scale: number;
   /** Print a north arrow beside the view title, turned to true north. Absent: on for plans, off for other views. */
   readonly northArrow?: boolean;
+  /** Optional paper-mm offset of the viewport's north arrow from its default anchor beside the view title. */
+  readonly northArrowOffsetMm?: Vec2;
   /** Optional paper-mm offset of the viewport title block (bubble, rule, title, scale, north arrow) from its default anchor below the viewport. */
   readonly titleOffsetMm?: Vec2;
   /** Optional explicit paper-mm length of the viewport title horizontal rule line (Revit draggable title bar end). */

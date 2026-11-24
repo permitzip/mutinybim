@@ -53,6 +53,8 @@ interface Props {
   readonly branchChannel?: BranchChannel | null
   /** Open a sheet (a form schedule is read and edited where it is drawn). */
   readonly onOpenSheet?: (sheetId: string) => void
+  /** Open the interactive editor for a form schedule whose add-on provides one. */
+  readonly onOpenFormEditor?: (kind: string, elementId: string) => boolean
 }
 
 /**
@@ -60,7 +62,7 @@ interface Props {
  * Rows come from the model server for the whole building; a cell edit goes
  * through the kernel's field writer and saves as one undoable change.
  */
-export function ModelSchedulePane({ projectId, session, connected, view, actor, model, onShowInModel, onUndo, onRedo, submit, editBlocked, branchChannel = null, onOpenSheet }: Props) {
+export function ModelSchedulePane({ projectId, session, connected, view, actor, model, onShowInModel, onUndo, onRedo, submit, editBlocked, branchChannel = null, onOpenSheet, onOpenFormEditor }: Props) {
   const client = connected ? session?.scheduleClient() ?? null : null
   const modelRef = useLatest(model)
   const undoRef = useLatest({ onUndo, onRedo })
@@ -101,7 +103,7 @@ export function ModelSchedulePane({ projectId, session, connected, view, actor, 
       </div>
     )
   }
-  if (!view.props?.schedule && !view.props?.scheduleV2) return <FormScheduleOpens view={view} model={model} onOpenSheet={onOpenSheet} />
+  if (!view.props?.schedule && !view.props?.scheduleV2) return <FormScheduleOpens view={view} model={model} onOpenSheet={onOpenSheet} onOpenFormEditor={onOpenFormEditor} />
   return (
     <div className="h-full overflow-auto p-3" data-testid="model-schedule-grid">
       {isTakeoffSchedule(definition) && <PriceWith projectId={projectId} model={model} />}
@@ -196,25 +198,40 @@ function commandStep(step: ScheduleColumnStep): EditStep {
  * where it is drawn: its sheet. This says so and opens that sheet, or says
  * how to place it, instead of a dead end.
  */
-export function FormScheduleOpens({ view, model, onOpenSheet }: { readonly view: ViewElement; readonly model: ModelState | null; readonly onOpenSheet?: (sheetId: string) => void }) {
+export function FormScheduleOpens({ view, model, onOpenSheet, onOpenFormEditor }: { readonly view: ViewElement; readonly model: ModelState | null; readonly onOpenSheet?: (sheetId: string) => void; readonly onOpenFormEditor?: (kind: string, elementId: string) => boolean }) {
   const viewport = model ? documentIndex(model).viewportByView.get(view.id) : undefined
   const sheet = viewport && model ? documentIndex(model).sheets.find((s) => s.id === viewport.sheetId) : undefined
+  const form = view.props?.formSchedule
+  const canEditForm = Boolean(form?.kind && form.elementId && onOpenFormEditor)
   return (
     <Empty data-testid="model-schedule-form-only">
       <EmptyHeader>
         <EmptyTitle>{view.name} is laid out by its form</EmptyTitle>
         <EmptyDescription>
-          {sheet ? `It is drawn on ${sheet.number} · ${sheet.title}; open that sheet to read it and change it (its template and rules are in its properties).` : 'Put it on a sheet from its properties (Place on sheet), then open that sheet to read it.'}
+          {canEditForm
+            ? `Open the interactive schedule editor to edit this schedule directly, or open ${sheet ? `${sheet.number} · ${sheet.title}` : 'its sheet'} to arrange it on paper.`
+            : sheet
+              ? `It is drawn on ${sheet.number} · ${sheet.title}; open that sheet to read it and change it (its template and rules are in its properties).`
+              : 'Put it on a sheet from its properties (Place on sheet), then open that sheet to read it.'}
         </EmptyDescription>
       </EmptyHeader>
-      {sheet && onOpenSheet && (
+      {(sheet && onOpenSheet) || canEditForm ? (
         <EmptyContent>
-          <Button onClick={() => onOpenSheet(sheet.id)} data-testid="model-schedule-open-sheet">
-            <FileText data-icon="inline-start" />
-            Open {sheet.number}
-          </Button>
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            {form?.kind && form.elementId && onOpenFormEditor && (
+              <Button onClick={() => onOpenFormEditor(form.kind, form.elementId!)} data-testid="model-schedule-open-form">
+                Edit interactive schedule
+              </Button>
+            )}
+            {sheet && onOpenSheet && (
+              <Button variant={canEditForm ? 'outline' : 'default'} onClick={() => onOpenSheet(sheet.id)} data-testid="model-schedule-open-sheet">
+                <FileText data-icon="inline-start" />
+                Open {sheet.number}
+              </Button>
+            )}
+          </div>
         </EmptyContent>
-      )}
+      ) : null}
     </Empty>
   )
 }

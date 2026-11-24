@@ -8,6 +8,7 @@
  */
 import {
   colourNumber,
+  columnVerticalSpan,
   fittingBody,
   fittingMesh,
   flexRings,
@@ -40,11 +41,12 @@ import {
   type RunFitting,
   type RunPoint,
   type RunSegment,
-  elementEntries, elementTypeValue, elementValues, elementsOfKind,
+  elementEntries, elementTypeValue, elementsOfKind,
   levelOf as kernelLevelOf,
   KNOWN_COMPONENT_CATEGORIES,
   asCeiling,
   hostSolidBlocks,
+  wallBaseAtMm,
   wallBodyProfile,
   hostVoidsOf,
   kindRowOf,
@@ -535,8 +537,8 @@ function rawElementSolids(el: BimElement, rules: ElevationRules = DEFAULT_ELEVAT
         const halfD = Math.max(el.thickness / 2, 55);
         const mulW = 55;
         const h = el.height;
-        const zBot = floor;
-        const zTop = floor + h;
+        const zBot = floor + wallBaseAtMm(el, len / 2);
+        const zTop = zBot + h;
         const frameBlocks: PrismBlock[] = [
           // Bottom sill track & top head track
           boxBlock(0, len, -halfD, halfD, zBot, zBot + 70),
@@ -647,23 +649,16 @@ function rawElementSolids(el: BimElement, rules: ElevationRules = DEFAULT_ELEVAT
       ];
     }
     case "column": {
-      const nextZ = nextLevelAboveMm(model, floor);
-      let colH = nextZ !== null && nextZ > floor ? nextZ - floor : rules.floorToFloorMm;
-      if (el.placement?.kind === "point" && model) {
-        const p = el.placement as { readonly topLevelId?: string; readonly topOffsetMm?: number; readonly heightMm?: number };
-        if (typeof p.topLevelId === "string") {
-          const topLvl = model.elements[p.topLevelId];
-          if (topLvl?.kind === "level" && topLvl.elevationMm > floor) colH = topLvl.elevationMm - floor + (p.topOffsetMm ?? 0);
-        } else if (typeof p.heightMm === "number" && p.heightMm > 0) {
-          colH = p.heightMm;
-        }
-      }
-      const rawHeight = (el as { readonly height?: number }).height;
-      if (typeof rawHeight === "number" && rawHeight > 0) colH = rawHeight;
-      // Stop cleanly at the underside of an overhead slab on the top level so columns never poke through a roof or floor deck.
-      if (model && nextZ !== null && Math.abs(floor + colH - nextZ) < 50) {
+      const span = model ? columnVerticalSpan(model.elements, el, floor, rules.floorToFloorMm) : null;
+      const baseZ = span ? span.baseZMm : floor + (el.placement?.kind === "point" ? el.placement.offsetMm : 0);
+      let colH = span ? span.heightMm : (typeof el.height === "number" && el.height > 0 ? el.height : rules.floorToFloorMm);
+      const hasExplicitTopOffset = (el.placement?.kind === "point" || el.placement?.kind === "line") && el.placement.topOffsetMm !== undefined && el.placement.topOffsetMm !== 0;
+      const isLevelTiedOrInferred = span !== null && span.topLevelId !== null;
+      const topZ = baseZ + colH;
+      // Stop cleanly at the underside of an overhead slab at the column's top level when level-tied/inferred and no explicit top offset already accounts for it.
+      if (model && isLevelTiedOrInferred && !hasExplicitTopOffset) {
         for (const slab of elementsOfKind(model.elements, "slab")) {
-          if (Math.abs(floorOf(slab, rules, model) - nextZ) > 50) continue;
+          if (Math.abs(floorOf(slab, rules, model) - topZ) > 50) continue;
           const xs = slab.outline.map((q) => q.x);
           const ys = slab.outline.map((q) => q.y);
           if (xs.length >= 3 && el.position.x >= Math.min(...xs) && el.position.x <= Math.max(...xs) && el.position.y >= Math.min(...ys) && el.position.y <= Math.max(...ys)) {
@@ -672,30 +667,43 @@ function rawElementSolids(el: BimElement, rules: ElevationRules = DEFAULT_ELEVAT
           }
         }
       }
+      const rotDeg = el.placement?.kind === "point" ? el.placement.rotationDeg : 0;
       return [
         {
           ...base,
           group: "structure",
           shape: "box",
-          center: kernelToScene(el.position.x, el.position.y, floor + colH / 2),
+          center: kernelToScene(el.position.x, el.position.y, baseZ + colH / 2),
           size: [el.size.x * MM, colH * MM, el.size.y * MM],
-          yaw: 0,
+          yaw: (rotDeg * Math.PI) / 180,
         },
       ];
     }
     case "beam": {
       const dx = el.end.x - el.start.x;
       const dy = el.end.y - el.start.y;
-      const len = Math.hypot(dx, dy);
-      if (len === 0) return [];
+      const planLen = Math.hypot(dx, dy);
+      if (planLen === 0) return [];
+      const depth = 400;
+      const width = 200;
+      const p = el.placement?.kind === "line" ? el.placement : null;
+      const dz = p ? p.endOffsetMm - p.startOffsetMm : 0;
+      const len3D = Math.hypot(planLen, dz);
+      const pitch = Math.abs(dz) > 1e-6 ? Math.atan2(dz, planLen) : 0;
+      const centerZ = p
+        ? floor + (p.startOffsetMm + p.endOffsetMm) / 2 + (p.vertical === "bottom" ? depth / 2 : p.vertical === "center" ? 0 : -depth / 2)
+        : floor + rules.floorToFloorMm - 300;
+      const h = p ? depth : 600;
+      const w = p ? width : 300;
       return [
         {
           ...base,
           group: "structure",
           shape: "box",
-          center: kernelToScene((el.start.x + el.end.x) / 2, (el.start.y + el.end.y) / 2, floor + rules.floorToFloorMm - 300),
-          size: [len * MM, 600 * MM, 300 * MM],
+          center: kernelToScene((el.start.x + el.end.x) / 2, (el.start.y + el.end.y) / 2, centerZ),
+          size: [len3D * MM, h * MM, w * MM],
           yaw: planAngleToSceneYaw(dx, dy),
+          ...(pitch !== 0 ? { pitch } : {}),
         },
       ];
     }
@@ -1125,13 +1133,449 @@ export interface SolidsDiff {
   readonly removed: ElementId[];
 }
 
-/** Solids for every element, optionally only for elements in `levels`. */
-export function modelSolids(model: ModelState, rules: ElevationRules = DEFAULT_ELEVATIONS, levels?: ReadonlySet<string>): Solid[] {
-  const out: Solid[] = [];
-  for (const el of elementValues(model.elements)) {
-    if (levels && !levels.has(levelOf(el.partition))) continue;
-    out.push(...elementSolids(el, rules, model));
+interface SolidMemo {
+  readonly rules: ElevationRules;
+  readonly floor: number;
+  readonly matId: string | undefined;
+  readonly classRegistry: unknown;
+  readonly dep1: unknown;
+  readonly dep2: unknown;
+  readonly dep3: unknown;
+  readonly solids: readonly Solid[];
+}
+
+/**
+ * Element records are never mutated in place, so an unchanged element's solids
+ * are reused across previews while every dependency it reads (rules, level
+ * elevation, material id, part type + geometry readiness, system colour, and
+ * connected fittings' memoised bodies) matches by identity.
+ */
+const elementSolidsMemo = new WeakMap<BimElement, SolidMemo>();
+
+function fastFloorOf(
+  el: BimElement,
+  rules: ElevationRules,
+  model: ModelState | undefined,
+  levelElevByKey?: Map<string, number>,
+  hasLevels?: boolean,
+): number {
+  if (!model) return rules.levelElevationMm(levelOf(el.partition));
+  if (levelElevByKey) {
+    if (el.kind === "level") return rules.levelElevationMm(levelOf(el.partition));
+    if (el.kind === "part" && el.planned !== undefined) return floorOf(el, rules, model);
+    const ownId =
+      "levelId" in el && typeof el.levelId === "string"
+        ? el.levelId
+        : "placement" in el &&
+            el.placement &&
+            typeof el.placement === "object" &&
+            "levelId" in el.placement &&
+            typeof el.placement.levelId === "string" &&
+            el.placement.levelId !== ""
+          ? el.placement.levelId
+          : null;
+    if (ownId) {
+      const hit = levelElevByKey.get(ownId);
+      if (hit !== undefined) return hit;
+    } else if (el.kind !== "load_point" && el.kind !== "opening") {
+      const named = el.partition?.level ?? "L1";
+      const hit = levelElevByKey.get(named);
+      if (hit !== undefined) return hit;
+      const computed = hasLevels ? floorOf(el, rules, model) : rules.levelElevationMm(named);
+      levelElevByKey.set(named, computed);
+      return computed;
+    }
   }
+  return floorOf(el, rules, model);
+}
+
+function fastMaterialId(model: ModelState, el: BimElement): string | undefined {
+  // Fast skip for the common MEP / geometry records that carry neither direct
+  // material values nor a type reference; avoids scanning the active pack set.
+  const hasValues = "values" in el && el.values !== undefined;
+  const hasType = "typeId" in el && el.typeId !== undefined;
+  if (!hasValues && !hasType && el.kind !== "ceiling" && el.kind !== "column") {
+    return undefined;
+  }
+  return resolveElementMaterial(model, el)?.id;
+}
+
+function cachedElementSolids(
+  el: BimElement,
+  rules: ElevationRules,
+  model: ModelState,
+  levelElevByKey: Map<string, number> | undefined,
+  hasLevels: boolean,
+  classRegistry: unknown,
+): readonly Solid[] {
+  const kind = el.kind;
+
+  // 1. Routed segments & fittings (no wrap insulation)
+  if ((kind === "run_segment" || kind === "run_fitting") && !el.insulation) {
+    const floor = fastFloorOf(el, rules, model, levelElevByKey, hasLevels);
+    const matId = fastMaterialId(model, el);
+    const systemEl = el.domain !== "conduit" ? model.elements[el.systemId] : undefined;
+    let dep2: unknown;
+    let dep3: unknown;
+    if (kind === "run_fitting") {
+      dep2 = el.domain !== "conduit" && el.family !== undefined ? fittingBody(model.elements, el) : undefined;
+    } else {
+      const startF = el.links.start ? model.elements[el.links.start.elementId] : undefined;
+      const endF = el.links.end ? model.elements[el.links.end.elementId] : undefined;
+      dep2 = el.domain !== "conduit" && startF?.kind === "run_fitting" && startF.family !== undefined ? fittingBody(model.elements, startF) : startF;
+      dep3 = el.domain !== "conduit" && endF?.kind === "run_fitting" && endF.family !== undefined ? fittingBody(model.elements, endF) : endF;
+    }
+    const hit = elementSolidsMemo.get(el);
+    if (
+      hit &&
+      hit.rules === rules &&
+      hit.floor === floor &&
+      hit.matId === matId &&
+      hit.dep1 === systemEl &&
+      hit.dep2 === dep2 &&
+      hit.dep3 === dep3
+    ) {
+      return hit.solids;
+    }
+    const solids = elementSolids(el, rules, model);
+    elementSolidsMemo.set(el, {
+      rules,
+      floor,
+      matId,
+      classRegistry: null,
+      dep1: systemEl,
+      dep2,
+      dep3,
+      solids,
+    });
+    return solids;
+  }
+
+  // 2. Placed part instances
+  if (kind === "part") {
+    if (el.planned !== undefined) return [];
+    const typeEl = model.elements[el.typeId];
+    if (typeEl?.kind !== "part_type") return [];
+    const floor = fastFloorOf(el, rules, model, levelElevByKey, hasLevels);
+    const matId = fastMaterialId(model, el);
+    const ready = partGeometryReady();
+    const hit = elementSolidsMemo.get(el);
+    if (
+      hit &&
+      hit.rules === rules &&
+      hit.floor === floor &&
+      hit.matId === matId &&
+      hit.dep1 === typeEl &&
+      hit.dep2 === ready
+    ) {
+      return hit.solids;
+    }
+    const solids = elementSolids(el, rules, model);
+    elementSolidsMemo.set(el, {
+      rules,
+      floor,
+      matId,
+      classRegistry: null,
+      dep1: typeEl,
+      dep2: ready,
+      dep3: undefined,
+      solids,
+    });
+    return solids;
+  }
+
+  // 3. Self-contained geometry kinds (no neighbor-element dependencies unless an
+  //    add-on registers a class body for them, which is checked before caching).
+  if (
+    kind === "duct_segment" ||
+    kind === "elbow" ||
+    kind === "tap" ||
+    kind === "terminal" ||
+    kind === "equipment" ||
+    kind === "slab" ||
+    kind === "beam" ||
+    kind === "riser_segment" ||
+    kind === "component" ||
+    kind === "mounting_plane"
+  ) {
+    const floor = fastFloorOf(el, rules, model, levelElevByKey, hasLevels);
+    const matId = fastMaterialId(model, el);
+    const hit = elementSolidsMemo.get(el);
+    if (
+      hit &&
+      hit.rules === rules &&
+      hit.floor === floor &&
+      hit.matId === matId &&
+      hit.classRegistry === classRegistry
+    ) {
+      return hit.solids;
+    }
+    const hasClassBody =
+      classRegistry !== null &&
+      classSolidsOf(el, { elements: model.elements, floorMm: floor }, activeClassRegistry()) !== null;
+    const solids = elementSolids(el, rules, model);
+    if (!hasClassBody) {
+      elementSolidsMemo.set(el, {
+        rules,
+        floor,
+        matId,
+        classRegistry,
+        dep1: undefined,
+        dep2: undefined,
+        dep3: undefined,
+        solids,
+      });
+    }
+    return solids;
+  }
+
+  // 4. Non-geometric metadata & 2D annotation records skip elementSolids entirely.
+  if (
+    kind === "tag" ||
+    kind === "dimension" ||
+    kind === "viewport" ||
+    kind === "drawing_item" ||
+    kind === "level" ||
+    kind === "part_type" ||
+    kind === "mep_system" ||
+    kind === "room" ||
+    kind === "space" ||
+    kind === "zone" ||
+    kind === "grid" ||
+    kind === "view" ||
+    kind === "sheet" ||
+    kind === "load_point" ||
+    kind === "element_type" ||
+    kind === "organization" ||
+    kind === "site" ||
+    kind === "service_link" ||
+    kind === "reference_plane"
+  ) {
+    if (classRegistry === null && !kindRowOf(kind)?.solid) return [];
+  }
+
+  // 5. Host/neighbor-dependent kinds (wall, column, ceiling, opening, add-on kinds)
+  return elementSolids(el, rules, model);
+}
+
+interface ModelSolidsSnapshot {
+  readonly elements: ModelState["elements"];
+  readonly elementCount: number;
+  readonly rules: ElevationRules;
+  readonly levels: ReadonlySet<string> | undefined;
+  readonly classRegistry: unknown;
+  readonly hasClass: boolean;
+  readonly partReady: boolean;
+  readonly byId: Map<string, readonly Solid[]>;
+}
+
+let lastModelSolids: ModelSolidsSnapshot | null = null;
+
+const LOCAL_ONLY_KINDS = new Set<string>([
+  "duct_segment",
+  "elbow",
+  "tap",
+  "terminal",
+  "equipment",
+  "part",
+  "run_segment",
+  "run_fitting",
+  "beam",
+  "riser_segment",
+  "component",
+  "mounting_plane",
+  "tag",
+  "dimension",
+  "viewport",
+  "drawing_item",
+  "room",
+  "space",
+  "zone",
+  "grid",
+  "view",
+  "sheet",
+  "load_point",
+  "organization",
+  "site",
+  "service_link",
+  "reference_plane",
+]);
+
+function sameLevelSet(a: ReadonlySet<string> | undefined, b: ReadonlySet<string> | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.size !== b.size) return false;
+  for (const v of a) if (!b.has(v)) return false;
+  return true;
+}
+
+function collectRunLinkIds(el: BimElement, into: Set<string>): void {
+  if (el.kind === "run_segment") {
+    if (el.links.start) into.add(el.links.start.elementId);
+    if (el.links.end) into.add(el.links.end.elementId);
+  } else if (el.kind === "run_fitting") {
+    for (const port of el.ports) {
+      if (port.link) into.add(port.link.elementId);
+    }
+  }
+}
+
+/**
+ * Solids for every element, optionally only for elements in `levels`.
+ *
+ * Element records are immutable, so when consecutive calls share rules, level
+ * filter, active packs and geometry readiness and only local-dependency records
+ * changed (typical interactive MEP/part preview edits), only the changed
+ * records and their immediate routed-link neighbours are rebuilt.
+ */
+export function modelSolids(model: ModelState, rules: ElevationRules = DEFAULT_ELEVATIONS, levels?: ReadonlySet<string>): Solid[] {
+  const hasClass = hasClassSolids();
+  const classRegistry = activeClassRegistry();
+  const partReady = partGeometryReady();
+  const elements = model.elements;
+
+  const snap = lastModelSolids;
+  if (
+    snap &&
+    snap.rules === rules &&
+    snap.classRegistry === classRegistry &&
+    snap.hasClass === hasClass &&
+    snap.partReady === partReady &&
+    sameLevelSet(snap.levels, levels)
+  ) {
+    if (snap.elements === elements) {
+      const out: Solid[] = [];
+      for (const list of snap.byId.values()) {
+        if (list.length === 1) out.push(list[0]!);
+        else if (list.length > 1) out.push(...list);
+      }
+      return out;
+    }
+
+    const prevElements = snap.elements;
+    const dirtyIds = new Set<string>();
+    const removedIds: string[] = [];
+    let existingInNow = 0;
+    let totalNow = 0;
+    let allLocal = true;
+
+    for (const id in elements) {
+      if (!Object.prototype.hasOwnProperty.call(elements, id)) continue;
+      totalNow++;
+      const el = elements[id]!;
+      const prev = prevElements[id];
+      if (prev !== undefined) existingInNow++;
+      if (prev === el) continue;
+      if (!LOCAL_ONLY_KINDS.has(el.kind) || (prev !== undefined && !LOCAL_ONLY_KINDS.has(prev.kind))) {
+        allLocal = false;
+        break;
+      }
+      dirtyIds.add(id);
+    }
+
+    if (allLocal && existingInNow < snap.elementCount) {
+      for (const id in prevElements) {
+        if (!Object.prototype.hasOwnProperty.call(prevElements, id)) continue;
+        if (id in elements) continue;
+        const prev = prevElements[id]!;
+        if (!LOCAL_ONLY_KINDS.has(prev.kind)) {
+          allLocal = false;
+          break;
+        }
+        removedIds.push(id);
+      }
+    }
+
+    // Only take the incremental path when a small fraction changed (saves copying the map on whole-model swaps).
+    if (allLocal && dirtyIds.size + removedIds.length <= Math.max(64, totalNow >> 3)) {
+      // Expand routed-link neighbours by 2 hops so fittingBody, segmentCutback
+      // and insulationEnvelope always reflect neighbouring segment/fitting edits.
+      const frontier = new Set<string>();
+      for (const id of dirtyIds) {
+        const el = elements[id];
+        if (el) collectRunLinkIds(el, frontier);
+        const prev = prevElements[id];
+        if (prev) collectRunLinkIds(prev, frontier);
+      }
+      for (const id of removedIds) {
+        const prev = prevElements[id];
+        if (prev) collectRunLinkIds(prev, frontier);
+      }
+      const hop2 = new Set<string>();
+      for (const id of frontier) {
+        dirtyIds.add(id);
+        const el = elements[id];
+        if (el) collectRunLinkIds(el, hop2);
+      }
+      for (const id of hop2) {
+        if (id in elements) dirtyIds.add(id);
+      }
+
+      const nextById = new Map(snap.byId);
+      for (const id of removedIds) nextById.delete(id);
+      for (const id of dirtyIds) {
+        const el = elements[id];
+        if (!el || (levels && !levels.has(levelOf(el.partition)))) {
+          nextById.delete(id);
+          continue;
+        }
+        const solids = elementSolids(el, rules, model);
+        if (solids.length > 0) nextById.set(id, solids);
+        else nextById.delete(id);
+      }
+
+      lastModelSolids = {
+        elements,
+        elementCount: totalNow,
+        rules,
+        levels,
+        classRegistry,
+        hasClass,
+        partReady,
+        byId: nextById,
+      };
+      const out: Solid[] = [];
+      for (const list of nextById.values()) {
+        if (list.length === 1) out.push(list[0]!);
+        else if (list.length > 1) out.push(...list);
+      }
+      return out;
+    }
+  }
+
+  // Full pass (cold model, level/wall/type/system edit, or whole-model swap).
+  const out: Solid[] = [];
+  const byId = new Map<string, readonly Solid[]>();
+  const levelElevByKey = new Map<string, number>();
+  let hasLevels = false;
+  for (const lvl of elementsOfKind(elements, "level")) {
+    hasLevels = true;
+    levelElevByKey.set(lvl.id, lvl.elevationMm);
+    levelElevByKey.set(lvl.name, lvl.elevationMm);
+  }
+  const fullClassReg = hasClass ? classRegistry : null;
+  let elementCount = 0;
+  for (const id in elements) {
+    if (!Object.prototype.hasOwnProperty.call(elements, id)) continue;
+    elementCount++;
+    const el = elements[id]!;
+    if (levels && !levels.has(levelOf(el.partition))) continue;
+    const solids = cachedElementSolids(el, rules, model, levelElevByKey, hasLevels, fullClassReg);
+    if (solids.length > 0) {
+      byId.set(id, solids);
+      if (solids.length === 1) out.push(solids[0]!);
+      else out.push(...solids);
+    }
+  }
+  lastModelSolids = {
+    elements,
+    elementCount,
+    rules,
+    levels,
+    classRegistry,
+    hasClass,
+    partReady,
+    byId,
+  };
   return out;
 }
 

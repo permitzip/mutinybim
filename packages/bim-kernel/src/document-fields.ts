@@ -14,6 +14,7 @@ export const DOCUMENT_FIELDS = {
   size: "doc.size",
   scale: "doc.scale",
   northArrow: "doc.northArrow",
+  northArrowOffsetMm: "doc.northArrowOffsetMm",
   titleOffsetMm: "doc.titleOffsetMm",
   titleRuleMm: "doc.titleRuleMm",
   points: "doc.points",
@@ -27,6 +28,9 @@ export const DOCUMENT_FIELDS = {
   titleBlock: "doc.titleBlock",
   titleBlockRow: "doc.titleBlockRow",
   revisions: "doc.revisions",
+  sheetDiscipline: "doc.sheetDiscipline",
+  sheetGroup: "doc.sheetGroup",
+  sheetSortOrder: "doc.sheetSortOrder",
   prop: (key: string) => `doc.props.${key}`,
   field: (key: string) => `doc.fields.${key}`,
 } as const;
@@ -52,6 +56,9 @@ export function documentFieldValue(el: BimElement, field: string): AuthoredValue
       if (key === "titleBlock") return el.props?.titleBlock ?? "";
       if (key === "titleBlockRow") return el.props?.titleBlockRow ? `${el.props.titleBlockRow.id}@${el.props.titleBlockRow.revision}` : "";
       if (key === "revisions") return canonicalJson(el.props?.revisions ?? []);
+      if (key === "sheetDiscipline") return el.props?.discipline ?? "";
+      if (key === "sheetGroup") return el.props?.group ?? "";
+      if (key === "sheetSortOrder") return el.props?.sortOrder !== undefined ? String(el.props.sortOrder) : "";
       if (key.startsWith("fields.")) return el.props?.fields?.[key.slice(7)] ?? "";
       return undefined;
     case "viewport":
@@ -59,6 +66,7 @@ export function documentFieldValue(el: BimElement, field: string): AuthoredValue
       if (key === "size") return el.size;
       if (key === "scale") return el.scale;
       if (key === "northArrow") return el.northArrow === undefined ? "default" : String(el.northArrow);
+      if (key === "northArrowOffsetMm") return canonicalJson(el.northArrowOffsetMm ?? null);
       if (key === "titleOffsetMm") return canonicalJson(el.titleOffsetMm ?? null);
       if (key === "titleRuleMm") return canonicalJson(el.titleRuleMm ?? null);
       return undefined;

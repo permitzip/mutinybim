@@ -326,3 +326,30 @@ The floor, ceiling, roof and structure over a point, to set a run's or a unit's 
 1. building.surfacesAt(ctx, { at, level }) or { element }; use ceiling or structureAbove elevationMm to pick a height.
 
 Uses: `building.surfacesAt`, `routes.along`
+
+## Photometrics, daylight and egress lighting
+
+Task: photometrics
+
+Assign IES LM-63 profiles and emergency drivers to luminaires, verify normal illuminance (4-bounce patch radiosity + task surfaces + ASHRAE 90.1 LPD), run CIE Daylight Factor or NFPA 101/IBC 90-minute egress compliance, turn on plan iso-contours, or export LBNL Radiance .rad/.ies files.
+
+1. Attach built-in or custom IES LM-63 files and emergency battery metadata with electrical.setLuminaireIes.
+2. Run electrical.runPhotometrics (calculationMode: "detailed" | "surfaces", 4-bounce patch radiosity) for room, countertop, and 3D stair footcandles + LPD, or electrical.runDaylightAnalysis for CIE Daylight Factor (DF%).
+3. Run electrical.runEgressLightingCheck for NFPA 101 §7.9.2.1 / IBC §1008.3.5 initial & 90-minute compliance along corridors, 3D stairs, and exit discharge.
+4. Toggle plan footcandle grids & contours with electrical.enablePhotometricOverlay, place live schedules with documents.formSchedule (photometric_summary / egress_lighting_compliance), or export standard Radiance scene files with electrical.exportRadiance.
+
+Uses: `electrical.setLuminaireIes`, `electrical.runPhotometrics`, `electrical.runDaylightAnalysis`, `electrical.runEgressLightingCheck`, `electrical.enablePhotometricOverlay`, `electrical.exportRadiance`
+
+## CAD drafting detail views
+
+Task: drafting details
+
+Author permit-ready 2D CAD mechanical/architectural details with proper lineweight hierarchy, halftone/screened material hatches, trade detail components, break lines, real CAD dimensions, margin-aligned callout stacks with horizontal-shoulder filled-arrow leaders, tight crop fitting, and automated overlap QA.
+
+1. Create a drafting view with drafting.view (e.g. scale: 16 for 3/4" = 1'-0") and inspect available symbols/hatches with drafting.catalog.
+2. Draft background material sections first using drafting.region with tone: "halftone" or "screened" (metal_deck, insulation_rigid, concrete, masonry, gypsum, acoustic) and drafting.batt for cavity insulation.
+3. Draw primary equipment/ductwork outlines with lineStyle: "wide", secondary internal detail with "medium", clearances with "hidden", and duct centerlines with "center"; place standard trade symbols with drafting.component and clean terminations with drafting.breakLine.
+4. Add real CAD dimensions (drafting.dimension) and place all callout notes outside the geometry in aligned left/right columns with drafting.calloutStack (auto-spaced, masked, horizontal-shoulder filled_arrow leaders) — never scatter raw unmasked text over linework.
+5. Call drafting.fitCrop to set a tight crop box, run drafting.check to verify zero text overlaps, zero unmasked line crossings, and zero out-of-crop items, then place the detail view on a sheet with documents.place.
+
+Uses: `drafting.view`, `drafting.region`, `drafting.rect`, `drafting.line`, `drafting.component`, `drafting.breakLine`, `drafting.dimension`, `drafting.calloutStack`, `drafting.detailTitle`, `drafting.fitCrop`, `drafting.check`, `documents.place`
