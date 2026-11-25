@@ -1421,7 +1421,7 @@ function drawPlan(
   const bgParts = maskedRunOwners.size > 0 ? deferredParts.filter((dp) => isBackgroundPart(dp.el, top.get(dp.el.id), maxRunNear)) : [];
   const fgParts = maskedRunOwners.size > 0 ? deferredParts.filter((dp) => !isBackgroundPart(dp.el, top.get(dp.el.id), maxRunNear)) : deferredParts;
   const bgStart = bgParts.length > 0 ? drawPartList(bgParts, { index, top }) : -1;
-  // In hidden-line floor plans, opaque white interior masks for double-line overhead runs (e.g. ducts & fittings)
+  // In hidden-line floor plans, opaque white interior masks for double-line overhead runs & fittings
   // paint inline over walls, cut poché, room labels, grids, and lower furniture before the run's own ink outlines draw on top.
   if (hidesEdges(style) && !fillsFaces(style) && !ceiling && maskedRunOwners.size > 0) {
     const runFaces = faces.filter((f) => maskedRunOwners.has(f.owner)).sort((a, b) => a.meanNear - b.meanNear);
