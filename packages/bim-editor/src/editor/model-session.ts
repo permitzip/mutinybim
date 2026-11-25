@@ -15,7 +15,8 @@ import type { EditorHostCapabilities, EditorReferencesPort } from '@permitzip/bi
 import { unavailableWords } from '@permitzip/bim-editor/host/unavailable'
 import type { RevitElementParameters, RevitParametersResponse, UnplacedElementsResponse, UnplacedElementView } from '../contracts/building-model/revit-parameters-contract'
 import { connectionProblem, editsPausedMessage, operatorMessage, problemForDenied, type ConnectionProblem } from './operator-messages'
-import { ALIGN_SNAP_MM, GRID_MM, MM_PER_FT, MM_PER_IN, POINT_SNAP_MM, WALL_FACE_SNAP_MM, defaultHeightMm, describeElement, feetInches, newElementId, partLabel, snapHint, snapPoint, snapTargets, type SnapTarget } from './placement'
+import { ALIGN_SNAP_MM, GRID_MM, MM_PER_FT, MM_PER_IN, POINT_SNAP_MM, WALL_FACE_SNAP_MM, defaultHeightMm, describeElement, feetInches,  nearestLinkedWallFace,
+  newElementId, partLabel, snapHint, snapPoint, snapTargets, type SnapTarget } from './placement'
 import { linkedSnapNear } from './linked-reference/linked-reference-store'
 import { isStarterLevelRace, starterLevelCommand } from './levels/starter-level'
 import { axisBadge, resolveRoutePoint, snapDrag, type AxisLock, type RouteAxis } from './route-axis'
@@ -106,6 +107,8 @@ export interface SessionEvents {
   onBranchState?(branch: BranchRef): void
   /** The places the route being drawn meets an add-on's rule (a rated wall, a ceiling), in the add-on's words; empty when none or not routing. */
   onRouteChecks?(checks: readonly RouteCheck[]): void
+  /** The 3D WebGL viewer could not start (e.g. GPU process reset or WebGL unavailable); 2D plans, sheets and schedules stay live. */
+  onViewerError?(message: string | null): void
 }
 
 /** One place the route being drawn meets a rule: the Route tool's line for it and where its tick goes on plan. */
@@ -665,13 +668,22 @@ export class ModelSession {
     this.ratedRoutes = ratedRoutes
     this.viewerModule = viewerModule
     this.syncModule = sync
-    this.viewer = new viewerModule.ModelViewer3D(this.container, {
-      workerUrl: '/api/building-model/fragments-worker',
-      onStats: (stats) => this.events.onStats(stats),
-      colors: this.viewerColors,
-    })
-    this.viewer.setDisplayContext(this.displayContext)
-    this.viewer.setCategoryView(this.categoryView)
+    try {
+      this.viewer = new viewerModule.ModelViewer3D(this.container, {
+        workerUrl: '/api/building-model/fragments-worker',
+        onStats: (stats) => this.events.onStats(stats),
+        colors: this.viewerColors,
+      })
+      this.viewer.setDisplayContext(this.displayContext)
+      this.viewer.setCategoryView(this.categoryView)
+      this.events.onViewerError?.(null)
+    } catch (err: unknown) {
+      // Do not block 2D plans, sheets, one-lines, schedules or live editing if WebGL fails to initialize.
+      console.error('[ModelSession] 3D WebGL viewer unavailable; continuing in 2D/sheets mode', err)
+      this.viewer = null
+      const msg = err instanceof Error ? err.message : 'WebGL context could not be created.'
+      this.events.onViewerError?.(msg)
+    }
     if (process.env.NODE_ENV === 'development') Reflect.set(window, '__buildingModelSession', this)
 
     // Live editing connects alongside the reference downloads; a slow or failed reference never blocks it.
@@ -680,13 +692,37 @@ export class ModelSession {
     if (authority) this.connect(sync, authority)
     this.revitParametersUrl = config.revitParametersUrl ?? null
 
-    await this.syncReferences(config.references)
-    if (this.disposed) return
-
-    this.referencesReady = true
-    this.framedWork = this.view !== null
-    await this.frameWork()
+    if (this.viewer) {
+      await this.syncReferences(config.references)
+      if (this.disposed) return
+      this.referencesReady = true
+      this.framedWork = this.view !== null
+      await this.frameWork()
+    }
     this.events.onPhase('')
+  }
+
+  /** Retry initializing the 3D WebGL viewer without disconnecting live editing or reloading the page. */
+  retry3d(): ModelViewer3D | null {
+    if (this.disposed || this.viewer || !this.viewerModule) return this.viewer
+    try {
+      this.viewer = new this.viewerModule.ModelViewer3D(this.container, {
+        workerUrl: '/api/building-model/fragments-worker',
+        onStats: (stats) => this.events.onStats(stats),
+        colors: this.viewerColors,
+      })
+      this.viewer.setDisplayContext(this.displayContext)
+      this.viewer.setCategoryView(this.categoryView)
+      this.events.onViewerError?.(null)
+      this.redraw()
+      void this.frameWork()
+      return this.viewer
+    } catch (err: unknown) {
+      console.error('[ModelSession] 3D WebGL viewer retry failed', err)
+      this.viewer = null
+      this.events.onViewerError?.(err instanceof Error ? err.message : 'WebGL context could not be created.')
+      return null
+    }
   }
 
   /**
@@ -1166,9 +1202,9 @@ export class ModelSession {
   }
 
   private redraw() {
-    if (!this.viewer || !this.accepted || !this.view) return
-    this.viewer.setAuthored(this.accepted, this.preview ?? this.view)
+    if (!this.accepted || !this.view) return
     const shown = this.preview ?? this.view
+    this.viewer?.setAuthored(this.accepted, shown)
     this.events.onModel(this.accepted, shown, this.changedSinceLastModel(shown))
     if (this.selectedId) {
       const element = (this.preview ?? this.view).elements[this.selectedId]
@@ -2465,14 +2501,21 @@ export class ModelSession {
       const where = this.planeLocked ? `Work plane locked (L unlocks): ${feetInches(spec.heightMm)} above ${levelName}` : `${this.shiftHeld ? 'Shift' : 'Nothing under the pointer'}: on ${levelName}'s floor plane, ${feetInches(spec.heightMm)} up`
       target = { levelId: spec.levelId, raw, offsetMm: spec.heightMm, where, reference: this.referenceNear(clientX, clientY, raw) }
     }
+    const linkedCandidates = this.linkedNear(target.levelId, target.raw)
     const wallHit =
       !this.shiftHeld && !target.planeId && this.view && kernel.isWallFaceMountable(spec.definition)
         ? kernel.nearestWallFace(this.view, target.levelId, target.raw, { maxDistanceMm: WALL_FACE_SNAP_MM })
         : null
+    const linkedWallHit =
+      !wallHit && !this.shiftHeld && !target.planeId && kernel.isWallFaceMountable(spec.definition)
+        ? nearestLinkedWallFace(target.raw, linkedCandidates, WALL_FACE_SNAP_MM)
+        : null
     const snapped = wallHit
       ? { point: wallHit.position, kind: 'reference' as const, label: 'wall finish face' }
-      : snapPoint(target.raw, this.snapTargetsFor(target.levelId, []), target.reference, this.workFrame ?? undefined, this.linkedNear(target.levelId, target.raw))
-    const placementRot = wallHit ? wallHit.rotationDeg : spec.rotationDeg
+      : linkedWallHit
+        ? { point: linkedWallHit.position, kind: 'linked' as const, label: linkedWallHit.label }
+        : snapPoint(target.raw, this.snapTargetsFor(target.levelId, []), target.reference, this.workFrame ?? undefined, linkedCandidates)
+    const placementRot = wallHit ? wallHit.rotationDeg : linkedWallHit ? linkedWallHit.rotationDeg : spec.rotationDeg
     const type: PartTypeElement = { id: kernel.asElementId(spec.typeId), kind: 'part_type', version: 0, authoredRev: {}, definition: spec.definition }
     const part: PartInstance = {
       id: kernel.asElementId('placement-preview'),

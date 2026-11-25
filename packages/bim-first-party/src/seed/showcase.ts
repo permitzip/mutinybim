@@ -706,6 +706,7 @@ function buildShowcase(modelId: string): ModelState {
   const xfmr = mustBuiltin("builtin:transformer-75kva@1");
   const lpnl = mustBuiltin("builtin:panelboard-225@1");
   const discFused = mustBuiltin("builtin:disconnect-fused-100-480@1");
+  const discNf30 = mustBuiltin("builtin:disconnect-nf-30-480@1");
   const rec = mustBuiltin("builtin:duplex-receptacle@1");
   const gfci = mustBuiltin("builtin:gfci-receptacle@1");
   const quad = mustBuiltin("builtin:quad-receptacle@1");
@@ -733,7 +734,7 @@ function buildShowcase(modelId: string): ModelState {
       type: "save_part_types",
       types: [
         ...SHOWCASE_PART_TYPES.map((t) => ({ typeId: t.id, definition: t.definition })),
-        ...[rg, eg, swb, hpnl, xfmr, lpnl, discFused, rec, gfci, quad, floorRec, floorQuad, nema620, twistLock, hardwired, sw1, sw3, swD, occ, exit, linearPendant, exitCombo, waterMeter, rpz, expTank, floorCo, vtr, manhole].map((t) => ({
+        ...[rg, eg, swb, hpnl, xfmr, lpnl, discFused, discNf30, rec, gfci, quad, floorRec, floorQuad, nema620, twistLock, hardwired, sw1, sw3, swD, occ, exit, linearPendant, exitCombo, waterMeter, rpz, expTank, floorCo, vtr, manhole].map((t) => ({
           typeId: t.id,
           definition: t.definition,
         })),
@@ -1464,6 +1465,8 @@ function buildShowcase(modelId: string): ModelState {
     { type: "place_part", partId: "hp-1", typeId: hpnl.id, levelId: "L1", position: pt(0, 0), host: { kind: "wall_face", elementId: "w-l1-w", stationMm: Math.round(7.1 * FT), side: -1 }, mark: "HP-1", values: { aic: 42000 } },
     { type: "place_part", partId: "sd-1e", typeId: discFused.id, levelId: "L1", position: pt(0, 0), host: { kind: "wall_face", elementId: "w-l1-core", stationMm: Math.round(6.8 * FT), side: 1 }, mark: "SD-1(E)" },
     { type: "place_part", partId: "sd-2d", typeId: discFused.id, levelId: "L1", position: pt(0, 0), host: { kind: "wall_face", elementId: "w-l1-core", stationMm: Math.round(5.0 * FT), side: 1 }, mark: "SD-2(D)" },
+    // Local NEMA 3R non-fused disconnect beside RTU-1 on the East Roof (NEC 440.14 within sight of equipment)
+    { type: "place_part", partId: "disc-rtu-1", typeId: discNf30.id, levelId: "L2", position: pt(44.2 * FT, 16.0 * FT), offsetMm: 0, host: { kind: "slab", elementId: "deck-roof-east" }, mark: "SD-RTU-1", values: { panel_name: "SD-RTU-1", serves: "RTU-1" } },
     { type: "place_part", partId: "t-1", typeId: xfmr.id, levelId: "L1", position: pt(12.5 * FT, 3.0 * FT), mark: "T-1", values: { impedance_pct: 4.5 } },
     { type: "place_part", partId: "lp-1", typeId: lpnl.id, levelId: "L1", position: pt(0, 0), host: { kind: "wall_face", elementId: "w-l1-core", stationMm: Math.round(10.5 * FT), side: 1 }, mark: "LP-1", values: { aic: 22000 } },
 
@@ -1623,8 +1626,9 @@ function buildShowcase(modelId: string): ModelState {
     { type: "create_service_link", linkId: "fdr-sd2d", sourceId: "mdp", positions: [8, 10, 12], electrical: { ratingA: 100, conductors: { sets: 1, phaseSize: "3", groundSize: "8", material: "cu" } }, description: "Demolished Fused Disconnect SD-2(D) (Dashed Demo Phase)", members: [{ elementId: "sd-2d" }] },
     { type: "create_service_link", linkId: "fdr-lp1", sourceId: "t-1", electrical: { ratingA: 225, conductors: { sets: 1, phaseSize: "4/0", neutralSize: "4/0", groundSize: "4", material: "cu" } }, description: "Secondary Feeder to Panel LP-1 (208Y/120V)", members: [{ elementId: "lp-1" }] },
 
-    // Panel HP-1 (480Y/277V) Branch Circuits — EVERY heavy MEP & lighting load circuited!
-    { type: "create_service_link", linkId: "ckt-hp-rtu", sourceId: "hp-1", positions: [1, 3, 5], electrical: { ratingA: 25 }, description: "RTU-1 (Carrier 50FC-A06 5-Ton Packaged Unit)", members: [{ elementId: "rtu-1" }] },
+    // Panel HP-1 (480Y/277V) Branch Circuits — EVERY heavy MEP & lighting load circuited (RTU-1 routed via local rooftop NEMA 3R disconnect SD-RTU-1 per NEC 440.14)!
+    { type: "create_service_link", linkId: "ckt-hp-rtu", sourceId: "hp-1", positions: [1, 3, 5], electrical: { ratingA: 25 }, description: "RTU-1 via Local Disconnect SD-RTU-1", members: [{ elementId: "disc-rtu-1" }] },
+    { type: "create_service_link", linkId: "ckt-disc-rtu1", sourceId: "disc-rtu-1", electrical: { ratingA: 25 }, description: "RTU-1 (Carrier 50FC-A06 5-Ton Packaged Unit)", members: [{ elementId: "rtu-1" }] },
     { type: "create_service_link", linkId: "ckt-hp-wh", sourceId: "hp-1", positions: [2, 4, 6], electrical: { ratingA: 30 }, description: "WH-1 (A.O. Smith DRE-52 18 kW Electric Water Heater)", members: [{ elementId: "wh-1" }] },
     { type: "create_service_link", linkId: "ckt-hp-ltg1", sourceId: "hp-1", positions: [7], electrical: { ratingA: 20 }, description: "L1 Reception & Studio 277V Lighting + Emergency", members: [{ elementId: "lt-1" }, { elementId: "lt-2" }, { elementId: "lt-3" }, { elementId: "lt-16" }, { elementId: "lt-17" }, { elementId: "lt-13" }, { elementId: "lt-14" }, { elementId: "lt-15" }, { elementId: "lt-18" }, { elementId: "lt-19" }, { elementId: "lt-20" }, { elementId: "lt-kit-1" }, { elementId: "lt-kit-2" }, { elementId: "lt-isl-1" }, { elementId: "lt-4" }, { elementId: "lt-5" }, { elementId: "lt-21" }, { elementId: "lt-22" }, { elementId: "lt-6" }, { elementId: "lt-7" }, { elementId: "lt-23" }, { elementId: "lt-24" }, { elementId: "lt-8" }, { elementId: "exit-1" }, { elementId: "exit-2" }] },
     { type: "create_service_link", linkId: "ckt-hp-ltg2", sourceId: "hp-1", positions: [9], electrical: { ratingA: 20 }, description: "L1 MEP Room & Restroom 277V Lighting", members: [{ elementId: "lt-9" }, { elementId: "lt-10" }, { elementId: "lt-9b" }, { elementId: "lt-11" }, { elementId: "lt-11b" }, { elementId: "lt-12b" }, { elementId: "lt-12" }] },
@@ -1992,7 +1996,7 @@ function buildShowcase(modelId: string): ModelState {
         viewTopMm: Math.round(10 * FT),
         hideDeviceMarks: true,
         categoryOverrides: ELEC_POWER_HIDE,
-        circuitGraphics: { hashMarksOn: "home_runs" },
+        circuitGraphics: { style: "chamfered", hashMarksOn: "home_runs" },
       },
     },
     {
@@ -2040,7 +2044,31 @@ function buildShowcase(modelId: string): ModelState {
     { type: "create_view", viewId: "view-sched-hp1", name: "Panel HP-1 Schedule (480Y/277V)", viewType: "schedule", props: { formSchedule: { kind: "panel", elementId: "hp-1", template: builtinFormTemplate("panel"), rules: "nec-2023" } } },
     { type: "create_view", viewId: "view-sched-lp1", name: "Panel LP-1 Schedule (208Y/120V)", viewType: "schedule", props: { formSchedule: { kind: "panel", elementId: "lp-1", template: builtinFormTemplate("panel"), rules: "nec-2023" } } },
     { type: "create_view", viewId: "view-sched-lctrl", name: "Lighting Controls Schedule", viewType: "schedule", props: { formSchedule: { kind: "lighting_controls", template: builtinFormTemplate("lighting_controls") } } },
-    { type: "create_view", viewId: "view-sched-ltg", name: "Lighting Fixture Schedule", viewType: "schedule", props: { scheduleV2: LIGHTING_FIXTURE_SCHEDULE } },
+    {
+      type: "create_view",
+      viewId: "view-sched-ltg",
+      name: "Lighting Fixture Schedule",
+      viewType: "schedule",
+      props: {
+        scheduleV2: {
+          ...LIGHTING_FIXTURE_SCHEDULE,
+          name: "LIGHTING FIXTURE SCHEDULE (BY TYPE)",
+          itemize: false,
+          groups: [],
+          sort: [{ path: "type_name", direction: "asc" }],
+          columns: [
+            { id: "type_name", kind: "field", path: "type_name", heading: "TYPE" },
+            { id: "family", kind: "field", path: "family", heading: "DESCRIPTION" },
+            { id: "count", kind: "field", path: "count", heading: "QTY", total: true },
+            { id: "lumens", kind: "parameter", path: "lumens", heading: "LUMENS", hideWhenEmpty: true },
+            { id: "watts", kind: "parameter", path: "watts", heading: "WATTS", total: true, hideWhenEmpty: true },
+            { id: "voltage", kind: "parameter", path: "voltage", heading: "VOLTS", hideWhenEmpty: true },
+            { id: "emergency", kind: "parameter", path: "emergency", heading: "EM", hideWhenEmpty: true },
+            { id: "cut_sheet", kind: "parameter", path: "cut_sheet", heading: "CUT SHEET", hideWhenEmpty: true },
+          ],
+        },
+      },
+    },
     { type: "create_view", viewId: "view-oneline", name: "Electrical One-Line Diagram", viewType: "detail", props: { diagram: { kind: "one_line", hints: { title: "ELECTRICAL ONE-LINE DIAGRAM", showLoads: true, showWarnings: true, faultCurrent: true, lengthMode: "shortest" } } } },
     {
       type: "create_view",
@@ -2286,12 +2314,12 @@ function buildShowcase(modelId: string): ModelState {
       ],
       leaders: [{ to: pt(42.5 * FT, 9.0 * FT) }],
     },
-    // Multi-line leader callout placed cleanly above Grid Bubble A pointing at the merged MDP + HP-1 NEC 110.26 clearance zone (always-draggable elbow grip)
+    // Multi-line leader callout placed cleanly between Grid Bubbles A and B pointing at the merged MDP + HP-1 NEC 110.26 clearance zone (always-draggable elbow grip)
     {
       type: "create_text_note",
       itemId: "note-elec-clearance",
       ownerId: "view-elec-power",
-      at: pt(-13.2 * FT, 14.2 * FT),
+      at: pt(-13.2 * FT, 10.6 * FT),
       width: 30,
       textSize: 1.8,
       paragraphs: [

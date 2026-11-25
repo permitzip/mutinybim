@@ -27,6 +27,7 @@ import { PrintedPdfLayer } from './PrintedPdfLayer'
 import { FigureProperties } from './FigureProperties'
 import type { SheetImages } from './use-sheet-images'
 import { EditingViewIndicator } from './EditingViewIndicator'
+import { PROPERTIES_DEFAULT_WIDTH_PX, PROPERTIES_SURFACE, ResizableSideRail } from '../layout/ResizableSideRail'
 import { KeynotePicker } from './KeynotePicker'
 import { cleanKey, keynoteCommand } from './keynotes'
 import { useDrawnScene, type DrawingTarget } from './use-drawn-scene'
@@ -152,6 +153,8 @@ interface Props {
   readonly onEditSheet?: () => void
   /** Right-hand properties for a detail view (scale etc.), rendered under the selection panel. */
   readonly viewProperties?: React.ReactNode
+  /** Optional override for the right Properties rail collapse shortcut (default `]`; pass `null` to disable). */
+  readonly propertiesShortcut?: string | null
   /** The drawing tool, when the ribbon owns it (its Annotate tab); the canvas then draws no tool buttons of its own. */
   readonly tool?: DrawingTool
   readonly onToolChange?: (tool: DrawingTool) => void
@@ -272,7 +275,7 @@ interface PlacedFrame {
 }
 
 /** Sheet editor and detail-view drafting canvas: the printed drawing underneath, interaction on top. */
-export function DrawingCanvas({ target, model, sheetTitle, canEdit, blockedReason, submit, onOpenView, onOpenSheet, onEditSheet, viewProperties, tool: controlledTool, onToolChange, onToolsAvailable, backgrounds, printedPreview = false, people, selfActorId, onActivity, draft: sharedDraft, modelEdit, onActiveViewChange, onOpenTagStyles, viewportProperties, sheetImages = null, focusItem = null, placing = null, onPlaced, onPlacingCancel, spaces = null, ceilings = null, questions = null, blockFreshness, onCreateSimilar, onAddView, onPlanPointer }: Props) {
+export function DrawingCanvas({ target, model, sheetTitle, canEdit, blockedReason, submit, onOpenView, onOpenSheet, onEditSheet, viewProperties, propertiesShortcut, tool: controlledTool, onToolChange, onToolsAvailable, backgrounds, printedPreview = false, people, selfActorId, onActivity, draft: sharedDraft, modelEdit, onActiveViewChange, onOpenTagStyles, viewportProperties, sheetImages = null, focusItem = null, placing = null, onPlaced, onPlacingCancel, spaces = null, ceilings = null, questions = null, blockFreshness, onCreateSimilar, onAddView, onPlanPointer }: Props) {
   const overlayRef = useRef<SVGSVGElement | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const paperRef = useRef<HTMLDivElement | null>(null)
@@ -2299,6 +2302,11 @@ export function DrawingCanvas({ target, model, sheetTitle, canEdit, blockedReaso
                   const selected = selectedIds.includes(item.id)
                   const isMoving = Boolean(moveDelta && movingIds.has(item.id))
                   const liveTagLines = isMoving && item.tag ? (tagLines(model, item.tag) ?? []) : null
+                  const zoomScale = 1 / Math.max(zoom, 0.35)
+                  const selPad = Math.min(0.75, 0.55 * zoomScale)
+                  const selStroke = Math.min(0.45, 0.35 * zoomScale)
+                  const selDash = `${(1.4 * Math.min(1, zoomScale)).toFixed(2)} ${(1.0 * Math.min(1, zoomScale)).toFixed(2)}`
+                  const hitPad = Math.max(1.2, 1.5 * zoomScale)
                   return (
                     <g key={item.id}>
                       {isMoving && (
@@ -2341,15 +2349,28 @@ export function DrawingCanvas({ target, model, sheetTitle, canEdit, blockedReaso
                             ))}
                           </g>
                         )}
+                        {selected && (
+                          <rect
+                            x={box.x - selPad}
+                            y={box.y - selPad}
+                            width={box.w + selPad * 2}
+                            height={box.h + selPad * 2}
+                            fill={PRIMARY}
+                            fillOpacity={0.05}
+                            stroke={PRIMARY}
+                            strokeOpacity={0.85}
+                            strokeDasharray={selDash}
+                            strokeWidth={selStroke}
+                            pointerEvents="none"
+                          />
+                        )}
                         <rect
-                          x={box.x - 1.5}
-                          y={box.y - 1.5}
-                          width={box.w + 3}
-                          height={box.h + 3}
+                          x={box.x - hitPad}
+                          y={box.y - hitPad}
+                          width={box.w + hitPad * 2}
+                          height={box.h + hitPad * 2}
                           fill="transparent"
-                          stroke={selected ? PRIMARY : 'transparent'}
-                          strokeDasharray="2 1.5"
-                          strokeWidth={0.5}
+                          stroke="transparent"
                           className={tool === 'select' && !draftInput.active ? 'cursor-pointer' : 'pointer-events-none'}
                           data-testid={`drawn-${item.shape}`}
                           data-selected={selected || undefined}
@@ -2843,7 +2864,15 @@ export function DrawingCanvas({ target, model, sheetTitle, canEdit, blockedReaso
         )}
       </div>
 
-      <aside className="flex w-72 shrink-0 flex-col gap-3 overflow-y-auto border-l p-3" aria-label="Properties">
+      <ResizableSideRail
+        side="right"
+        surface={PROPERTIES_SURFACE}
+        title="Properties"
+        defaultWidthPx={PROPERTIES_DEFAULT_WIDTH_PX}
+        shortcut={propertiesShortcut}
+        className="border-l bg-background"
+        bodyClassName="gap-3 p-3"
+      >
         {selectedViewport ? (
           <>
           <ViewportProperties
@@ -2999,7 +3028,7 @@ export function DrawingCanvas({ target, model, sheetTitle, canEdit, blockedReaso
             {viewProperties}
           </>
         )}
-      </aside>
+      </ResizableSideRail>
     </div>
   )
 }

@@ -236,6 +236,8 @@ interface Props {
   initialView: BuildingModelView
   /** Open this view (a schedule from the project tree) as soon as the model shows it; a new id opens that one. */
   openViewId?: string
+  /** Optional single-key shortcuts for collapsing the left/right sidebars (defaults: `[` and `]`, avoiding host Cmd+B / Cmd+Shift+K / Cmd+J). Pass `null` to disable either side. */
+  sidebarShortcuts?: { readonly left?: string | null; readonly right?: string | null }
 }
 
 interface SurfaceConfig {
@@ -295,7 +297,7 @@ function RibbonTrailing({ targetId, children }: { targetId: string; children: Re
 /** The project's black-only printing choice (Sheets › Black only), re-read only when the model changes. */
 const printBlackOnlySelector: ModelSelector<boolean> = (snapshot) => (snapshot.model ? organizationOf(snapshot.model).printBlackOnly : false)
 
-export function BuildingModelSurface({ projectId, projectName, projectNumber, userName, userId, initialView, openViewId }: Props) {
+export function BuildingModelSurface({ projectId, projectName, projectNumber, userName, userId, initialView, openViewId, sidebarShortcuts }: Props) {
   const host = useEditorHost()
   const { openConfig: openModelConfig, getAccessToken } = host.session
   const referencesPort = host.data.references
@@ -306,7 +308,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
   const sheetTitle = useMemo<SheetTitle>(() => ({ projectName, projectNumber: projectNumber ?? '', firmName: SHEET_FIRM_NAME }), [projectName, projectNumber])
   const canvasRef = useRef<HTMLDivElement | null>(null)
   const sessionRef = useRef<ModelSession | null>(null)
-  const autoSize = useAutoSize(projectId, (command, label) => sessionRef.current?.submitCommand(command, label) ?? "Live editing isn't connected, so changes can't be saved.")
+  const autoSize = useAutoSize(projectId, (command, label) => (sessionRef.current ? sessionRef.current.submitCommand(command, label) : "Live editing isn't connected, so changes can't be saved."))
   const dragRef = useRef<{ drag: SlideDrag; s: number | null } | null>(null)
   const [requested, setOpen] = useState<OpenItem>({ kind: 'model', mode: initialView === 'plan' ? 'plan' : '3d' })
   const [viewDisplay, setViewDisplay] = useState<ViewDisplay>('model')
@@ -342,6 +344,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
   const [levelElevations, setLevelElevations] = useState<Record<string, number>>({})
   const [config, setConfig] = useState<SurfaceConfig | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [viewerError, setViewerError] = useState<string | null>(null)
   const [phase, setPhase] = useState<string>('Opening the model…')
   // The trade add-ons are their own download, fetched beside the model's config; the session opens once they are installed.
   const [addOnsReady, setAddOnsReady] = useState(() => addOns() !== null)
@@ -589,6 +592,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
         setRouteChecks(checks)
         setRouteTickMarks(checks.length > 0 ? { ticks: session.routeTicks(), pieces: session.routeTickPieces() } : null)
       },
+      onViewerError: setViewerError,
     }, getAccessToken, referencesPort, hostCapabilities)
     session.setViewerColors(viewerColorsRef.current)
     sessionRef.current = session
@@ -656,8 +660,9 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
   const [figureDialog, setFigureDialog] = useState<'chart' | 'picture' | null>(null)
   const [calcDialog, setCalcDialog] = useState(false)
   const [placedFigure, setPlacedFigure] = useState<{ readonly id: string } | null>(null)
-  // Detail views are only a drawing; plans, sections and 3D views show the live model or their drawing (sections open as the drawing).
-  const showDrawing = open.kind === 'sheet' || (openView !== null && (openView.viewType === 'detail' || viewDisplay === 'drawing'))
+  // Detail views are only a drawing; form schedules (panel/controls schedules without a v2 grid) render directly as live drawings so they never hit a dead-end placeholder; plans, sections and 3D views show the live model or their drawing.
+  const isFormOnlySchedule = openView !== null && openView.viewType === 'schedule' && Boolean(openView.props?.formSchedule) && !openView.props?.scheduleV2
+  const showDrawing = open.kind === 'sheet' || (openView !== null && (openView.viewType === 'detail' || isFormOnlySchedule || viewDisplay === 'drawing'))
   const propertiesOpen = selection !== null || (!showDrawing && openView !== null)
   /** A schedule view on its live side opens as the editable grid. */
   const scheduleGridOpen = openView !== null && openView.viewType === 'schedule' && !showDrawing
@@ -2452,21 +2457,21 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
                 .catch((err: unknown) => console.error('[BuildingModelSurface] box select in the drawing failed', err))
               return `${ids.length} in the box.`
             },
-            moveBy: (ids, delta) => sessionRef.current?.moveGroupBy(ids, { x: delta.x, y: delta.y }, delta.z) ?? "Live editing isn't connected, so nothing can be moved.",
+            moveBy: (ids, delta) => (sessionRef.current ? sessionRef.current.moveGroupBy(ids, { x: delta.x, y: delta.y }, delta.z) : "Live editing isn't connected, so nothing can be moved."),
             submit: submitWithUndo,
             runDrag: {
               begin: (id, at) => sessionRef.current?.beginRunDragOn(id, at) ?? null,
-              preview: (delta, strict) => sessionRef.current?.previewRunDragBy(delta, strict) ?? "Live editing isn't connected, so the duct can't be changed.",
+              preview: (delta, strict) => (sessionRef.current ? sessionRef.current.previewRunDragBy(delta, strict) : "Live editing isn't connected, so the duct can't be changed."),
               previewModel: () => sessionRef.current?.runDragPreview() ?? null,
               end: (commit) => sessionRef.current?.endRunDrag(commit) ?? null,
               toLength: (mm) => sessionRef.current?.runDragToLength(mm) ?? null,
             },
             tools: {
-              previewSplit: (id, at) => sessionRef.current?.previewSplitOn(id, at) ?? "Live editing isn't connected.",
-              split: (id, at) => sessionRef.current?.splitOn(id, at) ?? "Live editing isn't connected, so nothing can be split.",
+              previewSplit: (id, at) => (sessionRef.current ? sessionRef.current.previewSplitOn(id, at) : "Live editing isn't connected."),
+              split: (id, at) => (sessionRef.current ? sessionRef.current.splitOn(id, at) : "Live editing isn't connected, so nothing can be split."),
               previewRoute: (p, vertical, end, side) => sessionRef.current?.previewRouteOnDrawing(p, vertical, end, side) ?? null,
               clickRoute: (p, vertical, end, side) => {
-                const hint = sessionRef.current?.clickRouteOnDrawing(p, vertical, end, side) ?? "Live editing isn't connected, so nothing can be routed."
+                const hint = sessionRef.current ? sessionRef.current.clickRouteOnDrawing(p, vertical, end, side) : "Live editing isn't connected, so nothing can be routed."
                 setRoutePoints(sessionRef.current?.routePointCount() ?? 0)
                 return hint
               },
@@ -3303,7 +3308,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
               placeHeightTyped.current = { forCategory: placeType?.definition.category ?? null }
               setPlaceHeightFt(value)
             },
-            onAddLevel: (name, elevationMm) => sessionRef.current?.createLevel(name, elevationMm) ?? "Live editing isn't connected.",
+            onAddLevel: (name, elevationMm) => (sessionRef.current ? sessionRef.current.createLevel(name, elevationMm) : "Live editing isn't connected."),
             onStop: () => chooseTool('select'),
             firmLibrary: { status: firmLibrary.status, retry: () => void firmLibrary.retry() },
             onNewPart: canEdit ? () => setPartEditor({ definition: null }) : undefined,
@@ -3328,7 +3333,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
             checks: routeChecks,
             pipeTypes,
             inheritArmed,
-            onAddLevel: (name, elevationMm) => sessionRef.current?.createLevel(name, elevationMm) ?? "Live editing isn't connected.",
+            onAddLevel: (name, elevationMm) => (sessionRef.current ? sessionRef.current.createLevel(name, elevationMm) : "Live editing isn't connected."),
             onUseArchitectLevels: canEdit ? () => setLevelRequest('architect') : undefined,
             onInherit: () => {
               setInheritArmed((on) => !on)
@@ -3354,6 +3359,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
     onViewChange: refreshReferences,
     onCanEditChange: setCanLink,
     fixtureReferences,
+    collapseShortcut: sidebarShortcuts?.left,
   })
 
   return (
@@ -3663,6 +3669,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
                   const view = index?.views.find((v) => v.id === viewId)
                   return view ? workflows.viewProperties(view) : null
                 }}
+                propertiesShortcut={sidebarShortcuts?.right}
                 viewProperties={(() => {
                   const activeSheetView = openSheet && sheetModelView ? (index?.views.find((v) => v.id === sheetModelView) ?? null) : null
                   const inspectedView = openView ?? activeSheetView
@@ -3769,6 +3776,28 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
               </Alert>
             </div>
           )}
+          {!loadError && viewerError && !showDrawing && !scheduleGridOpen && (
+            <div className="absolute inset-x-4 top-4 z-10 max-w-lg" data-testid="viewer-webgl-unavailable">
+              <Alert>
+                <AlertTitle>3D view temporarily unavailable (WebGL)</AlertTitle>
+                <AlertDescription>
+                  <p>{viewerError} 2D floor plans, sheets, one-line diagrams and schedules remain live in the left browser.</p>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="mt-2"
+                    onClick={() => {
+                      const next = sessionRef.current?.retry3d() ?? null
+                      if (next) setViewer(next)
+                    }}
+                  >
+                    <RefreshCw data-icon="inline-start" />
+                    Retry 3D view
+                  </Button>
+                </AlertDescription>
+              </Alert>
+            </div>
+          )}
           {problem && status !== 'read_only' && status !== 'live' && !showDrawing && (
             <div className="absolute bottom-3 left-3 max-w-md" data-testid="building-model-connection-problem">
               <Alert variant={problem.kind === 'no_model' ? 'default' : 'destructive'}>
@@ -3798,13 +3827,13 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
           {blocker && (
             <ToolReadinessNotice
               blocker={blocker}
-              onCreateLevel={(name, elevationMm) => sessionRef.current?.createLevel(name, elevationMm) ?? "Live editing isn't connected, so the level can't be saved."}
+              onCreateLevel={(name, elevationMm) => (sessionRef.current ? sessionRef.current.createLevel(name, elevationMm) : "Live editing isn't connected, so the level can't be saved.")}
               onOpenAddLevel={() => setLevelRequest('add')}
               onRetry={() => live?.retry()}
               onUseArchitectLevels={() => setLevelRequest('architect')}
             />
           )}
-          {toolHint && !dragHint && !blocker && (
+          {toolHint && !dragHint && !blocker && !showDrawing && (
             <ToolHintBar text={toolHint} tone={toolHint === refusal ? 'warning' : 'info'} style={propertiesOpen ? { right: propertiesWidth + 24 } : undefined} />
           )}
           {showDrawing && <TrackpadHint />}
@@ -3855,6 +3884,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
               surface={PROPERTIES_SURFACE}
               title="Properties"
               defaultWidthPx={PROPERTIES_DEFAULT_WIDTH_PX}
+              shortcut={sidebarShortcuts?.right}
               onWidthChange={setPropertiesWidth}
               className={`absolute inset-y-0 right-0 border-l shadow-sm ${propertiesSurfaceClass(showDrawing, scheduleGridOpen)}`}
               bodyClassName="gap-3 p-3"

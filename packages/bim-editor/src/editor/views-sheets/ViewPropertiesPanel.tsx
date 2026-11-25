@@ -5,10 +5,7 @@ import { ArrowLeftRight, Eye, Scan, Undo2 } from 'lucide-react'
 import {
   DEFAULT_CUT_HEIGHT_MM,
   STANDARD_SCALES,
-  VIEW_CATEGORY_LABELS,
-  builtinCategoryRegistry,
   firstPartyServiceRegistry,
-  isViewCategory,
   VISUAL_STYLES,
   VIEW_PROJECTIONS,
   isBuildingStoryLevel,
@@ -20,7 +17,6 @@ import {
   type Level,
   type ModelState,
   type Rect,
-  type ViewCategory,
   type ViewElement,
   type ViewPropsPatch,
   DRAFTING_CATEGORIES,
@@ -40,7 +36,6 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { Separator } from '../../ui/separator'
 import { Spinner } from '../../ui/spinner'
 import { Alert, AlertDescription, AlertTitle } from '../../ui/alert'
-import { Table, TableBody, TableCaption, TableCell, TableHead, TableHeader, TableRow } from '../../ui/table'
 import { ToggleGroup, ToggleGroupItem } from '../../ui/toggle-group'
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/tooltip'
 import { VIEW_TYPE_LABEL, type SubmitCommand } from './types'
@@ -50,11 +45,10 @@ import { CircuitGraphicsFields } from './CircuitGraphicsFields'
 import { LinkedModelDisplayFields } from '../linked-display/LinkedModelDisplayControls'
 import { makeLinkedDisplay } from '../linked-display/use-linked-display'
 import { CategoryGraphicsTable } from '../graphics/CategoryGraphicsTable'
+import { LayoutSection } from '../layout/LayoutSection'
+import { PROPERTIES_SURFACE } from '../layout/ResizableSideRail'
 
 const FT = 304.8
-
-/** Category labels come from the category registry (one vocabulary with Visibility/Graphics and the agent). */
-const CATEGORY_LABEL: Readonly<Record<ViewCategory, string>> = VIEW_CATEGORY_LABELS
 
 /**
  * Disciplines a view can be drawn for, from the registry (the model's add-ons and firm rows included); documentation and general draw nothing of their own.
@@ -81,12 +75,6 @@ const DETAIL_HINT: Record<DetailLevel, string> = {
 }
 
 const CUT_PATTERN_LABEL: Record<CutPattern, string> = { cross: 'Cross', solid: 'Solid', hatch: 'Hatch' }
-
-/** View categories with bodies (their hidden edges can draw dashed): the registry's view categories less annotation and room labels. */
-const NO_HIDDEN_EDGES: ReadonlySet<ViewCategory> = new Set<ViewCategory>(['tags', 'dimensions', 'rooms', 'grids', 'doors_windows', 'opening_tags'])
-const DASH_CATEGORIES: readonly ViewCategory[] = builtinCategoryRegistry()
-  .list()
-  .flatMap((c) => (isViewCategory(c.id) && !NO_HIDDEN_EDGES.has(c.id) ? [c.id] : []))
 
 /** Size below which linked objects can be left out of drawings, inches across in plan. */
 const SMALL_OBJECT_CHOICES_IN = [0, 3, 6, 12, 18] as const
@@ -224,8 +212,9 @@ export function ViewPropertiesPanel({ view: saved, canEdit, blockedReason, submi
   )
   const disabledHint = canEdit ? undefined : blockedReason
 
+  const isElectricalView = !props.discipline || props.discipline === 'electrical' || props.discipline.startsWith('electrical')
   return (
-    <div className="flex flex-col gap-3" data-testid="view-properties">
+    <div className="flex flex-col gap-2" data-testid="view-properties">
       <div className="flex items-start justify-between gap-2">
         <div className="flex min-w-0 flex-col">
           <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">{VIEW_TYPE_LABEL[view.viewType]}</span>
@@ -271,14 +260,8 @@ export function ViewPropertiesPanel({ view: saved, canEdit, blockedReason, submi
         )
       ) : (
       <>
-      {phaseFields && view.viewType !== 'detail' && (
-        <>
-          <Separator />
-          {phaseFields}
-        </>
-      )}
       <Separator />
-      <FieldGroup className="gap-3">
+      <LayoutSection surface={PROPERTIES_SURFACE} id="vp-general" title="General & scale">
         {props.diagram && <p className="text-xs text-muted-foreground">Scale: none. A live diagram prints at its own size on any sheet, like a schedule.</p>}
         {view.viewType !== 'three_d' && !props.diagram && (
           <Field>
@@ -300,6 +283,32 @@ export function ViewPropertiesPanel({ view: saved, canEdit, blockedReason, submi
             <FieldDescription>{disabledHint ?? 'Used when this view is placed on a sheet.'}</FieldDescription>
           </Field>
         )}
+
+        {view.viewType !== 'detail' && (
+          <Field>
+            <FieldLabel htmlFor="vp-disc">Discipline</FieldLabel>
+            <Select value={props.discipline ?? 'all'} onValueChange={(v) => {
+                const picked = disciplineChoices.find((d) => d.value === v)
+                if (picked) set({ discipline: picked.value === 'all' ? null : picked.value }, 'change the discipline')
+              }} disabled={!canEdit}>
+              <SelectTrigger id="vp-disc" size="sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  {disciplineChoices.map((d) => (
+                    <SelectItem key={d.value} value={d.value}>
+                      {d.label}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+            <FieldDescription>{props.discipline ? "Other disciplines print in halftone; plans leave out their runs." : 'Every discipline prints in ink.'}</FieldDescription>
+          </Field>
+        )}
+
+        {phaseFields && view.viewType !== 'detail' && phaseFields}
 
         {view.viewType === 'three_d' && (
           <Field>
@@ -328,8 +337,6 @@ export function ViewPropertiesPanel({ view: saved, canEdit, blockedReason, submi
             </FieldDescription>
           </Field>
         )}
-
-        {isPlan && <HeightRangeFields view={view} levels={levels} canEdit={canEdit} set={set} />}
 
         {view.viewType === 'section' && props.section && (
           <>
@@ -361,10 +368,100 @@ export function ViewPropertiesPanel({ view: saved, canEdit, blockedReason, submi
             </Tooltip>
           </>
         )}
+      </LayoutSection>
 
-        {view.viewType !== 'three_d' && (
-          <FieldSet>
-            <FieldLegend variant="label">Drafting shown</FieldLegend>
+      {isPlan && (
+        <>
+          <Separator />
+          <LayoutSection surface={PROPERTIES_SURFACE} id="vp-view-range" title="View range">
+            <HeightRangeFields view={view} levels={levels} canEdit={canEdit} set={set} />
+          </LayoutSection>
+        </>
+      )}
+
+      {isPlan && (
+        <>
+          <Separator />
+          <LayoutSection surface={PROPERTIES_SURFACE} id="vp-annotations" title="Annotations & clearances">
+            <FieldGroup className="gap-1.5">
+              <Field orientation="horizontal">
+                <Checkbox
+                  id="vp-clearance-labels"
+                  checked={props.showClearanceLabels !== false}
+                  disabled={!canEdit}
+                  data-testid="vp-clearance-labels"
+                  onCheckedChange={(v) => setQuick({ showClearanceLabels: v === true }, v === true ? 'show clearance labels' : 'hide clearance labels')}
+                />
+                <FieldContent>
+                  <FieldLabel htmlFor="vp-clearance-labels" className="font-normal">
+                    Show clearance labels
+                  </FieldLabel>
+                  <FieldDescription className="text-xs">Applies to all trades (NEC working space, HVAC service clearance, etc.). Uncheck to keep dashed outlines without text.</FieldDescription>
+                </FieldContent>
+              </Field>
+              <Field orientation="horizontal">
+                <Checkbox
+                  id="vp-hide-device-marks"
+                  checked={props.hideDeviceMarks === true}
+                  disabled={!canEdit}
+                  data-testid="vp-hide-device-marks"
+                  onCheckedChange={(v) => setQuick({ hideDeviceMarks: v === true }, v === true ? 'hide repetitive device marks' : 'show device marks')}
+                />
+                <FieldContent>
+                  <FieldLabel htmlFor="vp-hide-device-marks" className="font-normal">
+                    Hide repetitive device marks
+                  </FieldLabel>
+                  <FieldDescription className="text-xs">Suppresses auto marks on receptacles and light fixtures while keeping equipment tags.</FieldDescription>
+                </FieldContent>
+              </Field>
+            </FieldGroup>
+          </LayoutSection>
+        </>
+      )}
+
+      {isPlan && (
+        <>
+          <Separator />
+          <LayoutSection surface={PROPERTIES_SURFACE} id="vp-electrical" title="Electrical graphics" defaultCollapsed={!isElectricalView}>
+            <CircuitGraphicsFields view={view} canEdit={canEdit} disabledHint={disabledHint} set={set} />
+          </LayoutSection>
+        </>
+      )}
+
+      {view.viewType !== 'detail' && (
+        <>
+          <Separator />
+          <LayoutSection surface={PROPERTIES_SURFACE} id="vp-lines" title="Lines & appearance">
+            <LinesFields view={view} canEdit={canEdit} set={set} setQuick={setQuick} onOpenTextStyles={onOpenTextStyles} />
+          </LayoutSection>
+
+          <Separator />
+          <LayoutSection surface={PROPERTIES_SURFACE} id="vp-visibility-graphics" title="Visibility / Graphics" defaultCollapsed>
+            <CategoryGraphicsTable
+              view={view}
+              services={firstPartyServiceRegistry().rows}
+              canEdit={canEdit}
+              {...(disabledHint ? { disabledHint } : {})}
+              onPatch={(patch, label) => {
+                if (patch.hiddenCategories && Object.keys(patch).length === 1) {
+                  setQuick({ hiddenCategories: patch.hiddenCategories }, label)
+                  return null
+                }
+                if (patch.hiddenLineCategories && Object.keys(patch).length === 1) {
+                  setQuick({ hiddenLineCategories: patch.hiddenLineCategories }, label)
+                  return null
+                }
+                return send(patch, label)
+              }}
+            />
+          </LayoutSection>
+        </>
+      )}
+
+      {view.viewType !== 'three_d' && (
+        <>
+          <Separator />
+          <LayoutSection surface={PROPERTIES_SURFACE} id="vp-drafting" title="Drafting categories" defaultCollapsed>
             <FieldGroup className="gap-1.5">
               {DRAFTING_CATEGORIES.map((c) => (
                 <Field key={c} orientation="horizontal">
@@ -387,163 +484,102 @@ export function ViewPropertiesPanel({ view: saved, canEdit, blockedReason, submi
               ))}
             </FieldGroup>
             <FieldDescription>Hidden drafting stays in the view; it just doesn&apos;t show or print here.</FieldDescription>
-          </FieldSet>
-        )}
+          </LayoutSection>
+        </>
+      )}
 
-        {view.viewType !== 'detail' && (
-          <>
-            <Field>
-              <FieldLabel htmlFor="vp-disc">Discipline</FieldLabel>
-              <Select value={props.discipline ?? 'all'} onValueChange={(v) => {
-                  const picked = disciplineChoices.find((d) => d.value === v)
-                  if (picked) set({ discipline: picked.value === 'all' ? null : picked.value }, 'change the discipline')
-                }} disabled={!canEdit}>
-                <SelectTrigger id="vp-disc" size="sm">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    {disciplineChoices.map((d) => (
-                      <SelectItem key={d.value} value={d.value}>
-                        {d.label}
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-              <FieldDescription>{props.discipline ? "Other disciplines print in halftone; plans leave out their runs." : 'Every discipline prints in ink.'}</FieldDescription>
-            </Field>
-            {isPlan && <CircuitGraphicsFields view={view} canEdit={canEdit} disabledHint={disabledHint} set={set} />}
-            {isPlan && (
-              <FieldSet>
-                <FieldLegend variant="label">Plan annotations</FieldLegend>
-                <FieldGroup className="gap-1.5">
-                  <Field orientation="horizontal">
-                    <Checkbox
-                      id="vp-clearance-labels"
-                      checked={props.showClearanceLabels !== false}
-                      disabled={!canEdit}
-                      data-testid="vp-clearance-labels"
-                      onCheckedChange={(v) => setQuick({ showClearanceLabels: v === true }, v === true ? 'show clearance labels' : 'hide clearance labels')}
-                    />
-                    <FieldLabel htmlFor="vp-clearance-labels" className="font-normal">
-                      Show clearance labels
-                    </FieldLabel>
-                  </Field>
-                  <Field orientation="horizontal">
-                    <Checkbox
-                      id="vp-hide-device-marks"
-                      checked={props.hideDeviceMarks === true}
-                      disabled={!canEdit}
-                      data-testid="vp-hide-device-marks"
-                      onCheckedChange={(v) => setQuick({ hideDeviceMarks: v === true }, v === true ? 'hide repetitive device marks' : 'show device marks')}
-                    />
-                    <FieldLabel htmlFor="vp-hide-device-marks" className="font-normal">
-                      Hide device marks
-                    </FieldLabel>
-                  </Field>
-                </FieldGroup>
-                <FieldDescription>Keep dashed clearances without text, or hide repetitive receptacle/fixture marks while keeping equipment tags.</FieldDescription>
-              </FieldSet>
-            )}
-            <LinesFields view={view} canEdit={canEdit} set={set} setQuick={setQuick} onOpenTextStyles={onOpenTextStyles}>
-              {references.length > 0 && (
-                <FieldSet data-testid="view-linked-models">
-                  <FieldLegend variant="label">Linked models</FieldLegend>
-                  <BackgroundStatus
-                    background={background}
-                    choice={{ canEdit, blockedReason, hostLevelId, submit }}
-                    onUndo={
-                      simplifyBefore && (props.linkedMinObjectMm ?? 0) !== simplifyBefore.linkedMinObjectMm
-                        ? () => {
-                            set({ linkedMinObjectMm: simplifyBefore.linkedMinObjectMm }, simplifyBefore.linkedMinObjectMm === 0 ? 'draw every linked object' : `leave out linked objects under ${Math.round(simplifyBefore.linkedMinObjectMm / 25.4)}"`)
-                            setSimplifyBefore(null)
-                          }
-                        : null
-                    }
-                  />
-                  {view.viewType !== 'three_d' && <LinkedSimplifyFields view={view} canEdit={canEdit} set={set} setQuick={setQuick} onChangeSmall={(previousMm) => setSimplifyBefore({ linkedMinObjectMm: previousMm })} />}
-                  <LinkedModelDisplayFields
-                    display={makeLinkedDisplay({
-                      targetLabel: view.props?.workingFor ? 'your 3D view' : 'this view',
-                      surface: referenceSurfaceOf(view),
-                      stored: (id) => props.references?.[id],
-                      discipline: (id) => references.find((r) => r.id === id)?.discipline ?? 'architecture',
-                      save: (id, next, label) => set({ references: withReferenceDisplay(props.references, id, next) }, label),
-                    })}
-                    references={references}
-                    canEdit={canEdit}
-                    disabledHint={disabledHint ?? null}
-                  />
-                </FieldSet>
-              )}
-            </LinesFields>
-
-            <CategoryGraphicsTable
-              view={view}
-              services={firstPartyServiceRegistry().rows}
-              canEdit={canEdit}
-              {...(disabledHint ? { disabledHint } : {})}
-              onPatch={(patch, label) => {
-                // Show/hide of a view category ticks at once, like every other checkbox here.
-                if (patch.hiddenCategories && Object.keys(patch).length === 1) {
-                  setQuick({ hiddenCategories: patch.hiddenCategories }, label)
-                  return null
+      {view.viewType !== 'detail' && references.length > 0 && (
+        <>
+          <Separator />
+          <LayoutSection surface={PROPERTIES_SURFACE} id="vp-linked-models" title="Linked models" meta={references.length}>
+            <FieldSet data-testid="view-linked-models">
+              <BackgroundStatus
+                background={background}
+                choice={{ canEdit, blockedReason, hostLevelId, submit }}
+                onUndo={
+                  simplifyBefore && (props.linkedMinObjectMm ?? 0) !== simplifyBefore.linkedMinObjectMm
+                    ? () => {
+                        set({ linkedMinObjectMm: simplifyBefore.linkedMinObjectMm }, simplifyBefore.linkedMinObjectMm === 0 ? 'draw every linked object' : `leave out linked objects under ${Math.round(simplifyBefore.linkedMinObjectMm / 25.4)}"`)
+                        setSimplifyBefore(null)
+                      }
+                    : null
                 }
-                return send(patch, label)
-              }}
-            />
-            {(props.hiddenElementIds?.length ?? 0) > 0 && (
-              <FieldSet data-testid="view-hidden-elements">
-                <div className="flex items-center justify-between gap-2">
-                  <FieldLegend variant="label" className="mb-0">
-                    Hidden elements ({props.hiddenElementIds?.length ?? 0})
-                  </FieldLegend>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="h-6 px-2 text-xs"
-                    disabled={!canEdit}
-                    onClick={() => setQuick({ hiddenElementIds: [] }, 'show all hidden elements in this view')}
-                  >
-                    <Eye data-icon="inline-start" className="size-3" />
-                    Show all
-                  </Button>
-                </div>
-                <FieldDescription className="text-xs">Elements hidden individually in this view (right-click › Hide element in view).</FieldDescription>
-                <div className="flex max-h-36 flex-col gap-1 overflow-y-auto pt-1">
-                  {(props.hiddenElementIds ?? []).map((id) => {
-                    const label = hiddenElementLabel(elements, id)
-                    return (
-                      <div key={id} className="flex items-center justify-between gap-2 rounded border px-2 py-1 text-xs">
-                        <span className="truncate font-medium" title={label === id ? id : `${label} (${id})`}>
-                          {label}
-                        </span>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-5 px-1.5 text-xs"
-                          disabled={!canEdit}
-                          onClick={() =>
-                            setQuick(
-                              { hiddenElementIds: (props.hiddenElementIds ?? []).filter((x) => x !== id) },
-                              `show ${label} in this view`,
-                            )
-                          }
-                        >
-                          Show
-                        </Button>
-                      </div>
-                    )
-                  })}
-                </div>
-              </FieldSet>
-            )}
-          </>
-        )}
-      </FieldGroup>
+              />
+              {view.viewType !== 'three_d' && <LinkedSimplifyFields view={view} canEdit={canEdit} set={set} setQuick={setQuick} onChangeSmall={(previousMm) => setSimplifyBefore({ linkedMinObjectMm: previousMm })} />}
+              <LinkedModelDisplayFields
+                display={makeLinkedDisplay({
+                  targetLabel: view.props?.workingFor ? 'your 3D view' : 'this view',
+                  surface: referenceSurfaceOf(view),
+                  stored: (id) => props.references?.[id],
+                  discipline: (id) => references.find((r) => r.id === id)?.discipline ?? 'architecture',
+                  save: (id, next, label) => set({ references: withReferenceDisplay(props.references, id, next) }, label),
+                })}
+                references={references}
+                canEdit={canEdit}
+                disabledHint={disabledHint ?? null}
+              />
+            </FieldSet>
+          </LayoutSection>
+        </>
+      )}
+
+      {view.viewType !== 'detail' && (props.hiddenElementIds?.length ?? 0) > 0 && (
+        <>
+          <Separator />
+          <LayoutSection
+            surface={PROPERTIES_SURFACE}
+            id="vp-hidden-elements"
+            title="Hidden elements"
+            meta={props.hiddenElementIds?.length ?? 0}
+            action={
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-6 px-2 text-xs"
+                disabled={!canEdit}
+                onClick={() => setQuick({ hiddenElementIds: [] }, 'show all hidden elements in this view')}
+              >
+                <Eye data-icon="inline-start" className="size-3" />
+                Show all
+              </Button>
+            }
+            testId="view-hidden-elements"
+          >
+            <FieldDescription className="text-xs">Elements hidden individually in this view (right-click › Hide element in view).</FieldDescription>
+            <div className="flex max-h-36 flex-col gap-1 overflow-y-auto pt-1">
+              {(props.hiddenElementIds ?? []).map((id) => {
+                const label = hiddenElementLabel(elements, id)
+                return (
+                  <div key={id} className="flex items-center justify-between gap-2 rounded border px-2 py-1 text-xs">
+                    <span className="truncate font-medium" title={label === id ? id : `${label} (${id})`}>
+                      {label}
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-5 px-1.5 text-xs"
+                      disabled={!canEdit}
+                      onClick={() =>
+                        setQuick(
+                          { hiddenElementIds: (props.hiddenElementIds ?? []).filter((x) => x !== id) },
+                          `show ${label} in this view`,
+                        )
+                      }
+                    >
+                      Show
+                    </Button>
+                  </div>
+                )
+              })}
+            </div>
+          </LayoutSection>
+        </>
+      )}
+
       <Separator />
-      {view.viewType === 'three_d' && crop3d ? <Crop3dFields controls={crop3d} canEdit={canEdit} disabledHint={disabledHint} /> : <CropFields view={view} canEdit={canEdit} disabledHint={disabledHint} onCrop={setCrop} onQuickCrop={setQuickCrop} />}
+      <LayoutSection surface={PROPERTIES_SURFACE} id="vp-crop" title="Crop region" defaultCollapsed>
+        {view.viewType === 'three_d' && crop3d ? <Crop3dFields controls={crop3d} canEdit={canEdit} disabledHint={disabledHint} /> : <CropFields view={view} canEdit={canEdit} disabledHint={disabledHint} onCrop={setCrop} onQuickCrop={setQuickCrop} />}
+      </LayoutSection>
       </>
       )}
     </div>
@@ -672,10 +708,8 @@ function LinesFields({ view, canEdit, set, setQuick, onOpenTextStyles, children 
   const props = view.props ?? {}
   const style = props.visualStyle ?? 'hidden_line'
   const detail = props.detailLevel ?? 'medium'
-  const dashedCategories = new Set(props.hiddenLineCategories ?? [])
   return (
     <FieldSet id="view-lines" data-testid="view-graphics" className="scroll-mt-4">
-      <FieldLegend variant="label">Lines and colours</FieldLegend>
       <FieldGroup className="gap-3">
         <Field>
           <FieldLabel htmlFor="vp-style">Visual style</FieldLabel>
@@ -783,46 +817,6 @@ function LinesFields({ view, canEdit, set, setQuick, onOpenTextStyles, children 
             </ToggleGroup>
           </Field>
         )}
-        <div className="flex flex-col gap-1" data-testid="view-line-weights">
-          <span className="text-xs font-medium">Hidden lines by category</span>
-          <FieldDescription className="text-xs">
-            Pens, halftone and line patterns for each category are in{' '}
-            <a href="#view-visibility-graphics" className="underline underline-offset-2">
-              Visibility/Graphics
-            </a>{' '}
-            below.
-          </FieldDescription>
-          <Table className="text-xs">
-            <TableCaption className="sr-only">Whether each category&apos;s hidden edges draw dashed</TableCaption>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="h-7 px-1">Category</TableHead>
-                <TableHead className="h-7 px-1 text-center">Dash hidden</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {DASH_CATEGORIES.map((c) => (
-                <TableRow key={c}>
-                  <TableCell className="px-1 py-1 font-medium">{CATEGORY_LABEL[c]}</TableCell>
-                  <TableCell className="px-1 py-1 text-center">
-                    <Checkbox
-                      id={`vp-hidden-${c}`}
-                      aria-label={`Dash hidden ${CATEGORY_LABEL[c].toLowerCase()}`}
-                      checked={props.showHiddenLines === true || dashedCategories.has(c)}
-                      disabled={!canEdit || props.showHiddenLines === true}
-                      onCheckedChange={(v) => {
-                        const next = new Set(dashedCategories)
-                        if (v === true) next.add(c)
-                        else next.delete(c)
-                        setQuick({ hiddenLineCategories: [...next] }, `${v === true ? 'dash' : 'hide'} hidden ${CATEGORY_LABEL[c].toLowerCase()}`)
-                      }}
-                    />
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
         {children}
       </FieldGroup>
     </FieldSet>

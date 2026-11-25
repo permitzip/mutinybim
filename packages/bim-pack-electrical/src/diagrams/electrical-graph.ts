@@ -234,11 +234,12 @@ export function electricalDiagramGraph(elements: Elements, hints: ElectricalDiag
   const excludeEquipment = new Set(hints.excludeEquipmentIds ?? []);
 
   const loadsOf = (c: Candidate, service: string): DiagramNode[] => {
-    if (!BUS.has(c.kind)) return [];
+    const isDisconnect = c.kind === "disconnect" || c.kind === "fused_disconnect";
+    if (!BUS.has(c.kind) && !isDisconnect) return [];
     if (!hints.showLoads && includeEquipment.size === 0) return [];
     const out: DiagramNode[] = [];
     for (const link of linksFedFrom(elements, c.part.id)) {
-      if (link.role !== "branch") continue;
+      if (link.role !== "branch" && !isDisconnect) continue;
       for (const m of link.members) {
         const member = elements[m.elementId];
         if (member?.kind !== "part" || candidates.has(member.id) || hidden.has(member.id) || excludeEquipment.has(member.id) || visited.has(member.id) || !drawnLoad(elements, member, m.connector)) continue;

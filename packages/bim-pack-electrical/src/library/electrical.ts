@@ -594,14 +594,13 @@ function deviceTypes(version: string): LibraryEntry[] {
     });
 
   return [
-    receptacle("builtin:quad-receptacle@1", "Receptacle, quad", "20A 125V NEMA 5-20R, two duplexes", 360, false, "Wall", [
-      { kind: "line", from: [-3.0, 0], to: [3.0, 0], pen: "medium", units: "paper" },
-      { kind: "circle", center: [-1.55, 2.0], radius: 1.45, fill: "mask", pen: "medium", units: "paper" },
-      { kind: "circle", center: [1.55, 2.0], radius: 1.45, fill: "mask", pen: "medium", units: "paper" },
-      { kind: "line", from: [-2.1, 0], to: [-2.1, 3.3], pen: "medium", units: "paper" },
-      { kind: "line", from: [-1.0, 0], to: [-1.0, 3.3], pen: "medium", units: "paper" },
-      { kind: "line", from: [1.0, 0], to: [1.0, 3.3], pen: "medium", units: "paper" },
-      { kind: "line", from: [2.1, 0], to: [2.1, 3.3], pen: "medium", units: "paper" },
+    // Standard ANSI/IEEE single-circle quad receptacle (two vertical wall blades + two perpendicular horizontal blades)
+    receptacle("builtin:quad-receptacle@1", "Receptacle, quad", "20A 125V NEMA 5-20R, quadplex", 360, false, "Wall", [
+      { kind: "circle", center: [0, 2.0], radius: 1.55, fill: "mask", pen: "medium", units: "paper" },
+      { kind: "line", from: [-0.55, 0], to: [-0.55, 3.45], pen: "medium", units: "paper" },
+      { kind: "line", from: [0.55, 0], to: [0.55, 3.45], pen: "medium", units: "paper" },
+      { kind: "line", from: [-1.45, 1.45], to: [1.45, 1.45], pen: "medium", units: "paper" },
+      { kind: "line", from: [-1.45, 2.55], to: [1.45, 2.55], pen: "medium", units: "paper" },
     ]),
     receptacle("builtin:gfci-receptacle@1", "Receptacle, GFCI duplex", "20A 125V NEMA 5-20R GFCI", 180, true, "Wall", duplexSymbol("GFI")),
     receptacle("builtin:controlled-receptacle@1", "Receptacle, controlled duplex", "20A 125V NEMA 5-20R ASHRAE 90.1 half-controlled", 180, false, "Wall", [
@@ -619,16 +618,15 @@ function deviceTypes(version: string): LibraryEntry[] {
       { kind: "line", from: [0.55, -1.8], to: [0.55, 1.3], pen: "medium", units: "paper" },
     ], { hosting: "floor", geometry: FLOOR_BOX_GEOMETRY }),
     receptacle("builtin:floor-receptacle-quad@1", "Receptacle, quad floor box", "20A 125V NEMA 5-20R quad in floor box", 360, false, "Floor", [
-      { kind: "rect", center: [0, 0], size: [7.0, 4.4], fill: "mask", pen: "medium", units: "paper" },
-      { kind: "circle", center: [-1.55, 0], radius: 1.35, fill: "mask", pen: "medium", units: "paper" },
-      { kind: "circle", center: [1.55, 0], radius: 1.35, fill: "mask", pen: "medium", units: "paper" },
-      { kind: "line", from: [-2.05, -1.7], to: [-2.05, 1.25], pen: "medium", units: "paper" },
-      { kind: "line", from: [-1.05, -1.7], to: [-1.05, 1.25], pen: "medium", units: "paper" },
-      { kind: "line", from: [1.05, -1.7], to: [1.05, 1.25], pen: "medium", units: "paper" },
-      { kind: "line", from: [2.05, -1.7], to: [2.05, 1.25], pen: "medium", units: "paper" },
+      { kind: "rect", center: [0, 0], size: [4.6, 4.6], fill: "mask", pen: "medium", units: "paper" },
+      { kind: "circle", center: [0, 0], radius: 1.5, fill: "mask", pen: "medium", units: "paper" },
+      { kind: "line", from: [-0.55, -1.4], to: [-0.55, 1.4], pen: "medium", units: "paper" },
+      { kind: "line", from: [0.55, -1.4], to: [0.55, 1.4], pen: "medium", units: "paper" },
+      { kind: "line", from: [-1.4, -0.55], to: [1.4, -0.55], pen: "medium", units: "paper" },
+      { kind: "line", from: [-1.4, 0.55], to: [1.4, 0.55], pen: "medium", units: "paper" },
     ], { hosting: "floor", geometry: FLOOR_BOX_GEOMETRY }),
     receptacle("builtin:ceiling-receptacle@1", "Receptacle, ceiling", "20A 125V NEMA 5-20R, ceiling mounted", 180, false, "Ceiling", duplexSymbol("CLG")),
-    // Special-purpose NEMA & hardwired connection symbols (standard CAD graphics, not oversized hexagons)
+    // Special-purpose NEMA & hardwired connection symbols (standard CAD graphics with uprightOffset so flipped walls keep labels readable)
     {
       id: "builtin:receptacle-nema-6-20r@1",
       definition: {
@@ -643,10 +641,10 @@ function deviceTypes(version: string): LibraryEntry[] {
         geometry: WALL_BOX_GEOMETRY,
         symbol: [
           { kind: "circle", center: [0, 2.0], radius: 1.5, fill: "mask", pen: "medium", units: "paper" },
-          { kind: "line", from: [-0.8, 0], to: [-0.8, 3.8], pen: "medium", units: "paper" },
-          { kind: "line", from: [0.8, 0], to: [0.8, 3.8], pen: "medium", units: "paper" },
+          { kind: "line", from: [-0.75, 0], to: [-0.75, 3.45], pen: "medium", units: "paper" },
+          { kind: "line", from: [0.75, 0], to: [0.75, 3.45], pen: "medium", units: "paper" },
           { kind: "line", from: [-1.5, 2.0], to: [1.5, 2.0], pen: "medium", units: "paper" },
-          { kind: "text", at: [2.2, 1.5], text: "240V", heightMm: 1.3, anchor: "start", units: "paper" },
+          { kind: "text", at: [0, 2.0], uprightOffset: [2.05, 0], text: "240V", heightMm: 1.35, anchor: "start", mask: true, units: "paper" },
         ],
         tagFields: ["circuit"],
         source: source(version),
@@ -666,10 +664,10 @@ function deviceTypes(version: string): LibraryEntry[] {
         geometry: WALL_BOX_GEOMETRY,
         symbol: [
           { kind: "circle", center: [0, 2.0], radius: 1.5, fill: "mask", pen: "medium", units: "paper" },
-          { kind: "line", from: [-0.7, 0], to: [-0.7, 3.8], pen: "medium", units: "paper" },
-          { kind: "line", from: [0.7, 0], to: [0.7, 3.8], pen: "medium", units: "paper" },
-          { kind: "line", from: [-1.1, 3.0], to: [1.1, 1.0], pen: "thin", units: "paper" },
-          { kind: "text", at: [2.2, 1.5], text: "TL", heightMm: 1.3, anchor: "start", units: "paper" },
+          { kind: "line", from: [-0.65, 0], to: [-0.65, 3.45], pen: "medium", units: "paper" },
+          { kind: "line", from: [0.65, 0], to: [0.65, 3.45], pen: "medium", units: "paper" },
+          { kind: "line", from: [-1.05, 3.0], to: [1.05, 1.0], pen: "thin", units: "paper" },
+          { kind: "text", at: [0, 2.0], uprightOffset: [2.05, 0], text: "TL", heightMm: 1.35, anchor: "start", mask: true, units: "paper" },
         ],
         tagFields: ["circuit"],
         source: source(version),
@@ -690,8 +688,9 @@ function deviceTypes(version: string): LibraryEntry[] {
         symbol: [
           { kind: "circle", center: [0, 1.6], radius: 1.4, fill: "mask", pen: "medium", units: "paper" },
           { kind: "line", from: [0, 0], to: [0, 0.2], pen: "medium", units: "paper" },
-          { kind: "text", at: [0, 1.6], text: "J", heightMm: 1.5, anchor: "middle", units: "paper" },
-          { kind: "polyline", points: [[1.4, 1.6], [2.4, 2.1], [3.2, 1.3]], closed: false, pen: "thin", units: "paper" },
+          { kind: "text", at: [0, 1.6], text: "J", heightMm: 1.45, anchor: "middle", units: "paper" },
+          // Smooth S-curved flexible conduit whip tail emerging from the J-box
+          { kind: "polyline", points: [[1.4, 1.6], [1.85, 1.95], [2.25, 2.05], [2.65, 1.75], [3.0, 1.35], [3.4, 1.3], [3.8, 1.6]], closed: false, pen: "thin", units: "paper" },
         ],
         tagFields: ["circuit"],
         source: source(version),

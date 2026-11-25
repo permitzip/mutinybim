@@ -389,7 +389,23 @@ export class ModelViewer3D {
     this.cropOutline = new CropBoxOutline(this.palette.css("selectionOutline"));
     this.overlayScene.add(this.cropOutline.object);
     // Standard hardware 24-bit depth buffer (logarithmicDepthBuffer writes gl_FragDepth, which disables hardware gl.polygonOffset and early-Z culling).
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: "high-performance" });
+    // Retry with conservative WebGL attributes if high-performance / antialias creation fails (e.g. after a GPU reset or context limit).
+    try {
+      this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: "high-performance" });
+    } catch {
+      this.renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false, powerPreference: "default" });
+    }
+    const canvasEl = this.renderer.domElement;
+    canvasEl.addEventListener("webglcontextlost", (e) => {
+      e.preventDefault();
+      this.renderer.setAnimationLoop(null);
+    });
+    canvasEl.addEventListener("webglcontextrestored", () => {
+      if (!this.disposed) {
+        this.renderer.shadowMap.needsUpdate = true;
+        this.renderer.setAnimationLoop(() => this.tick());
+      }
+    });
     const softwareGpu = isSoftwareWebGL(this.renderer);
     if (softwareGpu) {
       this.renderQuality = "draft";
@@ -2686,6 +2702,12 @@ export class ModelViewer3D {
     this.palette.dispose();
     void this.fragments.dispose();
     this.renderer.dispose();
+    // Explicitly release the browser WebGL context slot immediately so reloads / view switches never hit Chrome's context cap.
+    try {
+      this.renderer.forceContextLoss();
+    } catch {
+      // Already lost or unsupported in headless test environments.
+    }
     this.renderer.domElement.remove();
   }
 }

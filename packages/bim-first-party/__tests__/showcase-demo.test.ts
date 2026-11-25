@@ -121,7 +121,8 @@ describe("createShowcaseDemoModel", () => {
     const hasMember = (sourceId: string, elementId: string) =>
       links.some((l) => l.source.elementId === sourceId && l.members.some((m) => m.elementId === elementId));
 
-    expect(hasMember("hp-1", "rtu-1")).toBe(true);
+    expect(hasMember("hp-1", "disc-rtu-1")).toBe(true);
+    expect(hasMember("disc-rtu-1", "rtu-1")).toBe(true);
     expect(hasMember("hp-1", "wh-1")).toBe(true);
     expect(hasMember("hp-1", "wp-1")).toBe(true);
     expect(hasMember("lp-1", "ef-1")).toBe(true);

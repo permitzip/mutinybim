@@ -768,9 +768,10 @@ export function collinearOverlap(p: Vec2, q: Vec2, r: Vec2, s: Vec2, tolerance: 
 
 const pathLength = (path: readonly Vec2[]) => path.reduce((s, p, i) => (i === 0 ? 0 : s + dist(path[i - 1]!, p)), 0);
 
-/** Round 90° corners of an orthogonal polyline with crisp 45° chamfers (Binoy drafting standard). */
-function chamferOrthogonalPath(pts: readonly Vec2[], chamferMm: number): Vec2[] {
-  if (pts.length < 3 || chamferMm < 20) return [...pts];
+/** Round 90° corners of an orthogonal polyline with smooth circular arc fillets (Binoy drafting standard). */
+function chamferOrthogonalPath(pts: readonly Vec2[], radiusMm: number): Vec2[] {
+  if (pts.length < 3 || radiusMm < 20) return [...pts];
+  const ARC_STEPS = 6;
   const out: Vec2[] = [pts[0]!];
   for (let i = 1; i < pts.length - 1; i++) {
     const prev = pts[i - 1]!;
@@ -787,18 +788,29 @@ function chamferOrthogonalPath(pts: readonly Vec2[], chamferMm: number): Vec2[] 
     const u2x = (next.x - curr.x) / d2;
     const u2y = (next.y - curr.y) / d2;
     const dot = u1x * u2x + u1y * u2y;
-    // Only bevel near-orthogonal bends (skip collinear or sharp reverse points).
+    // Only fillet near-orthogonal bends (skip collinear or sharp reverse points).
     if (Math.abs(dot) > 0.25) {
       out.push(curr);
       continue;
     }
-    const bevel = Math.min(chamferMm, d1 * 0.35, d2 * 0.35);
-    if (bevel < 20) {
+    const r = Math.min(radiusMm, d1 * 0.4, d2 * 0.4);
+    if (r < 20) {
       out.push(curr);
       continue;
     }
-    out.push({ x: curr.x - u1x * bevel, y: curr.y - u1y * bevel });
-    out.push({ x: curr.x + u2x * bevel, y: curr.y + u2y * bevel });
+    // Tangent start & end points; quadratic Bezier with control point at `curr` closely matches a quarter-circle fillet.
+    const p0x = curr.x - u1x * r;
+    const p0y = curr.y - u1y * r;
+    const p2x = curr.x + u2x * r;
+    const p2y = curr.y + u2y * r;
+    for (let s = 0; s <= ARC_STEPS; s++) {
+      const t = s / ARC_STEPS;
+      const omt = 1 - t;
+      out.push({
+        x: omt * omt * p0x + 2 * omt * t * curr.x + t * t * p2x,
+        y: omt * omt * p0y + 2 * omt * t * curr.y + t * t * p2y,
+      });
+    }
   }
   out.push(pts[pts.length - 1]!);
   return out;

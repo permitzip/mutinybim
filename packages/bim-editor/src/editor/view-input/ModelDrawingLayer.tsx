@@ -1143,15 +1143,25 @@ export function ModelDrawingLayer({ model, view, bridge, paperOf, paperMmPerPx, 
       )}
       {drag?.kind === 'homerun' && (
         <g pointerEvents="none" data-testid="model-homerun-preview" data-link-id={drag.homeRun.linkId}>
+          {/* Softly mask the old static home-run position while dragging so it doesn't look like a frozen duplicate */}
+          <line
+            x1={drag.homeRun.fromPaper.x}
+            y1={drag.homeRun.fromPaper.y}
+            x2={drag.homeRun.tipPaper.x}
+            y2={drag.homeRun.tipPaper.y}
+            stroke="#ffffff"
+            strokeOpacity={0.85}
+            strokeWidth={2.2}
+          />
           {drag.part === 'tip' && (
             <>
-              <line x1={drag.homeRun.fromPaper.x} y1={drag.homeRun.fromPaper.y} x2={drag.to.x} y2={drag.to.y} stroke={PRIMARY} strokeWidth={0.5} strokeDasharray="1.5 1" />
+              <line x1={drag.homeRun.fromPaper.x} y1={drag.homeRun.fromPaper.y} x2={drag.to.x} y2={drag.to.y} stroke={PRIMARY} strokeWidth={0.55} />
               <circle cx={drag.to.x} cy={drag.to.y} r={1.3} fill={PRIMARY} />
             </>
           )}
           {drag.part === 'shaft' && (
             <>
-              <polyline points={points(previewWireCurve(drag.homeRun.fromPaper, [drag.to], drag.homeRun.tipPaper))} fill="none" stroke={PRIMARY} strokeWidth={0.5} strokeDasharray="1.5 1" />
+              <polyline points={points(previewWireCurve(drag.homeRun.fromPaper, [drag.to], drag.homeRun.tipPaper))} fill="none" stroke={PRIMARY} strokeWidth={0.55} />
               <circle cx={drag.to.x} cy={drag.to.y} r={1.15} fill="#ffffff" stroke={PRIMARY} strokeWidth={0.45} />
             </>
           )}
