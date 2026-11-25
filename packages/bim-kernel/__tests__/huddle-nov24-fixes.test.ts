@@ -16,6 +16,7 @@ import {
   layoutDraft,
   organizationOf,
   partClearances,
+  planViewRangeExcludes,
   visiblePlanParts,
   withUpgradePolicy,
   type ModelState,
@@ -378,5 +379,67 @@ describe("Nov 24 huddle kernel fixes", () => {
     );
     expect((model.elements["v-sld"] as ViewElement).props?.diagram?.hints?.minLoadRatingA).toBe(60);
     expect((model.elements["v-sld"] as ViewElement).props?.diagram?.hints?.phaseScope).toBe("demolition");
+  });
+
+  it("supports Revit-standard level-relative view range (viewTopRef), browser grouping/sorting, and PartTypeDefinition.typeMark", () => {
+    let model = emptyModel("m-view-range-typemark");
+    model = run(model, { type: "create_level", levelId: "l1", name: "Level 1", elevationMm: 0 });
+    model = run(model, { type: "create_level", levelId: "l2", name: "Level 2", elevationMm: 3658 }); // 12'-0"
+
+    // Save a part type with a canonical Type Mark ("SD-1") and place two instances with empty per-instance marks.
+    model = run(model, {
+      type: "save_part_types",
+      types: [
+        {
+          typeId: "test:diffuser-sd1@1",
+          definition: {
+            familyName: "Supply diffuser",
+            typeName: '24x24, 8" neck',
+            typeMark: "SD-1",
+            category: "air_terminal",
+            typeParams: [],
+            typeValues: {},
+            instanceParams: [],
+            connectors: [],
+            geometry: [{ kind: "box", center: [0, 0, 0], size: [600, 600, 150] }],
+            symbol: [{ kind: "rect", center: [0, 0], size: [600, 600] }],
+            tagFields: ["type_mark"],
+            source: { kind: "builtin", libraryVersion: "1.0.0" },
+          },
+        },
+      ],
+    });
+    model = run(model, { type: "place_part", partId: "d-1", typeId: "test:diffuser-sd1@1", levelId: "l1", position: { x: 1000, y: 1000 }, offsetMm: 3350, mark: "" });
+    const ptEl = model.elements["test:diffuser-sd1@1"];
+    expect(ptEl?.kind === "part_type" ? ptEl.definition.typeMark : null).toBe("SD-1");
+
+    // View with viewTopRef: "level_above" reaches up to Level 2 (3658 mm), including elements at 3350 mm (11 ft).
+    model = withUpgradePolicy(() => true, () =>
+      run(model, {
+        type: "create_view",
+        viewId: "v-mech",
+        name: "Level 1 — Mechanical",
+        viewType: "floor_plan",
+        props: {
+          level: "Level 1",
+          discipline: "mechanical",
+          viewBottomMm: 0,
+          cutHeightMm: 1219,
+          viewTopRef: "level_above",
+          browserGroup: "Mechanical",
+          sortOrder: 400,
+        },
+      }),
+    );
+    const mechView = model.elements["v-mech"] as ViewElement;
+    expect(mechView.props?.viewTopRef).toBe("level_above");
+    expect(mechView.props?.browserGroup).toBe("Mechanical");
+    expect(mechView.props?.sortOrder).toBe(400);
+
+    // Part at 3350 mm is excluded if viewTopMm is 3048 mm (10 ft) associated_level, but INCLUDED under viewTopRef: "level_above" (3658 mm).
+    const excludeAbove = planViewRangeExcludes(model, mechView);
+    expect(excludeAbove?.(model.elements["d-1"]!)).toBe(false);
+    const exclude10ft = planViewRangeExcludes(model, { viewType: "floor_plan", props: { level: "Level 1", viewBottomMm: 0, viewTopMm: 3048 } });
+    expect(exclude10ft?.(model.elements["d-1"]!)).toBe(true);
   });
 });

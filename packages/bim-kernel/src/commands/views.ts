@@ -26,6 +26,8 @@ import {
   TITLE_BLOCK_TYPES,
   VIEW_CATEGORIES,
   VIEW_HIDDEN_ELEMENTS_FEATURE,
+  VIEW_RANGE_AND_BROWSER_FEATURE,
+  VIEW_TOP_REFS,
   VIEWPORT_NORTH_ARROW_OFFSET_FEATURE,
   type DrawingItem,
   type SheetProps,
@@ -247,8 +249,14 @@ const viewPropsPatchObject = z
     viewDepthMm: z.number().finite().min(0).max(30000),
     /** null: no lower limit again. */
     viewBottomMm: z.number().finite().min(-30000).max(30000).nullable(),
-    /** null: no upper limit again. */
-    viewTopMm: z.number().finite().min(0).max(60000).nullable(),
+    /** null: no upper limit again. Negative offsets are allowed when `viewTopRef` is `"level_above"`. */
+    viewTopMm: z.number().finite().min(-30000).max(60000).nullable(),
+    /** null: reset to default automatic/associated behavior. */
+    viewTopRef: z.enum(VIEW_TOP_REFS).nullable(),
+    /** null: clear explicit browser group. */
+    browserGroup: z.string().trim().min(1).max(80).nullable(),
+    /** null: clear explicit browser sort order. */
+    sortOrder: z.number().finite().nullable(),
     discipline: disciplineSchema.nullable(),
     hiddenCategories: z.array(z.enum(VIEW_CATEGORIES)).max(VIEW_CATEGORIES.length),
     hiddenElementIds: z.array(id).max(5000),
@@ -343,7 +351,7 @@ const documentRecord = z.discriminatedUnion("kind", [
     viewType: z.enum(["floor_plan", "ceiling_plan", "section", "elevation", "three_d", "schedule", "detail"]),
     cropMin: vec2,
     cropMax: vec2,
-    props: viewPropsPatchObject.extend({ discipline: disciplineSchema, workingAngleDeg: z.number().finite().min(-45).max(45), viewBottomMm: z.number().finite().min(-30000).max(30000), viewTopMm: z.number().finite().min(0).max(60000), cropPolygon: z.array(vec2).min(3).max(200).readonly(), ...view3dPropsShape }).partial().optional(),
+    props: viewPropsPatchObject.extend({ discipline: disciplineSchema, workingAngleDeg: z.number().finite().min(-45).max(45), viewBottomMm: z.number().finite().min(-30000).max(30000), viewTopMm: z.number().finite().min(-30000).max(60000), viewTopRef: z.enum(VIEW_TOP_REFS), browserGroup: z.string().trim().min(1).max(80), sortOrder: z.number().finite(), cropPolygon: z.array(vec2).min(3).max(200).readonly(), ...view3dPropsShape }).partial().optional(),
   }),
   z.object({
     ...base,
@@ -775,7 +783,7 @@ function replacedScheduleKinds(current: ViewProps | undefined, patch: z.infer<ty
 
 /** Patch fields replace; `discipline: null` clears the discipline (everything prints in ink). */
 function mergeProps(current: ViewProps | undefined, patch: z.infer<typeof viewPropsPatch>): ViewProps {
-  const { discipline, workingAngleDeg, viewBottomMm, viewTopMm, categoryOverrides, cropPolygon, hiddenElementIds, ...rest } = patch;
+  const { discipline, workingAngleDeg, viewBottomMm, viewTopMm, viewTopRef, browserGroup, sortOrder, categoryOverrides, cropPolygon, hiddenElementIds, ...rest } = patch;
   let merged: ViewProps = { ...current, ...rest };
   if (hiddenElementIds !== undefined) {
     const { hiddenElementIds: _oldHidden, ...withoutHidden } = merged;
@@ -799,7 +807,7 @@ function mergeProps(current: ViewProps | undefined, patch: z.infer<typeof viewPr
     const { [key]: _replaced, ...without } = merged;
     merged = without;
   }
-  for (const [key, value] of [["viewBottomMm", viewBottomMm], ["viewTopMm", viewTopMm]] as const) {
+  for (const [key, value] of [["viewBottomMm", viewBottomMm], ["viewTopMm", viewTopMm], ["viewTopRef", viewTopRef], ["browserGroup", browserGroup], ["sortOrder", sortOrder]] as const) {
     if (value === undefined) continue;
     const { [key]: _old, ...without } = merged;
     merged = value === null ? without : { ...without, [key]: value };
@@ -882,8 +890,11 @@ function checkProps(viewType: ViewElement["viewType"], props: ViewProps, viewId:
   if (props.showLineCodes !== undefined && !peerReads(VIEW_SCHEMATIC_DETAIL_FEATURE)) fail("Inline service code settings can't be saved yet: the model server this model is open on is an older version. Try again once it is updated.", [viewId]);
   if (props.symbolScale !== undefined && !peerReads(VIEW_SYMBOL_SCALE_FEATURE)) fail("View symbol scale can't be saved yet: the model server this model is open on is an older version. Try again once it is updated.", [viewId]);
   if (props.hiddenElementIds && props.hiddenElementIds.length > 0 && !peerReads(VIEW_HIDDEN_ELEMENTS_FEATURE)) fail("Hiding individual elements in a view can't be saved yet: the model server this model is open on is an older version. Try again once it is updated.", [viewId]);
-  if (!isPlan && (props.viewBottomMm !== undefined || props.viewTopMm !== undefined)) fail("Only plans have a top and bottom to what they show. A section's reach is its far clip depth.", [viewId]);
-  if (isPlan && props.viewTopMm !== undefined && props.viewTopMm < (props.cutHeightMm ?? DEFAULT_CUT_HEIGHT_MM)) fail(`The top of the view must be at or above the cut height (${Math.round((props.cutHeightMm ?? DEFAULT_CUT_HEIGHT_MM) / 30.48) / 10} ft).`, [viewId]);
+  if ((props.viewTopRef !== undefined || props.browserGroup !== undefined || props.sortOrder !== undefined) && !peerReads(VIEW_RANGE_AND_BROWSER_FEATURE)) {
+    fail("Level-relative view range and browser view organization can't be saved yet: the model server this model is open on is an older version. Try again once it is updated.", [viewId]);
+  }
+  if (!isPlan && (props.viewBottomMm !== undefined || props.viewTopMm !== undefined || props.viewTopRef !== undefined)) fail("Only plans have a top and bottom to what they show. A section's reach is its far clip depth.", [viewId]);
+  if (isPlan && props.viewTopMm !== undefined && (!props.viewTopRef || props.viewTopRef === "associated_level") && props.viewTopMm < (props.cutHeightMm ?? DEFAULT_CUT_HEIGHT_MM)) fail(`The top of the view must be at or above the cut height (${Math.round((props.cutHeightMm ?? DEFAULT_CUT_HEIGHT_MM) / 30.48) / 10} ft).`, [viewId]);
   if (isPlan && viewType === "floor_plan" && props.viewBottomMm !== undefined && props.viewBottomMm > (props.cutHeightMm ?? DEFAULT_CUT_HEIGHT_MM)) fail(`The bottom of the view must be at or below the cut height (${Math.round((props.cutHeightMm ?? DEFAULT_CUT_HEIGHT_MM) / 30.48) / 10} ft).`, [viewId]);
   if (viewType !== "floor_plan" && viewType !== "ceiling_plan" && props.orientation !== undefined && props.orientation !== "plan_north") fail(props.orientation === "true_north" ? "Only plans turn to true north. Sections, 3D and detail views keep their own direction." : "Only plans turn to the working angle. Sections, 3D and detail views keep their own direction.", [viewId]);
   if (viewType === "schedule") {

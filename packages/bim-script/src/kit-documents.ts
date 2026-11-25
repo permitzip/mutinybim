@@ -27,6 +27,8 @@ import {
   oneLineCommands,
   oneLineCropCommand,
   planAutoTags,
+  planAutoTopDescription,
+  planReachRange,
   polygonBounds,
   sheetLayoutCommand,
   viewCamera3d,
@@ -427,8 +429,14 @@ export interface PlanViewSpec {
   /** Drawing scale as a ratio (48 is 1/4" = 1'-0"). */
   readonly scale?: number;
   readonly cutHeight?: Measure;
-  /** Plans: upper height limit above the level (above this, nothing shows). */
+  /** Plans: upper height limit (offset above `viewTopRef`, default associated level). */
   readonly viewTop?: Measure;
+  /** Plans: reference datum for `viewTop` (`"associated_level"`, `"level_above"` = Revit MEP default, or `"unlimited"`). */
+  readonly viewTopRef?: "associated_level" | "level_above" | "unlimited";
+  /** Optional Project Browser folder/group label for organizing views. */
+  readonly browserGroup?: string;
+  /** Optional numeric sort key for ordering views in the Project Browser. */
+  readonly sortOrder?: number;
   /** Plans: lower height limit above the level (negative is below). */
   readonly viewBottom?: Measure;
   /** Plans: view depth below `viewBottom`. */
@@ -466,8 +474,14 @@ export interface ViewChanges {
   readonly discipline?: string | null;
   readonly scale?: number;
   readonly cutHeight?: Measure;
-  /** Plans: upper height limit above the level (`null` clears the limit). */
+  /** Plans: upper height limit (`null` clears the limit). */
   readonly viewTop?: Measure | null;
+  /** Plans: reference datum for `viewTop` (`"associated_level"`, `"level_above"`, `"unlimited"`, or `null` to reset). */
+  readonly viewTopRef?: "associated_level" | "level_above" | "unlimited" | null;
+  /** Optional Project Browser folder/group label (`null` clears). */
+  readonly browserGroup?: string | null;
+  /** Optional numeric sort key for ordering views in the Project Browser (`null` clears). */
+  readonly sortOrder?: number | null;
   /** Plans: lower height limit above the level (`null` clears the limit). */
   readonly viewBottom?: Measure | null;
   /** Plans: view depth below `viewBottom`. */
@@ -532,6 +546,10 @@ export interface VerticalViewSpec {
   /** Optional level whose plan shows this marker; absent: shown on every level's plan it overlaps. */
   readonly level?: string;
   readonly discipline?: string;
+  /** Optional Project Browser folder/group label for organizing this section/elevation. */
+  readonly browserGroup?: string;
+  /** Optional numeric sort key for ordering this section/elevation in the Project Browser. */
+  readonly sortOrder?: number;
   /** Optional parent plan view id that owns/references this section or elevation cut. */
   readonly referencingView?: string;
   /** Disciplines whose plans print this section/elevation callout marker (e.g. `["architecture"]`, or `["all"]`). */
@@ -646,6 +664,9 @@ function view(ctx: ScriptContext, viewType: CreateView["viewType"], spec: PlanVi
     ...(spec.scale ? { scale: spec.scale } : {}),
     ...(spec.cutHeight ? { cutHeightMm: mm(spec.cutHeight, "Cut height") } : {}),
     ...(spec.viewTop !== undefined ? { viewTopMm: mm(spec.viewTop, "View top") } : {}),
+    ...(spec.viewTopRef !== undefined ? { viewTopRef: spec.viewTopRef } : {}),
+    ...(spec.browserGroup !== undefined ? { browserGroup: spec.browserGroup } : {}),
+    ...(spec.sortOrder !== undefined ? { sortOrder: spec.sortOrder } : {}),
     ...(spec.viewBottom !== undefined ? { viewBottomMm: mm(spec.viewBottom, "View bottom") } : {}),
     ...(spec.viewDepth !== undefined ? { viewDepthMm: mm(spec.viewDepth, "View depth") } : {}),
     ...(spec.detailLevel ? { detailLevel: spec.detailLevel } : {}),
@@ -686,6 +707,8 @@ function verticalView(ctx: ScriptContext, viewType: "section" | "elevation", spe
   const props: ViewProps = {
     ...(spec.level ? { level: levelName(ctx, spec.level) } : {}),
     ...(spec.discipline ? { discipline: spec.discipline } : {}),
+    ...(spec.browserGroup !== undefined ? { browserGroup: spec.browserGroup } : {}),
+    ...(spec.sortOrder !== undefined ? { sortOrder: spec.sortOrder } : {}),
     ...(spec.scale ? { scale: spec.scale } : {}),
     ...(spec.hide ? { hiddenCategories: spec.hide } : {}),
     ...(spec.categoryOverrides ? { categoryOverrides: toCategoryOverrides(spec.categoryOverrides) } : {}),
@@ -1039,6 +1062,9 @@ export const documents = {
         ...(changes.scale !== undefined ? { scale: changes.scale } : {}),
         ...(changes.cutHeight !== undefined ? { cutHeightMm: mm(changes.cutHeight, "Cut height") } : {}),
         ...(changes.viewTop !== undefined ? { viewTopMm: changes.viewTop === null ? null : mm(changes.viewTop, "View top") } : {}),
+        ...(changes.viewTopRef !== undefined ? { viewTopRef: changes.viewTopRef } : {}),
+        ...(changes.browserGroup !== undefined ? { browserGroup: changes.browserGroup } : {}),
+        ...(changes.sortOrder !== undefined ? { sortOrder: changes.sortOrder } : {}),
         ...(changes.viewBottom !== undefined ? { viewBottomMm: changes.viewBottom === null ? null : mm(changes.viewBottom, "View bottom") } : {}),
         ...(changes.viewDepth !== undefined ? { viewDepthMm: mm(changes.viewDepth, "View depth") } : {}),
         ...(changes.detailLevel !== undefined ? { detailLevel: changes.detailLevel } : {}),
@@ -1061,6 +1087,39 @@ export const documents = {
     const newViewId = id ?? ctx.id("view");
     ctx.edit({ type: "duplicate_view", viewId, newViewId, name });
     return newViewId;
+  },
+  /** Inspects a view's effective settings (view type, level, discipline, scale, effective view range in mm, browser group/sortOrder, and overrides) so scripts and agents can verify or audit view setup. */
+  viewSettings(ctx: ScriptContext, viewRef: string) {
+    return onWorking(ctx, "documents.viewSettings", (m) => {
+      const v = viewIn(m, viewRef, "view");
+      const props = v.props ?? {};
+      const reach = planReachRange(m, v);
+      return {
+        id: v.id,
+        name: v.name,
+        viewType: v.viewType,
+        level: props.level ?? null,
+        discipline: props.discipline ?? null,
+        scale: props.scale ?? null,
+        browserGroup: props.browserGroup ?? null,
+        sortOrder: props.sortOrder ?? null,
+        viewRange: {
+          viewTopRef: props.viewTopRef ?? null,
+          viewTopMm: props.viewTopMm ?? null,
+          cutHeightMm: props.cutHeightMm ?? null,
+          viewBottomMm: props.viewBottomMm ?? null,
+          viewDepthMm: props.viewDepthMm ?? null,
+          effectiveLowMm: reach?.lowMm ?? null,
+          effectiveHighMm: reach?.highMm ?? null,
+          autoTopDescription: planAutoTopDescription(m, v),
+        },
+        detailLevel: props.detailLevel ?? null,
+        visualStyle: props.visualStyle ?? null,
+        hiddenCategories: props.hiddenCategories ?? [],
+        hiddenElementIds: props.hiddenElementIds ?? [],
+        categoryOverrides: props.categoryOverrides ?? {},
+      };
+    });
   },
   /** Puts a view (a plan, a schedule, a detail) on a sheet; returns the viewport's id. */
   place(

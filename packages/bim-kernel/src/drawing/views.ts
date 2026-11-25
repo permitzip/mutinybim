@@ -435,15 +435,30 @@ function ownFloor(model: ModelState, el: BimElement, fallbackMm: number): number
 
 /**
  * The heights a plan shows, absolute mm: from its bottom less the view depth
- * up to its top. Either end is null while the view sets none, so plans made
- * before the bottom and top existed draw exactly as they did.
+ * up to its top. Supports Revit-standard level-relative top planes:
+ * - `viewTopRef: "unlimited"` -> no upper clip (`highMm: null`)
+ * - `viewTopRef: "level_above"` -> next story/roof above + optional `viewTopMm` offset (default 0)
+ * - `viewTopRef: "associated_level"` (or unset with `viewTopMm !== undefined`) -> `floorMm + viewTopMm`
+ * - Both unset -> `highMm: null` (legacy plans draw everything on their level; `planReachRange` uses `planAutoTopLimit`).
  */
-export function planHeightRange(view: Pick<ViewElement, "viewType" | "props">, floorMm: number): { readonly lowMm: number | null; readonly highMm: number | null } {
+export function planHeightRange(
+  view: Pick<ViewElement, "viewType" | "props">,
+  floorMm: number,
+  model?: ModelState,
+): { readonly lowMm: number | null; readonly highMm: number | null } {
   const props = view.props ?? {};
   const isPlan = view.viewType === "floor_plan" || view.viewType === "ceiling_plan";
   if (!isPlan) return { lowMm: null, highMm: null };
+  const lowMm = props.viewBottomMm === undefined ? null : floorMm + props.viewBottomMm - (props.viewDepthMm ?? 0);
+  if (props.viewTopRef === "unlimited") {
+    return { lowMm, highMm: null };
+  }
+  if (props.viewTopRef === "level_above") {
+    const refElevation = model ? planAutoTopLimit(model, floorMm).elevationMm : floorMm + STOREY_REACH_MM;
+    return { lowMm, highMm: refElevation + (props.viewTopMm ?? 0) };
+  }
   return {
-    lowMm: props.viewBottomMm === undefined ? null : floorMm + props.viewBottomMm - (props.viewDepthMm ?? 0),
+    lowMm,
     highMm: props.viewTopMm === undefined ? null : floorMm + props.viewTopMm,
   };
 }
@@ -456,7 +471,7 @@ export function planHeightRange(view: Pick<ViewElement, "viewType" | "props">, f
  */
 export function planViewRangeExcludes(model: ModelState, view: Pick<ViewElement, "viewType" | "props">): ((el: BimElement) => boolean) | null {
   const floor = viewFloorMm(model, view.props?.level, view.props?.levelElevationMm) ?? 0;
-  const range = planHeightRange(view, floor);
+  const range = planHeightRange(view, floor, model);
   if (range.lowMm === null && range.highMm === null) return null;
   return (el) => {
     const z = elementHeightRange(model, el, floor);
@@ -522,9 +537,10 @@ export function planReachRange(model: ModelState, view: Pick<ViewElement, "viewT
   const isPlan = view.viewType === "floor_plan" || view.viewType === "ceiling_plan";
   if (!isPlan || !view.props?.level) return null;
   const floor = viewFloorMm(model, view.props.level, view.props.levelElevationMm) ?? 0;
-  const range = planHeightRange(view, floor);
+  const range = planHeightRange(view, floor, model);
   const auto = planAutoTopLimit(model, floor);
-  return { lowMm: range.lowMm ?? floor, highMm: range.highMm ?? auto.elevationMm };
+  const highMm = view.props?.viewTopRef === "unlimited" ? floor + STOREY_REACH_MM * 4 : (range.highMm ?? auto.elevationMm);
+  return { lowMm: range.lowMm ?? floor, highMm };
 }
 
 /**

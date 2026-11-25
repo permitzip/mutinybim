@@ -1,6 +1,6 @@
 import { DEFAULT_SETTINGS, asRevision, commandSchema, elementsOfKind, executeCommand, withUpgradePolicy, type ModelState } from "@permitzip/bim-kernel";
 import { DEFAULT_LINT_CONFIG, LintEngine } from "@permitzip/bim-lint";
-import { ELECTRICAL_LINT_RULES, deriveCircuitGraphics, electricalDiagramGraph, electricalStarterTypes } from "../src";
+import { ELECTRICAL_LINT_RULES, deriveCircuitGraphics, electricalDiagramGraph, electricalStarterTypes, previewWireCurve } from "../src";
 
 function emptyModel(id: string): ModelState {
   return { modelId: id, revision: asRevision(0), elements: {}, connections: [], settings: DEFAULT_SETTINGS };
@@ -281,5 +281,51 @@ describe("Nov 24 huddle electrical features", () => {
     expect(branch).toBeDefined();
     expect(branch!.some((p) => p.x > 150)).toBe(true);
     expect(branch!.length).toBeGreaterThan(4);
+  });
+
+  it("renders Binoy (chamfered) style on lighting switch legs and matches Binoy preview geometry during interactive drag", () => {
+    let model = emptyModel("m-binoy-ctrl");
+    model = run(model, { type: "create_level", levelId: "l1", name: "Level 1", elevationMm: 0 });
+    const types = electricalStarterTypes("1.0.0");
+    const sw = types.find((t) => t.id === "builtin:switch-dimmer@1")!;
+    const fix = types.find((t) => t.id === "builtin:troffer-2x4-led@1") ?? types.find((t) => t.definition.category === "lighting_fixture")!;
+    model = run(model, { type: "save_part_types", types: [{ typeId: sw.id, definition: sw.definition }, { typeId: fix.id, definition: fix.definition }] });
+    model = run(model, { type: "place_part", partId: "sw-1", typeId: sw.id, levelId: "l1", position: { x: 1000, y: 1000 }, mark: "SW-1", values: { switch_leg: "a" } });
+    model = run(model, { type: "place_part", partId: "lt-1", typeId: fix.id, levelId: "l1", position: { x: 4000, y: 3000 }, mark: "F1", values: { switch_leg: "a" } });
+
+    const shown = new Map(elementsOfKind(model.elements, "part").map((p) => [p.id, p]));
+    const graphics = deriveCircuitGraphics(
+      model,
+      {
+        id: "v-ctrl",
+        kind: "view",
+        name: "Controls",
+        viewType: "ceiling_plan",
+        props: {
+          discipline: "electrical",
+          circuitGraphics: { style: "chamfered", showCircuits: false, switchLegs: true },
+        },
+      } as never,
+      shown,
+      64,
+    );
+    const swGraphic = graphics.find((g) => g.kind === "switch_leg");
+    expect(swGraphic).toBeDefined();
+    expect(swGraphic!.dashed).toBe(true);
+    const swPath = swGraphic!.paths[0]!;
+    // Binoy orthogonal + rounded corner path has a straight horizontal or vertical run segment (unlike a continuous arc).
+    let hasOrthoSeg = false;
+    for (let i = 1; i < swPath.length; i++) {
+      const dx = Math.abs(swPath[i]!.x - swPath[i - 1]!.x);
+      const dy = Math.abs(swPath[i]!.y - swPath[i - 1]!.y);
+      if ((dx > 200 && dy < 1) || (dy > 200 && dx < 1)) hasOrthoSeg = true;
+    }
+    expect(hasOrthoSeg).toBe(true);
+
+    // Interactive drag preview in Binoy (`chamfered`) mode produces orthogonal segments + rounded corners, not a spline.
+    const binoyPreview = previewWireCurve({ x: 0, y: 0 }, [{ x: 30, y: 20 }], { x: 60, y: 0 }, "chamfered");
+    const arcPreview = previewWireCurve({ x: 0, y: 0 }, [{ x: 30, y: 20 }], { x: 60, y: 0 }, "arcs");
+    expect(binoyPreview).not.toEqual(arcPreview);
+    expect(binoyPreview.some((p, i) => i > 0 && Math.abs(p.y - binoyPreview[i - 1]!.y) < 0.01 && Math.abs(p.x - binoyPreview[i - 1]!.x) > 10)).toBe(true);
   });
 });

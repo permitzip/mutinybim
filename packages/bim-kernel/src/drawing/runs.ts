@@ -1146,9 +1146,11 @@ export function drawPartSymbol(
   }
   const symbolBox: PartLabelBox | null = Number.isFinite(bb.minX) ? { min: { x: bb.minX, y: bb.minY }, max: { x: bb.maxX, y: bb.maxY } } : null;
   if (symbolBox) addLabelBox(opts.takenBoxes, symbolBox);
-  if (part.mark && opts.showMark !== false) {
+  const partType = model.elements[part.typeId];
+  const rawMark = part.mark || (partType?.kind === "part_type" ? (partType.definition.typeMark ?? "") : "");
+  if (rawMark && opts.showMark !== false) {
     const markStyle = resolveTextStyle(model, "part_mark");
-    const markText = markStyle?.uppercase ? part.mark.toUpperCase() : part.mark;
+    const markText = markStyle?.uppercase ? rawMark.toUpperCase() : rawMark;
     const markSize = markStyle?.textSizeMm ?? MARK_SIZE_MM;
     const markAt = placePartMark(part, markText, symbolBox, viewScale, opts.takenBoxes, hasCenterText, markSize);
     // Center the mark vertically on markAt (SVG/PDF text y is baseline).

@@ -100,6 +100,13 @@ export interface SectionCut {
   readonly showInDisciplines?: readonly string[];
 }
 
+/** How a plan's upper view-range plane (`viewTopMm`) is anchored: relative to this level, relative to the next level above (Revit default for MEP plans), or unlimited. */
+export const VIEW_TOP_REFS = ["associated_level", "level_above", "unlimited"] as const;
+export type ViewTopRef = (typeof VIEW_TOP_REFS)[number];
+
+/** Peers that store and evaluate level-relative view range (`viewTopRef`) and Project Browser view grouping/sorting (`browserGroup`, `sortOrder`). */
+export const VIEW_RANGE_AND_BROWSER_FEATURE = "views:range_and_browser";
+
 /** Everything about a view a person can set; absent fields take the view type's default. */
 export interface ViewProps extends ViewGraphicsHints {
   /** Level the plan belongs to (matches element partitions). */
@@ -114,8 +121,14 @@ export interface ViewProps extends ViewGraphicsHints {
   readonly viewDepthMm?: number;
   /** Plans: the bottom of what the view shows, mm above the level (negative is below it). Absent: no lower limit. */
   readonly viewBottomMm?: number;
-  /** Plans: the top of what the view shows, mm above the level. Absent: no upper limit (ductwork above the cut still shows). */
+  /** Plans: the top of what the view shows, mm above its reference plane (`viewTopRef`: associated level or level above). Absent: automatic to next level. */
   readonly viewTopMm?: number;
+  /** Plans: reference datum for `viewTopMm` (`"associated_level"`, `"level_above"`, or `"unlimited"`). Absent: associated level when `viewTopMm` is set, else automatic to next level. */
+  readonly viewTopRef?: ViewTopRef;
+  /** Optional Project Browser folder/group label for organizing views alongside sheets. */
+  readonly browserGroup?: string;
+  /** Optional numeric sort key for ordering views in the Project Browser. */
+  readonly sortOrder?: number;
   /** Elements of this discipline print in ink; underlay disciplines (the building) halftone; plans leave other disciplines' runs out (`leftOutOfDisciplineView`). Absent: all in ink. */
   readonly discipline?: Discipline;
   readonly hiddenCategories?: readonly ViewCategory[];

@@ -617,9 +617,46 @@ function arcThrough(a: Vec2, m: Vec2, b: Vec2): Vec2[] {
   return out;
 }
 
-/** Smooth paper-space preview polyline for an interactive wire or curved home-run drag (matches committed geometry). */
-export function previewWireCurve(start: Vec2, waypoints: readonly Vec2[], end: Vec2): Vec2[] {
+/**
+ * Paper-space preview polyline for an interactive wire or home-run drag (matches committed geometry):
+ * - `"orthogonal"`: crisp 90° orthogonal path through the dragged waypoint(s).
+ * - `"chamfered"` (Binoy): orthogonal path with rounded Binoy corner fillets (paper mm).
+ * - `"arcs"` (default): smooth arc / Catmull-Rom spline.
+ */
+export function previewWireCurve(
+  start: Vec2,
+  waypoints: readonly Vec2[],
+  end: Vec2,
+  style: CircuitGraphicStyle = "arcs",
+): Vec2[] {
   if (waypoints.length === 0) return [start, end];
+  if (style === "orthogonal" || style === "chamfered") {
+    const corners: Vec2[] = [];
+    if (waypoints.length === 1) {
+      const bend = waypoints[0]!;
+      // Choose the axis aligned with how the drag displaced the midpoint (vertical bar at bend.x vs horizontal bar at bend.y).
+      const dxSpan = Math.abs(end.x - start.x);
+      const dySpan = Math.abs(end.y - start.y);
+      const midY = (start.y + end.y) / 2;
+      const midX = (start.x + end.x) / 2;
+      const preferHorizontalBar = dySpan > dxSpan ? Math.abs(bend.y - midY) > Math.abs(bend.x - midX) : Math.abs(bend.y - midY) >= Math.abs(bend.x - midX) * 0.45;
+      if (preferHorizontalBar) {
+        corners.push({ x: start.x, y: bend.y }, { x: end.x, y: bend.y });
+      } else {
+        corners.push({ x: bend.x, y: start.y }, { x: bend.x, y: end.y });
+      }
+    } else {
+      let prev = start;
+      for (const wp of waypoints) {
+        if (Math.abs(wp.x - prev.x) > 0.2 && Math.abs(wp.y - prev.y) > 0.2) corners.push({ x: wp.x, y: prev.y });
+        corners.push(wp);
+        prev = wp;
+      }
+      if (Math.abs(end.x - prev.x) > 0.2 && Math.abs(end.y - prev.y) > 0.2) corners.push({ x: prev.x, y: end.y });
+    }
+    const raw = [start, ...corners, end].filter((q, i, arr) => i === 0 || dist(q, arr[i - 1] ?? q) > 0.15);
+    return style === "chamfered" ? chamferOrthogonalPath(raw, 3.2, 0.5) : raw;
+  }
   if (waypoints.length === 1) return arcThrough(start, waypoints[0]!, end);
   return splineThrough([start, ...waypoints, end]);
 }
@@ -711,15 +748,15 @@ function symbolExtentAlong(node: Node, dir: Vec2): number {
  * wall, stepping outward into the room comes first so wires don't slice through
  * adjacent receptacles along the wall face.
  */
-function squareCandidates(a: Node, b: Node, step: number): Vec2[][] {
+function squareCandidates(a: Node, b: Node, step: number, chamfer = false): Vec2[][] {
   const ap = a.point;
   const bp = b.point;
   const aligned = Math.abs(ap.x - bp.x) < 1 || Math.abs(ap.y - bp.y) < 1;
   const horizontal = Math.abs(ap.y - bp.y) < 1;
   const out: Vec2[][] = [];
+  const na = wallRoomNormal(a);
+  const nb = wallRoomNormal(b);
   if (aligned) {
-    const na = wallRoomNormal(a);
-    const nb = wallRoomNormal(b);
     const sameWallFace = na && nb && na.x * nb.x + na.y * nb.y > 0.7;
     const perpWall = sameWallFace && (horizontal ? Math.abs(na.y) > 0.7 : Math.abs(na.x) > 0.7);
     if (perpWall && na && nb) {
@@ -735,6 +772,27 @@ function squareCandidates(a: Node, b: Node, step: number): Vec2[][] {
     }
     out.push([]);
   } else {
+    // In Binoy mode (`chamfer`), wall-hosted endpoints on perpendicular or opposite walls first
+    // step cleanly out perpendicular into the room before turning, so wires never cut diagonally
+    // across a wall or behind a partition.
+    if (chamfer && (na || nb)) {
+      const stubOf = (n: Node, norm: Vec2 | null): Vec2 => {
+        if (!norm) return n.point;
+        const clear = symbolExtentAlong(n, norm) + Math.max(step * 1.5, 180);
+        return { x: n.point.x + norm.x * clear, y: n.point.y + norm.y * clear };
+      };
+      const as = stubOf(a, na);
+      const bs = stubOf(b, nb);
+      const c1: Vec2[] = [];
+      if (na) c1.push(as);
+      c1.push({ x: bs.x, y: as.y });
+      if (nb) c1.push(bs);
+      const c2: Vec2[] = [];
+      if (na) c2.push(as);
+      c2.push({ x: as.x, y: bs.y });
+      if (nb) c2.push(bs);
+      out.push(c1, c2);
+    }
     out.push([{ x: bp.x, y: ap.y }], [{ x: ap.x, y: bp.y }]);
   }
   for (let k = 1; k <= SQUARE_OFFSETS; k++) {
@@ -818,8 +876,8 @@ export function collinearOverlap(p: Vec2, q: Vec2, r: Vec2, s: Vec2, tolerance: 
 const pathLength = (path: readonly Vec2[]) => path.reduce((s, p, i) => (i === 0 ? 0 : s + dist(path[i - 1]!, p)), 0);
 
 /** Round 90° corners of an orthogonal polyline with smooth circular arc fillets (Binoy drafting standard). */
-function chamferOrthogonalPath(pts: readonly Vec2[], radiusMm: number): Vec2[] {
-  if (pts.length < 3 || radiusMm < 20) return [...pts];
+function chamferOrthogonalPath(pts: readonly Vec2[], radiusMm: number, minRadiusMm = 20): Vec2[] {
+  if (pts.length < 3 || radiusMm < minRadiusMm) return [...pts];
   const ARC_STEPS = 6;
   const out: Vec2[] = [pts[0]!];
   for (let i = 1; i < pts.length - 1; i++) {
@@ -828,7 +886,7 @@ function chamferOrthogonalPath(pts: readonly Vec2[], radiusMm: number): Vec2[] {
     const next = pts[i + 1]!;
     const d1 = dist(prev, curr);
     const d2 = dist(curr, next);
-    if (d1 < 1 || d2 < 1) {
+    if (d1 < 0.2 || d2 < 0.2) {
       out.push(curr);
       continue;
     }
@@ -842,8 +900,8 @@ function chamferOrthogonalPath(pts: readonly Vec2[], radiusMm: number): Vec2[] {
       out.push(curr);
       continue;
     }
-    const r = Math.min(radiusMm, d1 * 0.4, d2 * 0.4);
-    if (r < 20) {
+    const r = Math.min(radiusMm, d1 * 0.45, d2 * 0.45);
+    if (r < minRadiusMm) {
       out.push(curr);
       continue;
     }
@@ -865,13 +923,22 @@ function chamferOrthogonalPath(pts: readonly Vec2[], radiusMm: number): Vec2[] {
   return out;
 }
 
-/** The orthogonal (or 45°-chamfered) line a..b that stacks on the fewest drawn runs (then the shortest, then the first L). */
+/** The orthogonal (or Binoy-filleted) line a..b that stacks on the fewest drawn runs (then the shortest, then the first L). */
 function squareJoin(a: Node, b: Node, waypoints: readonly Vec2[] | undefined, drawn: DrawnRuns, step: number, chamfer: boolean): Vec2[] {
-  const chamferMm = Math.max(140, step * 0.85);
+  // Binoy corner radius (~3.4 mm on paper, scaled cleanly with view scale so bends read unmistakably as rounded 90° corners).
+  const chamferMm = Math.max(220, step * 1.35);
   const finish = (pts: Vec2[]) => (chamfer ? chamferOrthogonalPath(pts, chamferMm) : pts);
   if (waypoints && waypoints.length === 1) {
     const bend = waypoints[0]!;
-    return finish(squarePath(a, b, [{ x: bend.x, y: a.point.y }, { x: bend.x, y: b.point.y }]));
+    const dxSpan = Math.abs(b.point.x - a.point.x);
+    const dySpan = Math.abs(b.point.y - a.point.y);
+    const midY = (a.point.y + b.point.y) / 2;
+    const midX = (a.point.x + b.point.x) / 2;
+    const preferHorizontalBar = dySpan > dxSpan ? Math.abs(bend.y - midY) > Math.abs(bend.x - midX) : Math.abs(bend.y - midY) >= Math.abs(bend.x - midX) * 0.45;
+    const corners = preferHorizontalBar
+      ? [{ x: a.point.x, y: bend.y }, { x: b.point.x, y: bend.y }]
+      : [{ x: bend.x, y: a.point.y }, { x: bend.x, y: b.point.y }];
+    return finish(squarePath(a, b, corners));
   }
   if (waypoints && waypoints.length > 1) {
     const corners: Vec2[] = [];
@@ -887,7 +954,7 @@ function squareJoin(a: Node, b: Node, waypoints: readonly Vec2[] | undefined, dr
   let best: Vec2[] | null = null;
   let bestOverlap = Infinity;
   let bestLength = Infinity;
-  for (const corners of squareCandidates(a, b, step)) {
+  for (const corners of squareCandidates(a, b, step, chamfer)) {
     const path = squarePath(a, b, corners);
     const over = drawn.overlap(path);
     const length = pathLength(path);
@@ -1249,7 +1316,8 @@ function switchLegs(model: ModelState, shown: ReadonlyMap<string, PartInstance>,
     }
   }
   const out: CircuitGraphic[] = [];
-  const style = settings.style === "orthogonal" ? "orthogonal" : "arcs";
+  const style: CircuitGraphicStyle =
+    settings.style === "chamfered" ? "chamfered" : settings.style === "orthogonal" ? "orthogonal" : "arcs";
   for (const leg of [...controllersByLeg.keys()].sort()) {
     const ctrls = [...(controllersByLeg.get(leg) ?? [])].sort((a, b) => (a.id < b.id ? -1 : 1));
     const loads = [...(loadsByLeg.get(leg) ?? [])].sort((a, b) => (a.id < b.id ? -1 : 1));
@@ -1267,7 +1335,7 @@ function switchLegs(model: ModelState, shown: ReadonlyMap<string, PartInstance>,
       const b = orderedCtrls[i + 1]!;
       const k = bendKey(a.id, b.id);
       const path = joinPath(style, a, b, spanWaypoints(hint, a.id, b.id), hint?.flipArc?.[k] === true, drawn, SQUARE_RUN_OFFSET_MM * scale);
-      if (style === "orthogonal") drawn.add(path);
+      if (style === "orthogonal" || style === "chamfered") drawn.add(path);
       paths.push(path);
       joins.push([a.id, b.id]);
     }
@@ -1275,7 +1343,7 @@ function switchLegs(model: ModelState, shown: ReadonlyMap<string, PartInstance>,
     for (const [a, b] of joinPairs(style, anchorCtrl, loadNodes)) {
       const k = bendKey(a.id, b.id);
       const path = joinPath(style, a, b, spanWaypoints(hint, a.id, b.id), hint?.flipArc?.[k] === true, drawn, SQUARE_RUN_OFFSET_MM * scale);
-      if (style === "orthogonal") drawn.add(path);
+      if (style === "orthogonal" || style === "chamfered") drawn.add(path);
       paths.push(path);
       joins.push([a.id, b.id]);
     }
@@ -1542,6 +1610,8 @@ export interface CircuitJoinOnPaper {
   /** Key in `ViewProps.circuitGraphics.hints` (the link id for a circuit, or `"switch:<leg>"` for a switch leg). */
   readonly linkId: string;
   readonly kind: "circuit" | "switch_leg";
+  /** Active drawing style for this wire span (`"arcs"`, `"orthogonal"`, or `"chamfered"` / Binoy) so interactive drag previews match committed geometry. */
+  readonly style: CircuitGraphicStyle;
   /** The circuit or switch leg as drawings name it ("L1-1", "Switch leg a"). */
   readonly name: string;
   readonly a: string;
@@ -1578,6 +1648,7 @@ export function circuitJoinsOnPaper(model: ModelState, view: ViewElement, shown:
       out.push({
         linkId: hintKey,
         kind: g.kind,
+        style: settings.style === "chamfered" ? "chamfered" : settings.style === "orthogonal" ? "orthogonal" : "arcs",
         name,
         a,
         b,

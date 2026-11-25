@@ -1158,7 +1158,7 @@ export function ModelDrawingLayer({ model, view, bridge, paperOf, paperMmPerPx, 
                     })
             return (
               <>
-                <polyline points={points(previewWireCurve(start, wps, end))} fill="none" stroke={PRIMARY} strokeWidth={0.5} strokeDasharray="1.5 1" />
+                <polyline points={points(previewWireCurve(start, wps, end, drag.join.style))} fill="none" stroke={PRIMARY} strokeWidth={0.5} strokeDasharray="1.5 1" />
                 {wps.map((wp, i) => (
                   <circle key={`dwp-${i}`} cx={wp.x} cy={wp.y} r={1.15} fill="#ffffff" stroke={PRIMARY} strokeWidth={0.45} />
                 ))}

@@ -699,8 +699,10 @@ function buildShowcase(modelId: string): ModelState {
   // =========================================================================
   // 2. REGISTER PART TYPES (Cut-Sheet Custom Parts + Built-In Electrical / HVAC / Plumbing)
   // =========================================================================
-  const rg = mustBuiltin("builtin:return-grille-24@1");
-  const eg = mustBuiltin("builtin:exhaust-grille-12@1");
+  const rgRaw = mustBuiltin("builtin:return-grille-24@1");
+  const rg = { ...rgRaw, definition: { ...rgRaw.definition, typeMark: "RG-1" } };
+  const egRaw = mustBuiltin("builtin:exhaust-grille-12@1");
+  const eg = { ...egRaw, definition: { ...egRaw.definition, typeMark: "EG-1" } };
   const swb = mustBuiltin("builtin:switchboard-800-480@1");
   const hpnl = mustBuiltin("builtin:panelboard-225-480@1");
   const xfmr = mustBuiltin("builtin:transformer-75kva@1");
@@ -780,19 +782,19 @@ function buildShowcase(modelId: string): ModelState {
     { type: "place_part", partId: "ef-1", typeId: SHOWCASE_INLINE_FAN.id, levelId: "L2", position: pt(13.0 * FT, 23.5 * FT), offsetMm: Math.round(12.2 * FT), host: { kind: "slab", elementId: "deck-roof-west" }, mark: "EF-1", values: { circuit: "LP-1-7", serves: "Restrooms 102 & 202", room: "Restroom 202 Ceiling Plenum (Indoor)" } },
     { type: "place_part", partId: "gv-1", typeId: SHOWCASE_GRAVITY_HOOD.id, levelId: "ROOF", position: pt(13.0 * FT, 23.5 * FT), offsetMm: Math.round(4.4 * FT), mark: "GV-1", values: { serves: "EF-1 Exhaust Discharge", room: "Upper Roof" } },
 
-    // 4 Titus TMS 24×24 louvered supply diffusers (Studio SD-1/SD-2 seated dead-center in exact 2'×2' half-tiles of the 2'×4' ACT cloud, ALL connected via real 8" flex!)
-    { type: "place_part", partId: "sd-1", typeId: SHOWCASE_DIFFUSER.id, levelId: "L1", position: pt(45.0 * FT, 5.0 * FT), offsetMm: CEILING_Z, mark: "SD-1", values: { airflow: 450, room: "Design Studio 104" } },
-    { type: "place_part", partId: "sd-2", typeId: SHOWCASE_DIFFUSER.id, levelId: "L1", position: pt(43.0 * FT, 15.0 * FT), offsetMm: CEILING_Z, mark: "SD-2", values: { airflow: 450, room: "Design Studio 104" } },
-    { type: "place_part", partId: "sd-3", typeId: SHOWCASE_DIFFUSER.id, levelId: "L1", position: pt(23.5 * FT, 6.5 * FT), offsetMm: CEILING_Z, mark: "SD-3", values: { airflow: 400, room: "Reception & Break 103" } },
-    { type: "place_part", partId: "sd-4", typeId: SHOWCASE_DIFFUSER.id, levelId: "L1", position: pt(29.5 * FT, 6.5 * FT), offsetMm: CEILING_Z, mark: "SD-4", values: { airflow: 400, room: "Reception & Break 103" } },
+    // 4 Titus TMS 24×24 louvered supply diffusers (Type Mark SD-1 shared across instances; each keeps its unique id & individual airflow!)
+    { type: "place_part", partId: "sd-1", typeId: SHOWCASE_DIFFUSER.id, levelId: "L1", position: pt(45.0 * FT, 5.0 * FT), offsetMm: CEILING_Z, mark: "", values: { airflow: 450, room: "Design Studio 104" } },
+    { type: "place_part", partId: "sd-2", typeId: SHOWCASE_DIFFUSER.id, levelId: "L1", position: pt(43.0 * FT, 15.0 * FT), offsetMm: CEILING_Z, mark: "", values: { airflow: 450, room: "Design Studio 104" } },
+    { type: "place_part", partId: "sd-3", typeId: SHOWCASE_DIFFUSER.id, levelId: "L1", position: pt(23.5 * FT, 6.5 * FT), offsetMm: CEILING_Z, mark: "", values: { airflow: 400, room: "Reception & Break 103" } },
+    { type: "place_part", partId: "sd-4", typeId: SHOWCASE_DIFFUSER.id, levelId: "L1", position: pt(29.5 * FT, 6.5 * FT), offsetMm: CEILING_Z, mark: "", values: { airflow: 400, room: "Reception & Break 103" } },
 
-    // 2 Return Grilles (RG-1 dead-center in Studio ACT 2'×2' half-tile at (39', 13'), clear north of sa-main at 10.5' and 5 ft south of ra-main at 18.0'!)
-    { type: "place_part", partId: "rg-1", typeId: rg.id, levelId: "L1", position: pt(39.0 * FT, 13.0 * FT), offsetMm: CEILING_Z, mark: "RG-1", values: { airflow: 1000 } },
-    { type: "place_part", partId: "rg-2", typeId: rg.id, levelId: "L1", position: pt(28.5 * FT, 13.0 * FT), offsetMm: CEILING_Z, mark: "RG-2", values: { airflow: 700 } },
+    // 2 Return Grilles (Type Mark RG-1; dead-center in Studio ACT 2'×2' half-tile at (39', 13'), clear of trunks!)
+    { type: "place_part", partId: "rg-1", typeId: rg.id, levelId: "L1", position: pt(39.0 * FT, 13.0 * FT), offsetMm: CEILING_Z, mark: "", values: { airflow: 1000 } },
+    { type: "place_part", partId: "rg-2", typeId: rg.id, levelId: "L1", position: pt(28.5 * FT, 13.0 * FT), offsetMm: CEILING_Z, mark: "", values: { airflow: 700 } },
 
-    // Stacked Restroom Exhaust Grilles (L1 9'-0" & L2 8'-6" over open restroom aisle north of vanity — zero clash with L-3/vanity!)
-    { type: "place_part", partId: "eg-2", typeId: eg.id, levelId: "L1", position: pt(11.6 * FT, 25.2 * FT), offsetMm: Math.round(9.0 * FT), mark: "EG-2", values: { airflow: 150 } },
-    { type: "place_part", partId: "eg-1", typeId: eg.id, levelId: "L2", position: pt(10.2 * FT, 23.5 * FT), offsetMm: Math.round(8.5 * FT), mark: "EG-1", values: { airflow: 150 } },
+    // Stacked Restroom Exhaust Grilles (Type Mark EG-1; L1 9'-0" & L2 8'-6" over open restroom aisle north of vanity)
+    { type: "place_part", partId: "eg-2", typeId: eg.id, levelId: "L1", position: pt(11.6 * FT, 25.2 * FT), offsetMm: Math.round(9.0 * FT), mark: "", values: { airflow: 150 } },
+    { type: "place_part", partId: "eg-1", typeId: eg.id, levelId: "L2", position: pt(10.2 * FT, 23.5 * FT), offsetMm: Math.round(8.5 * FT), mark: "", values: { airflow: 150 } },
 
     // Supply Air: vertical drop from RTU-1 curb supply connector (47.12', 15.21') → 16"×10" trunk at 10'-8" (Y = 10.5') with 2" external duct wrap insulation!
     {
@@ -1492,9 +1494,9 @@ function buildShowcase(modelId: string): ModelState {
     // Floor-hosted duplex & quad floor boxes (slab/floor-mounted without requiring a wall host)
     { type: "place_part", partId: "fb-studio-1", typeId: floorRec.id, levelId: "L1", position: pt(42.5 * FT, 9.0 * FT), mark: "FB-1" },
     { type: "place_part", partId: "fb-conf-1", typeId: floorQuad.id, levelId: "L2", position: pt(9.0 * FT, 10.5 * FT), mark: "FB-2" },
-    // Special-purpose NEMA 6-20R (240V), Twist-Lock (L6-20R), and Hardwired Equipment Connection symbols
-    { type: "place_part", partId: "rec-240v", typeId: nema620.id, levelId: "L1", position: pt(0, 0), host: { kind: "wall_face", elementId: "w-l1-print-w", stationMm: Math.round(7.0 * FT), side: -1 }, offsetMm: Math.round(18 * IN), mark: "R-240V" },
-    { type: "place_part", partId: "rec-tl", typeId: twistLock.id, levelId: "L1", position: pt(0, 0), host: { kind: "wall_face", elementId: "w-l1-print-w", stationMm: Math.round(9.5 * FT), side: -1 }, offsetMm: Math.round(18 * IN), mark: "R-TL" },
+    // Special-purpose NEMA 6-20R (240V), Twist-Lock (L6-20R), and Hardwired Equipment Connection symbols (cleanly separated along Print Room wall)
+    { type: "place_part", partId: "rec-240v", typeId: nema620.id, levelId: "L1", position: pt(0, 0), host: { kind: "wall_face", elementId: "w-l1-print-w", stationMm: Math.round(3.5 * FT), side: -1 }, offsetMm: Math.round(18 * IN), mark: "R-240V" },
+    { type: "place_part", partId: "rec-tl", typeId: twistLock.id, levelId: "L1", position: pt(0, 0), host: { kind: "wall_face", elementId: "w-l1-print-w", stationMm: Math.round(6.0 * FT), side: -1 }, offsetMm: Math.round(18 * IN), mark: "R-TL" },
     { type: "place_part", partId: "hw-mep-1", typeId: hardwired.id, levelId: "L1", position: pt(0, 0), host: { kind: "wall_face", elementId: "w-l1-core", stationMm: Math.round(3.0 * FT), side: 1 }, offsetMm: Math.round(48 * IN), mark: "EC-1" },
 
     // Lighting Control Devices (0-10V dimmers, 3-way travelers, ceiling occupancy sensor, exterior photocell/timeclock)
@@ -1903,7 +1905,7 @@ function buildShowcase(modelId: string): ModelState {
         visualStyle: "hidden_line",
         viewBottomMm: 0,
         cutHeightMm: Math.round(4 * FT),
-        viewTopMm: Math.round(10 * FT),
+        viewTopRef: "level_above",
         hiddenElementIds: ["cafe-island-l1"],
         categoryOverrides: MECH_HIDE_NON_HVAC,
       },
@@ -1928,6 +1930,7 @@ function buildShowcase(modelId: string): ModelState {
           itemize: false,
           groups: [],
           columns: [
+            { id: "type_mark", kind: "field", path: "type_mark", heading: "MARK" },
             { id: "type_name", kind: "field", path: "type_name", heading: "TYPE" },
             { id: "family", kind: "field", path: "family", heading: "DESCRIPTION" },
             { id: "count", kind: "field", path: "count", heading: "QTY", total: true },
@@ -1936,7 +1939,7 @@ function buildShowcase(modelId: string): ModelState {
             { id: "vendor.manufacturer", kind: "field", path: "vendor.manufacturer", heading: "MANUFACTURER", hideWhenEmpty: true },
             { id: "vendor.model", kind: "field", path: "vendor.model", heading: "MODEL", hideWhenEmpty: true },
           ],
-          sort: [{ path: "type_name", direction: "asc" }],
+          sort: [{ path: "type_mark", direction: "asc" }],
         },
       },
     },
@@ -2038,7 +2041,7 @@ function buildShowcase(modelId: string): ModelState {
         scale: 64,
         discipline: "electrical",
         categoryOverrides: ELEC_CTRL_HIDE,
-        circuitGraphics: { hashMarksOn: "home_runs_and_switch_legs", showCircuits: false, switchLegs: true },
+        circuitGraphics: { style: "chamfered", hashMarksOn: "home_runs_and_switch_legs", showCircuits: false, switchLegs: true },
       },
     },
     { type: "create_view", viewId: "view-sched-hp1", name: "Panel HP-1 Schedule (480Y/277V)", viewType: "schedule", props: { formSchedule: { kind: "panel", elementId: "hp-1", template: builtinFormTemplate("panel"), rules: "nec-2023" } } },
@@ -2121,13 +2124,15 @@ function buildShowcase(modelId: string): ModelState {
     { type: "place_viewport", viewportId: "vp-elec-ltg", sheetId: "sheet-e102", viewId: "view-elec-ltg", center: { x: 230, y: 305 } },
     { type: "place_viewport", viewportId: "vp-elec-ctrl", sheetId: "sheet-e102", viewId: "view-elec-ctrl", center: { x: 600, y: 305 } },
 
-    { type: "create_sheet", sheetId: "sheet-e201", number: "E-201", name: "ONE-LINE, CONTROLS & SCHEDULES", discipline: "electrical", group: "Electrical", sortOrder: 503 },
-    { type: "place_viewport", viewportId: "vp-oneline", sheetId: "sheet-e201", viewId: "view-oneline", center: { x: 225, y: 185 } },
-    { type: "place_viewport", viewportId: "vp-controls", sheetId: "sheet-e201", viewId: "view-controls", center: { x: 605, y: 185 } },
-    { type: "place_viewport", viewportId: "vp-sched-lctrl", sheetId: "sheet-e201", viewId: "view-sched-lctrl", center: { x: 200, y: 440 } },
-    { type: "place_viewport", viewportId: "vp-sched-ltg", sheetId: "sheet-e201", viewId: "view-sched-ltg", center: { x: 565, y: 440 } },
+    { type: "create_sheet", sheetId: "sheet-e201", number: "E-201", name: "ELECTRICAL ONE-LINE DIAGRAM", discipline: "electrical", group: "Electrical", sortOrder: 503 },
+    { type: "place_viewport", viewportId: "vp-oneline", sheetId: "sheet-e201", viewId: "view-oneline", center: { x: 420, y: 295 } },
 
-    // ---- Sheet E-202: Photometrics & Life-Safety Egress Compliance Plans + Schedules ----
+    { type: "create_sheet", sheetId: "sheet-e202", number: "E-202", name: "LIGHTING CONTROLS & FIXTURE SCHEDULES", discipline: "electrical", group: "Electrical", sortOrder: 504 },
+    { type: "place_viewport", viewportId: "vp-controls", sheetId: "sheet-e202", viewId: "view-controls", center: { x: 420, y: 175 } },
+    { type: "place_viewport", viewportId: "vp-sched-lctrl", sheetId: "sheet-e202", viewId: "view-sched-lctrl", center: { x: 225, y: 440 } },
+    { type: "place_viewport", viewportId: "vp-sched-ltg", sheetId: "sheet-e202", viewId: "view-sched-ltg", center: { x: 615, y: 440 } },
+
+    // ---- Sheet E-203: Photometrics & Life-Safety Egress Compliance Plans + Schedules ----
     {
       type: "create_view",
       viewId: "view-elec-photometrics",
@@ -2172,11 +2177,11 @@ function buildShowcase(modelId: string): ModelState {
       viewType: "schedule",
       props: { formSchedule: { kind: "egress_lighting_compliance", template: builtinFormTemplate("egress_lighting_compliance") } },
     },
-    { type: "create_sheet", sheetId: "sheet-e202", number: "E-202", name: "PHOTOMETRICS & EGRESS COMPLIANCE", discipline: "electrical", group: "Electrical", sortOrder: 504 },
-    { type: "place_viewport", viewportId: "vp-elec-photometrics", sheetId: "sheet-e202", viewId: "view-elec-photometrics", center: { x: 235, y: 175 } },
-    { type: "place_viewport", viewportId: "vp-elec-egress", sheetId: "sheet-e202", viewId: "view-elec-egress", center: { x: 235, y: 445 } },
-    { type: "place_viewport", viewportId: "vp-sched-photometrics", sheetId: "sheet-e202", viewId: "view-sched-photometrics", center: { x: 635, y: 185 } },
-    { type: "place_viewport", viewportId: "vp-sched-egress", sheetId: "sheet-e202", viewId: "view-sched-egress", center: { x: 635, y: 430 } },
+    { type: "create_sheet", sheetId: "sheet-e203", number: "E-203", name: "PHOTOMETRICS & EGRESS COMPLIANCE", discipline: "electrical", group: "Electrical", sortOrder: 505 },
+    { type: "place_viewport", viewportId: "vp-elec-photometrics", sheetId: "sheet-e203", viewId: "view-elec-photometrics", center: { x: 235, y: 175 } },
+    { type: "place_viewport", viewportId: "vp-elec-egress", sheetId: "sheet-e203", viewId: "view-elec-egress", center: { x: 235, y: 445 } },
+    { type: "place_viewport", viewportId: "vp-sched-photometrics", sheetId: "sheet-e203", viewId: "view-sched-photometrics", center: { x: 635, y: 185 } },
+    { type: "place_viewport", viewportId: "vp-sched-egress", sheetId: "sheet-e203", viewId: "view-sched-egress", center: { x: 635, y: 430 } },
 
     // ---- Plumbing Views & Sheets (P-101 Overall Water + Enlarged Wet Core + Riser + Schedule; P-102 Overall DWV + Enlarged DWV + Riser + Isometric) ----
     {

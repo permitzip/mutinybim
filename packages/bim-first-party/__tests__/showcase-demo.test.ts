@@ -190,6 +190,7 @@ describe("createShowcaseDemoModel", () => {
       "E-102",
       "E-201",
       "E-202",
+      "E-203",
       "M-101",
       "M-201",
       "P-101",
@@ -223,13 +224,24 @@ describe("createShowcaseDemoModel", () => {
       expect(svg).not.toContain("?? DIMENSION REFERENCE MISSING");
       if (sh.number === "E-201") {
         expect(svg.replace(/\u00a0/g, " ")).toContain("AFC 42 KA");
-        expect(svg).toContain("<a ");
       }
       if (sh.number === "E-202") {
+        expect(svg).toContain("LIGHTING CONTROLS");
+        expect(svg).toContain("<a ");
+      }
+      if (sh.number === "E-203") {
         expect(svg).toContain("PHOTOMETRICS (NORMAL)");
         expect(svg).toContain("EGRESS LIGHTING (NFPA 101)");
         expect(svg).toContain("PHOTOMETRIC SUMMARY SCHEDULE");
         expect(svg).toContain("EMERGENCY / EGRESS LIGHTING COMPLIANCE SCHEDULE");
+      }
+      if (sh.number === "M-101") {
+        // Level 1 Mech HVAC plan uses viewTopRef: "level_above" so 10'-8" plenum trunks show cleanly,
+        // and Air Device Schedule + plan display canonical Type Marks (SD-1, RG-1, EG-1).
+        expect(svg).toContain("SD-1");
+        expect(svg).toContain("RG-1");
+        expect(svg).toContain("EG-1");
+        expect(svg).toContain("16&quot;x10&quot;");
       }
       if (sh.number === "S-101") {
         expect(svg).toContain("PAD FOOTING SCHEDULE");
@@ -328,7 +340,7 @@ describe("createShowcaseDemoModel", () => {
     expect(mechL1?.kind).toBe("view");
     if (mechL1?.kind === "view") {
       expect(mechL1.props?.hiddenElementIds).toContain("cafe-island-l1");
-      expect(mechL1.props?.viewTopMm).toBe(Math.round(10 * 304.8));
+      expect(mechL1.props?.viewTopRef).toBe("level_above");
     }
 
     const distOneLine = model.elements["view-oneline-dist"];
@@ -357,20 +369,54 @@ describe("createShowcaseDemoModel", () => {
     const e001Svg = sceneToSvg(e001);
     expect(e001Svg).toContain("ELECTRICAL");
 
-    // Verify One-Line diagram renders existing-phase SD-1(E) in halftone and demolished SD-2(D) dashed + halftone
+    // Verify One-Line diagram renders existing-phase SD-1(E) in halftone and demolished SD-2(D) dashed + halftone,
+    // AND intelligently shrinks a panel bus bar when child loads are squished closer together via nodeOffsets.
     const fullOneLine = model.elements["view-oneline"];
     expect(fullOneLine?.kind).toBe("view");
     if (fullOneLine?.kind === "view") {
       const ev = evaluateDiagram(model.elements, fullOneLine);
       expect(ev?.items.some((it) => it.lineStyle?.tone === "halftone" && it.lineStyle?.pattern !== "dashed")).toBe(true);
       expect(ev?.items.some((it) => it.lineStyle?.tone === "halftone" && it.lineStyle?.pattern === "dashed")).toBe(true);
+
+      const heavyHorizSpans = (items: readonly { shape: string; points: readonly { x: number; y: number }[]; lineStyle?: { weight?: string } }[]) =>
+        items
+          .filter((it) => it.shape === "line" && it.lineStyle?.weight === "heavy" && it.points.length >= 2 && Math.abs(it.points[0]!.y - it.points[1]!.y) < 0.2)
+          .map((it) => Math.abs(it.points[1]!.x - it.points[0]!.x))
+          .reduce((sum, w) => sum + w, 0);
+
+      const totalBusBefore = heavyHorizSpans(ev?.items ?? []);
+      expect(totalBusBefore).toBeGreaterThan(50);
+      const squishedView = {
+        ...fullOneLine,
+        props: {
+          ...fullOneLine.props,
+          diagram: {
+            ...fullOneLine.props?.diagram!,
+            hints: {
+              ...fullOneLine.props?.diagram?.hints,
+              pins: {
+                "hw-mep-1": { dx: 30, dy: 0 },
+                "rec-tl": { dx: -30, dy: 0 },
+              },
+            },
+          },
+        },
+      };
+      const evAfter = evaluateDiagram(model.elements, squishedView);
+      const totalBusAfter = heavyHorizSpans(evAfter?.items ?? []);
+      expect(totalBusAfter).toBeLessThan(totalBusBefore - 10);
     }
 
-    // Verify Lighting Plan uses 45-degree chamfered wire routing and synced VIA TIME CLOCK home-run callout
+    // Verify Lighting Plan & Lighting Controls Plan both use Binoy (chamfered) wire routing
     const ltg = model.elements["view-elec-ltg"];
     expect(ltg?.kind).toBe("view");
     if (ltg?.kind === "view") {
       expect((ltg.props as { circuitGraphics?: { style?: string } } | undefined)?.circuitGraphics?.style).toBe("chamfered");
+    }
+    const ctrl = model.elements["view-elec-ctrl"];
+    expect(ctrl?.kind).toBe("view");
+    if (ctrl?.kind === "view") {
+      expect((ctrl.props as { circuitGraphics?: { style?: string } } | undefined)?.circuitGraphics?.style).toBe("chamfered");
     }
 
     // Verify special-purpose NEMA 6-20R, Twist-Lock, and Hardwired devices + home-run callouts + hideDeviceMarks on E-101

@@ -19,6 +19,7 @@ import { sectionById, type WideFlangeSection } from "./sections";
 /** Parameter keys the pack reads and writes. */
 export const STRUCT_KEYS = {
   section: "struct.section",
+  elasticModulus: "struct.elastic_modulus",
   occupancy: "struct.occupancy",
   /** The baseline Structural set's operating weight (bim-library parameter-sets.ts), stored on the part as `weight` in pounds. */
   operatingWeight: "struct.operating_weight",

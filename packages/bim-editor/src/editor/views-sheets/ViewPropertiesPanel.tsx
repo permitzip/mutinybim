@@ -851,32 +851,88 @@ function autoTopHint(view: ViewElement, levels: readonly Level[]): { readonly sh
 
 function HeightRangeFields({ view, levels, canEdit, set }: { view: ViewElement; levels: readonly Level[]; canEdit: boolean; set: (patch: ViewPropsPatch, label: string) => void }) {
   const props = view.props ?? {}
+  const isRcp = view.viewType === 'ceiling_plan'
   const cut = props.cutHeightMm ?? DEFAULT_CUT_HEIGHT_MM
   const autoTop = autoTopHint(view, levels)
+  const topMode: 'auto' | 'level_above' | 'associated_level' | 'unlimited' =
+    props.viewTopRef === 'unlimited'
+      ? 'unlimited'
+      : props.viewTopRef === 'level_above'
+        ? 'level_above'
+        : props.viewTopRef === 'associated_level' || props.viewTopMm !== undefined
+          ? 'associated_level'
+          : 'auto'
   return (
     <FieldSet id="view-range" data-testid="view-range" className="scroll-mt-4">
-      <FieldLegend variant="label">What this view shows</FieldLegend>
-      <FieldDescription className="text-xs">Heights above this level. Our model and the linked models both follow them.</FieldDescription>
-      <div className="grid grid-cols-2 gap-2">
-        <NumberField
-          key={`vp-top:${props.viewTopMm ?? 'none'}`}
-          id="vp-top"
-          label="Top (ft)"
-          value={props.viewTopMm === undefined ? null : props.viewTopMm / FT}
+      <FieldLegend variant="label">{isRcp ? 'Reflected ceiling view range' : 'What this view shows'}</FieldLegend>
+      <FieldDescription className="text-xs">
+        {isRcp
+          ? 'Looks up from the cut plane toward the ceiling and plenum above. Our model and linked models both follow it.'
+          : 'Heights relative to this level or the level above (Revit standard). Our model and linked models both follow them.'}
+      </FieldDescription>
+      <Field>
+        <FieldLabel htmlFor="vp-top-ref">Top plane</FieldLabel>
+        <Select
+          value={topMode}
           disabled={!canEdit}
-          optional
-          placeholder={autoTop.short}
-          description={props.viewTopMm === undefined ? `${autoTop.full}.` : 'Above this, nothing shows.'}
-          onCommit={(ft) => set({ viewTopMm: ft * FT }, 'change the top of the view')}
-          onClear={() => set({ viewTopMm: null }, 'reset top of the view to automatic')}
-        />
+          onValueChange={(v) => {
+            if (v === 'auto') set({ viewTopRef: null, viewTopMm: null }, 'reset view top to automatic (level above)')
+            else if (v === 'level_above') set({ viewTopRef: 'level_above', viewTopMm: 0 }, 'set view top to level above')
+            else if (v === 'associated_level') set({ viewTopRef: 'associated_level', viewTopMm: Math.max(cut, Math.round(12 * FT)) }, 'set view top relative to associated level')
+            else if (v === 'unlimited') set({ viewTopRef: 'unlimited', viewTopMm: null }, 'set view top to unlimited')
+          }}
+        >
+          <SelectTrigger id="vp-top-ref" size="sm" data-testid="vp-top-ref">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectGroup>
+              <SelectItem value="auto">Auto ({autoTop.short})</SelectItem>
+              <SelectItem value="level_above">Level above + offset</SelectItem>
+              <SelectItem value="associated_level">Associated level + offset</SelectItem>
+              <SelectItem value="unlimited">Unlimited (no upper clip)</SelectItem>
+            </SelectGroup>
+          </SelectContent>
+        </Select>
+      </Field>
+      <div className="grid grid-cols-2 gap-2">
+        {topMode === 'level_above' ? (
+          <NumberField
+            key={`vp-top-above:${props.viewTopMm ?? 0}`}
+            id="vp-top"
+            label="Offset from level above (ft)"
+            value={(props.viewTopMm ?? 0) / FT}
+            disabled={!canEdit}
+            allowNegative
+            description="0 = flush with next level; negative dips below slab."
+            onCommit={(ft) => set({ viewTopRef: 'level_above', viewTopMm: ft * FT }, 'change top offset from level above')}
+          />
+        ) : topMode === 'unlimited' ? (
+          <Field>
+            <FieldLabel>Top (ft)</FieldLabel>
+            <FieldDescription className="text-xs pt-1">Unlimited — overhead ductwork, piping, and roof gear always show.</FieldDescription>
+          </Field>
+        ) : (
+          <NumberField
+            key={`vp-top:${props.viewTopMm ?? 'none'}`}
+            id="vp-top"
+            label="Top (ft)"
+            value={props.viewTopMm === undefined ? null : props.viewTopMm / FT}
+            disabled={!canEdit}
+            optional
+            placeholder={autoTop.short}
+            description={props.viewTopMm === undefined ? `${autoTop.full}.` : 'Above this, nothing shows.'}
+            onCommit={(ft) => set({ viewTopRef: 'associated_level', viewTopMm: ft * FT }, 'change the top of the view')}
+            onClear={() => set({ viewTopRef: null, viewTopMm: null }, 'reset top of the view to automatic')}
+          />
+        )}
         <NumberField
           key={`vp-cut:${cut}`}
           id="vp-cut"
           label="Cut height (ft)"
           value={cut / FT}
           disabled={!canEdit}
-          description="Walls are cut here."
+          description={isRcp ? 'RCP looks upward from here.' : 'Walls are cut here.'}
           onCommit={(ft) => set({ cutHeightMm: ft * FT }, 'change the cut height')}
         />
         <NumberField
