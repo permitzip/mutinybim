@@ -791,10 +791,10 @@ export const KIT_ENTRIES: readonly KitEntry[] = [
   },
   {
     name: "documents.setViewportTitle",
-    summary: "Moves a placed viewport's title block on its sheet (`offset`) and/or changes the horizontal title underline length (`ruleLength`, or `null` to reset).",
-    signature: "setViewportTitle(ctx: ScriptContext, viewportId: string, spec: { offset?: { x: Measure; y: Measure }; ruleLength?: Measure | null }): void",
-    example: layout(`    const s = documents.sheet(ctx, { number: "A-101", name: "Floor Plan" });\n    const v = documents.planView(ctx, { level: "L1", name: "L1 Plan" });\n    const vp = documents.place(ctx, s, v, { x: units.mm(420), y: units.mm(300) });\n    documents.setViewportTitle(ctx, vp, { offset: { x: units.mm(0), y: units.mm(12) }, ruleLength: units.mm(95) });`),
-    topics: ["viewport", "view title", "title line", "sheet", "layout"],
+    summary: "Moves a placed viewport's title block on its sheet (`offset`), changes the horizontal title underline length (`ruleLength`, or `null` to reset), and shows or hides the view name (`showName`) and the scale (`showScale`). Absent switches stay on, and the detail number stays either way.",
+    signature: "setViewportTitle(ctx: ScriptContext, viewportId: string, spec: { offset?: { x: Measure; y: Measure }; ruleLength?: Measure | null; showName?: boolean; showScale?: boolean }): void",
+    example: layout(`    const s = documents.sheet(ctx, { number: "A-101", name: "Floor Plan" });\n    const v = documents.planView(ctx, { level: "L1", name: "L1 Plan" });\n    const vp = documents.place(ctx, s, v, { x: units.mm(420), y: units.mm(300) });\n    documents.setViewportTitle(ctx, vp, { offset: { x: units.mm(0), y: units.mm(12) }, ruleLength: units.mm(95), showName: true, showScale: false });`),
+    topics: ["viewport", "view title", "title line", "sheet", "layout", "view name", "scale"],
   },
   {
     name: "documents.setViewportNorthArrow",

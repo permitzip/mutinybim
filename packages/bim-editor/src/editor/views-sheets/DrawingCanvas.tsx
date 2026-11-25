@@ -2921,6 +2921,8 @@ export function DrawingCanvas({ target, model, sheetTitle, canEdit, blockedReaso
           <ViewportProperties
             name={selectedViewport.view.name}
             scale={selectedViewport.viewport.scale}
+            showName={selectedViewport.viewport.showName !== false}
+            showScale={selectedViewport.viewport.showScale !== false}
             size={selectedViewport.frame.size}
             isometric={selectedViewport.view.viewType === 'three_d'}
             canEdit={canEdit}
@@ -2929,6 +2931,8 @@ export function DrawingCanvas({ target, model, sheetTitle, canEdit, blockedReaso
             onEditHere={() => activate(selectedViewport.viewport.id)}
             onOpen={() => onOpenView(selectedViewport.view.id)}
             onScale={(scale) => send({ type: 'set_viewport_scale', viewportId: selectedViewport.viewport.id, scale }, 'change the viewport scale')}
+            onShowName={(show) => send({ type: 'set_viewport_title', viewportId: selectedViewport.viewport.id, showName: show }, show ? 'show the view name' : 'hide the view name')}
+            onShowScale={(show) => send({ type: 'set_viewport_title', viewportId: selectedViewport.viewport.id, showScale: show }, show ? 'show the scale' : 'hide the scale')}
             onRemove={() => {
               if (send({ type: 'remove_viewport', viewportId: selectedViewport.viewport.id }, 'take the view off the sheet')) setSelection(null)
             }}
@@ -3299,6 +3303,8 @@ function FieldBlockPanel({ item, block, model, canEdit, blockedReason, send, fre
 function ViewportProperties({
   name,
   scale,
+  showName,
+  showScale,
   size,
   isometric,
   canEdit,
@@ -3307,10 +3313,14 @@ function ViewportProperties({
   onEditHere,
   onOpen,
   onScale,
+  onShowName,
+  onShowScale,
   onRemove,
 }: {
   name: string
   scale: number
+  showName: boolean
+  showScale: boolean
   size: Vec2
   isometric: boolean
   canEdit: boolean
@@ -3319,6 +3329,8 @@ function ViewportProperties({
   onEditHere: () => void
   onOpen: () => void
   onScale: (scale: number) => void
+  onShowName: (show: boolean) => void
+  onShowScale: (show: boolean) => void
   onRemove: () => void
 }) {
   return (
@@ -3353,6 +3365,14 @@ function ViewportProperties({
           </SelectContent>
         </Select>
         <FieldDescription>{isometric ? '3D views print from their own camera, cropped to their 3D box; scale sets their size.' : canEdit ? 'The crop box stays; the frame grows or shrinks on paper.' : blockedReason}</FieldDescription>
+      </Field>
+      <Field orientation="horizontal">
+        <FieldLabel htmlFor="vp-show-name">Show view name</FieldLabel>
+        <Switch id="vp-show-name" checked={showName} disabled={!canEdit} onCheckedChange={onShowName} data-testid="viewport-show-name" />
+      </Field>
+      <Field orientation="horizontal">
+        <FieldLabel htmlFor="vp-show-scale">Show scale</FieldLabel>
+        <Switch id="vp-show-scale" checked={showScale} disabled={!canEdit} onCheckedChange={onShowScale} data-testid="viewport-show-scale" />
       </Field>
       <Tooltip>
         <TooltipTrigger asChild>

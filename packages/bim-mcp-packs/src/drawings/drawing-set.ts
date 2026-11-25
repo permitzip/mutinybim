@@ -244,13 +244,13 @@ export function registerBimDrawingSetTools(server: McpServer, caller: ResolveBim
     {
       title: "Move, resize, rescale or remove a viewport",
       description:
-        "Change a placed view on its sheet. action move: centre_in on paper (inches from the sheet's top-left). resize: the frame's size_in (the view's crop box follows at the viewport's scale; optional centre_in). scale: a new drawing scale (the frame grows or shrinks; the crop box stays). A live diagram or schedule is its own size: move only. A frame past the drawing area saves with a warning. north_arrow: show or hide. remove: take it off the sheet (the view is kept). Name the viewport by its view's name or id (optionally the sheet), or the viewport id. To place many at once, use bim_auto_layout_sheet.",
+        "Change a placed view on its sheet. action move: centre_in on paper (inches from the sheet's top-left). resize: the frame's size_in (the view's crop box follows at the viewport's scale; optional centre_in). scale: a new drawing scale (the frame grows or shrinks; the crop box stays). A live diagram or schedule is its own size: move only. A frame past the drawing area saves with a warning. north_arrow: show or hide. show_name and show_scale: print or hide the view name and the scale under the viewport (the detail number stays). remove: take it off the sheet (the view is kept). Name the viewport by its view's name or id (optionally the sheet), or the viewport id. To place many at once, use bim_auto_layout_sheet.",
       inputSchema: {
         ...target,
         ...baseRevision,
         viewport: z.string().min(1).max(200).describe("The placed view's name or id, or the viewport id."),
         sheet: sheetRef.optional(),
-        action: z.enum(["move", "resize", "scale", "north_arrow", "remove"]),
+        action: z.enum(["move", "resize", "scale", "north_arrow", "show_name", "show_scale", "remove"]),
         center_in: pointFt.optional().describe("Paper inches from the sheet's top-left."),
         size_in: pointFt.optional().describe("Frame width (x) and height (y), paper inches."),
         scale: scaleInput,
@@ -271,6 +271,10 @@ export function registerBimDrawingSetTools(server: McpServer, caller: ResolveBim
             return args.scale ? { type: "set_viewport_scale", viewportId, scale: args.scale } : "Rescaling needs scale.";
           case "north_arrow":
             return args.show === undefined ? "Give show: true or false." : { type: "set_viewport_north_arrow", viewportId, show: args.show };
+          case "show_name":
+            return args.show === undefined ? "Give show: true or false." : { type: "set_viewport_title", viewportId, showName: args.show };
+          case "show_scale":
+            return args.show === undefined ? "Give show: true or false." : { type: "set_viewport_title", viewportId, showScale: args.show };
           case "remove":
             return { type: "remove_viewport", viewportId };
         }

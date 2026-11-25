@@ -25,7 +25,7 @@ Every example below is a complete script that passes the kit's checks; the kit's
 - [`documents.setCrop`](#documentssetcrop): Sets a view's rectangular crop box (`from`/`to`) or custom closed polygonal `cropPolygon` (L-shape / P-line, or `null` to reset back to a rectangle), toggles cropView/showCropBox, or adjusts section/elevation far clip depth, level datum extensions (`levelLeftExtMm`/`levelRightExtMm`), and section mark `headExt`/`tailExt`/`splitGap`.
 - [`documents.duplicateView`](#documentsduplicateview): A copy of a view (another discipline's plan of the same level); returns the new id.
 - [`documents.place`](#documentsplace): Puts a view (a plan, a schedule, a detail) on a sheet at a point (its centre, from the sheet's lower-left corner), with optional scale and viewport title/north-arrow offsets; returns the viewport's id.
-- [`documents.setViewportTitle`](#documentssetviewporttitle): Moves a placed viewport's title block on its sheet (`offset`) and/or changes the horizontal title underline length (`ruleLength`, or `null` to reset).
+- [`documents.setViewportTitle`](#documentssetviewporttitle): Moves a placed viewport's title block on its sheet (`offset`), changes the horizontal title underline length (`ruleLength`, or `null` to reset), and shows or hides the view name (`showName`) and the scale (`showScale`).
 - [`documents.setViewportNorthArrow`](#documentssetviewportnortharrow): Shows, hides, or repositions a placed viewport's north arrow on its sheet (`offset`, or `null` to reset to the default corner).
 - [`documents.editSchedule`](#documentseditschedule): Edits a list schedule view in one undo step: add, move, remove or rename columns, filter, sort, group, totals (an equipment schedule's sort, a fixture schedule's DFU total).
 - [`documents.schedule`](#documentsschedule): A schedule view; returns its id.
@@ -611,13 +611,13 @@ export default defineScript({
 
 ## documents.setViewportTitle
 
-Moves a placed viewport's title block on its sheet (`offset`) and/or changes the horizontal title underline length (`ruleLength`, or `null` to reset).
+Moves a placed viewport's title block on its sheet (`offset`), changes the horizontal title underline length (`ruleLength`, or `null` to reset), and shows or hides the view name (`showName`) and the scale (`showScale`). Absent switches stay on, and the detail number stays either way.
 
 ```ts
-setViewportTitle(ctx: ScriptContext, viewportId: string, spec: { offset?: { x: Measure; y: Measure }; ruleLength?: Measure | null }): void
+setViewportTitle(ctx: ScriptContext, viewportId: string, spec: { offset?: { x: Measure; y: Measure }; ruleLength?: Measure | null; showName?: boolean; showScale?: boolean }): void
 ```
 
-Topics: viewport, view title, title line, sheet, layout
+Topics: viewport, view title, title line, sheet, layout, view name, scale
 
 <details><summary>Example script</summary>
 
@@ -631,7 +631,7 @@ export default defineScript({
     const s = documents.sheet(ctx, { number: "A-101", name: "Floor Plan" });
     const v = documents.planView(ctx, { level: "L1", name: "L1 Plan" });
     const vp = documents.place(ctx, s, v, { x: units.mm(420), y: units.mm(300) });
-    documents.setViewportTitle(ctx, vp, { offset: { x: units.mm(0), y: units.mm(12) }, ruleLength: units.mm(95) });
+    documents.setViewportTitle(ctx, vp, { offset: { x: units.mm(0), y: units.mm(12) }, ruleLength: units.mm(95), showName: true, showScale: false });
   },
 });
 ```

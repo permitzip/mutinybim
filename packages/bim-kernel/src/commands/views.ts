@@ -31,6 +31,7 @@ import {
   VIEW_TEMPLATES_FEATURE,
   VIEW_TOP_REFS,
   VIEWPORT_NORTH_ARROW_OFFSET_FEATURE,
+  VIEWPORT_TITLE_SWITCHES_FEATURE,
   type DrawingItem,
   type SheetProps,
   type ViewProps,
@@ -377,7 +378,7 @@ const documentRecord = z.discriminatedUnion("kind", [
     viewIds: z.array(id).max(500),
     props: z.object({ titleBlock: z.enum(TITLE_BLOCK_TYPES).optional(), titleBlockRow: titleBlockRowSchema.optional(), fields: fields.optional(), revisions: revisionsSchema.optional(), discipline: z.string().min(1).max(64).optional(), group: z.string().min(1).max(80).optional(), sortOrder: z.number().finite().optional() }).optional(),
   }),
-  z.object({ ...base, kind: z.literal("viewport"), sheetId: id, viewId: id, center: vec2, size: vec2, scale, northArrow: z.boolean().optional(), northArrowOffsetMm: vec2.optional(), titleOffsetMm: vec2.optional(), titleRuleMm: z.number().finite().min(20).max(600).optional() }),
+  z.object({ ...base, kind: z.literal("viewport"), sheetId: id, viewId: id, center: vec2, size: vec2, scale, northArrow: z.boolean().optional(), northArrowOffsetMm: vec2.optional(), titleOffsetMm: vec2.optional(), titleRuleMm: z.number().finite().min(20).max(600).optional(), showName: z.boolean().optional(), showScale: z.boolean().optional() }),
   z.object({
     ...base,
     kind: z.literal("drawing_item"),
@@ -514,8 +515,8 @@ export const viewCommandSchemas = [
   z.object({ type: z.literal("set_viewport_scale"), viewportId: id, scale }),
   /** Show, hide, or reposition the viewport's north arrow on its sheet (it turns itself to true north). */
   z.object({ type: z.literal("set_viewport_north_arrow"), viewportId: id, show: z.boolean().optional(), offsetMm: vec2.nullable().optional() }),
-  /** Move a placed viewport's title block on its sheet and/or adjust its horizontal title rule length (Revit viewport title grips). */
-  z.object({ type: z.literal("set_viewport_title"), viewportId: id, titleOffsetMm: vec2.optional(), titleRuleMm: z.number().finite().min(20).max(600).nullable().optional() }),
+  /** Move a placed viewport's title block on its sheet, adjust its horizontal title rule length, or show and hide the view name and the scale. */
+  z.object({ type: z.literal("set_viewport_title"), viewportId: id, titleOffsetMm: vec2.optional(), titleRuleMm: z.number().finite().min(20).max(600).nullable().optional(), showName: z.boolean().optional(), showScale: z.boolean().optional() }),
   z.object({ type: z.literal("remove_viewport"), viewportId: id }),
   z.object({
     type: z.literal("add_drawing_item"),
@@ -1771,6 +1772,9 @@ export function executeViewCommand(model: ModelState, command: ViewCommand): Exe
       }
       case "set_viewport_title": {
         const vp = live(reader, command.viewportId, "viewport", "The viewport");
+        if ((command.showName !== undefined || command.showScale !== undefined) && !peerReads(VIEWPORT_TITLE_SWITCHES_FEATURE)) {
+          fail("Viewport name and scale switches can't be saved yet: the model server this model is open on is an older version. Try again once it is updated.", [vp.id]);
+        }
         let next = vp;
         if (command.titleOffsetMm !== undefined) {
           const titleOffsetMm = roundVec(command.titleOffsetMm);
@@ -1787,6 +1791,14 @@ export function executeViewCommand(model: ModelState, command: ViewCommand): Exe
             next = { ...next, titleRuleMm };
             authored.push({ elementId: vp.id, field: F.titleRuleMm, value: canonicalJson(titleRuleMm) });
           }
+        }
+        if (command.showName !== undefined) {
+          next = { ...next, showName: command.showName };
+          authored.push({ elementId: vp.id, field: F.showName, value: String(command.showName) });
+        }
+        if (command.showScale !== undefined) {
+          next = { ...next, showScale: command.showScale };
+          authored.push({ elementId: vp.id, field: F.showScale, value: String(command.showScale) });
         }
         write(next);
         break;

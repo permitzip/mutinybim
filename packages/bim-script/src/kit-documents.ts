@@ -1303,17 +1303,19 @@ export const documents = {
     });
     return viewportId;
   },
-  /** Moves a placed viewport's title block on its sheet and/or changes its title horizontal rule length (Revit viewport title grips). */
+  /** Moves a placed viewport's title block on its sheet, changes its title horizontal rule length, or shows and hides the view name and the scale. */
   setViewportTitle(
     ctx: ScriptContext,
     viewportId: string,
-    spec: { readonly offset?: { readonly x: Measure; readonly y: Measure }; readonly ruleLength?: Measure | null },
+    spec: { readonly offset?: { readonly x: Measure; readonly y: Measure }; readonly ruleLength?: Measure | null; readonly showName?: boolean; readonly showScale?: boolean },
   ): void {
     ctx.edit({
       type: "set_viewport_title",
       viewportId,
       ...(spec.offset ? { titleOffsetMm: { x: mm(spec.offset.x, "Title offset x"), y: mm(spec.offset.y, "Title offset y") } } : {}),
       ...(spec.ruleLength !== undefined ? { titleRuleMm: spec.ruleLength === null ? null : mm(spec.ruleLength, "Title rule length") } : {}),
+      ...(spec.showName !== undefined ? { showName: spec.showName } : {}),
+      ...(spec.showScale !== undefined ? { showScale: spec.showScale } : {}),
     });
   },
   /** Shows, hides, or repositions a placed viewport's north arrow on its sheet. */

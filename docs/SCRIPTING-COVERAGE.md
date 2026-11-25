@@ -158,7 +158,7 @@ The `core` family is the catalogue's core pack less the four reads already in th
 | `bim_set_sheet_properties` | `documents.setSheet`; ctx.edit: `set_sheet_properties` | covered | script covers it → retirement candidate (maintainer's call) |
 | `bim_delete_sheet` | ctx.edit: `delete_sheet` | covered | script covers it → retirement candidate (maintainer's call) |
 | `bim_place_viewport` | `documents.place`; ctx.edit: `place_viewport` | covered | script covers it → retirement candidate (maintainer's call) |
-| `bim_edit_viewport` | ctx.edit: `move_viewport`, `resize_viewport`, `set_viewport_scale`, `set_viewport_north_arrow`, `remove_viewport` | covered | script covers it → retirement candidate (maintainer's call) |
+| `bim_edit_viewport` | `documents.setViewportTitle` (`showName`, `showScale`); ctx.edit: `move_viewport`, `resize_viewport`, `set_viewport_scale`, `set_viewport_north_arrow`, `set_viewport_title`, `remove_viewport` | covered | script covers it → retirement candidate (maintainer's call) |
 | `bim_preview_sheet_layout` | `documents.packSheet` in `bim_run_script` (the run is the preview) | covered | script covers it → retirement candidate (maintainer's call) |
 | `bim_auto_layout_sheet` | `documents.packSheet(ctx, sheet, { mode, fitScales })` | covered | script covers it → retirement candidate (maintainer's call) |
 | `bim_set_issue_status` | none | host step | issue status is recorded by the host's issuing |

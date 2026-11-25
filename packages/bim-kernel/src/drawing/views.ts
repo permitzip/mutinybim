@@ -2717,19 +2717,21 @@ export function buildSheetSceneFor(model: ModelState, sheetId: string, opts: She
     drawView(prims, tags, model, view, frame, opts.backgrounds?.[view.id] ?? [], blocks);
     // A schedule carries its own title row.
     if (view.viewType === "schedule") continue;
+    const showName = viewport.showName !== false;
+    const showScale = viewport.showScale !== false;
     const scaleText = view.viewType === "three_d" ? (view.props?.camera3d ? "3D VIEW, NOT TO SCALE" : "NOT TO SCALE (ISOMETRIC)") : view.viewType === "detail" && viewport.scale === 1 ? "SCALE: NONE" : `SCALE: ${scaleLabel(viewport.scale)}`;
     const backRef = referencingSheet(model, view);
-    const tl = viewportTitleLayout(frame, viewport, view.name, !!backRef);
+    const tl = viewportTitleLayout(frame, viewport, showName ? view.name : "", !!backRef);
     if (backRef) {
       // NCS / Revit back-referenced view title: split circle (detail# / referencing sheet) + rule + title/scale.
       drawViewTitleBubble(tl.bubbleCenter, String(number), backRef.sheetNumber, prims);
       prims.push({ kind: "line", a: { x: tl.ruleStartX, y: tl.ruleY }, b: { x: tl.ruleEndX, y: tl.ruleY }, pen: "wide" });
-      prims.push({ kind: "text", at: { x: tl.textX, y: tl.ruleY - 1.5 }, text: view.name.toUpperCase(), size: 3.5, anchor: "start", bold: true });
-      prims.push({ kind: "text", at: { x: tl.textX, y: tl.ruleY + 4.0 }, text: scaleText, size: 2.2, anchor: "start" });
+      if (showName) prims.push({ kind: "text", at: { x: tl.textX, y: tl.ruleY - 1.5 }, text: view.name.toUpperCase(), size: 3.5, anchor: "start", bold: true });
+      if (showScale) prims.push({ kind: "text", at: { x: tl.textX, y: tl.ruleY + 4.0 }, text: scaleText, size: 2.2, anchor: "start" });
     } else {
       prims.push({ kind: "line", a: { x: tl.ruleStartX, y: tl.ruleY }, b: { x: tl.ruleEndX, y: tl.ruleY }, pen: "wide" });
-      prims.push({ kind: "text", at: { x: tl.textX, y: tl.titleY }, text: `${number}  ${view.name.toUpperCase()}`, size: 3.5, anchor: "start", bold: true });
-      prims.push({ kind: "text", at: { x: tl.textX, y: tl.titleY + 5.5 }, text: scaleText, size: 2.2, anchor: "start" });
+      prims.push({ kind: "text", at: { x: tl.textX, y: tl.titleY }, text: showName ? `${number}  ${view.name.toUpperCase()}` : String(number), size: 3.5, anchor: "start", bold: true });
+      if (showScale) prims.push({ kind: "text", at: { x: tl.textX, y: tl.titleY + 5.5 }, text: scaleText, size: 2.2, anchor: "start" });
     }
     const arrow = viewportNorthArrow(model, viewport, view);
     // Beside the title (plus any user drag offset), low enough that the N clears the frame whichever way it points.

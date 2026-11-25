@@ -403,6 +403,8 @@ export const VIEW_TYP_LABELS_FEATURE = "views:typ_labels";
 export const VIEW_ANALYSIS_OVERLAY_FEATURE = "views:analysis_overlay";
 /** Peers that store per-viewport north-arrow sheet offsets and accept offset-only `set_viewport_north_arrow` commands. */
 export const VIEWPORT_NORTH_ARROW_OFFSET_FEATURE = "documents:viewport_north_arrow_offset";
+/** Peers that store per-viewport switches for printing the view name and the scale (`Viewport.showName`, `Viewport.showScale`). */
+export const VIEWPORT_TITLE_SWITCHES_FEATURE = "documents:viewport_title_switches";
 /** Peers that store per-view hidden element lists (`ViewProps.hiddenElementIds`). */
 export const VIEW_HIDDEN_ELEMENTS_FEATURE = "views:hidden_elements";
 
@@ -489,6 +491,10 @@ export interface Viewport {
   readonly titleOffsetMm?: Vec2;
   /** Optional explicit paper-mm length of the viewport title horizontal rule line (Revit draggable title bar end). */
   readonly titleRuleMm?: number;
+  /** Print the view name on the sheet title. Absent: on. The detail number stays either way. */
+  readonly showName?: boolean;
+  /** Print the scale on the sheet title. Absent: on. */
+  readonly showScale?: boolean;
   /** Removed (kept so undo can bring it back). */
   readonly deleted?: boolean;
 }

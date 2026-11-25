@@ -678,7 +678,7 @@ Input: `project_id`, `model_id`, `base_revision`?, `sheet`, `view`, `center_in`,
 
 ### bim_edit_viewport
 
-Change a placed view on its sheet. action move: centre_in on paper (inches from the sheet's top-left). resize: the frame's size_in (the view's crop box follows at the viewport's scale; optional centre_in). scale: a new drawing scale (the frame grows or shrinks; the crop box stays). A live diagram or schedule is its own size: move only. A frame past the drawing area saves with a warning. north_arrow: show or hide. remove: take it off the sheet (the view is kept). Name the viewport by its view's name or id (optionally the sheet), or the viewport id. To place many at once, use bim_auto_layout_sheet.
+Change a placed view on its sheet. action move: centre_in on paper (inches from the sheet's top-left). resize: the frame's size_in (the view's crop box follows at the viewport's scale; optional centre_in). scale: a new drawing scale (the frame grows or shrinks; the crop box stays). A live diagram or schedule is its own size: move only. A frame past the drawing area saves with a warning. north_arrow: show or hide. show_name and show_scale: print or hide the view name and the scale under the viewport (the detail number stays). remove: take it off the sheet (the view is kept). Name the viewport by its view's name or id (optionally the sheet), or the viewport id. To place many at once, use bim_auto_layout_sheet.
 
 Input: `project_id`, `model_id`, `base_revision`?, `viewport`, `sheet`?, `action`, `center_in`?, `size_in`?, `scale`?, `show`?
 
