@@ -334,7 +334,7 @@ describe("createShowcaseDemoModel", () => {
     const distOneLine = model.elements["view-oneline-dist"];
     expect(distOneLine?.kind).toBe("view");
     if (distOneLine?.kind === "view") {
-      expect(distOneLine.props?.diagram?.hints?.minBreakerA).toBe(60);
+      expect(distOneLine.props?.diagram?.hints?.minLoadRatingA).toBe(60);
       expect(distOneLine.props?.diagram?.hints?.phaseScope).toBe("new");
       const ev = evaluateDiagram(model.elements, distOneLine);
       expect(ev?.items.length ?? 0).toBeGreaterThan(10);

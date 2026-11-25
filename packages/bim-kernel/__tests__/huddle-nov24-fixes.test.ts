@@ -370,13 +370,13 @@ describe("Nov 24 huddle kernel fixes", () => {
     // Verify DIAGRAM_FILTERS_FEATURE gating on set_view_properties.
     model = run(model, { type: "create_view", viewId: "v-sld", name: "SLD", viewType: "detail", props: { diagram: { kind: "one_line" } } });
     const gatedDiag = withUpgradePolicy(() => false, () =>
-      executeCommand(model, commandSchema.parse({ type: "set_view_properties", viewId: "v-sld", props: { diagram: { kind: "one_line", hints: { minBreakerA: 60 } } } })),
+      executeCommand(model, commandSchema.parse({ type: "set_view_properties", viewId: "v-sld", props: { diagram: { kind: "one_line", hints: { minLoadRatingA: 60 } } } })),
     );
     expect(gatedDiag.ok).toBe(false);
     model = withUpgradePolicy((f) => f === DIAGRAM_FILTERS_FEATURE, () =>
-      run(model, { type: "set_view_properties", viewId: "v-sld", props: { diagram: { kind: "one_line", hints: { minBreakerA: 60, phaseScope: "demolition" } } } }),
+      run(model, { type: "set_view_properties", viewId: "v-sld", props: { diagram: { kind: "one_line", hints: { minLoadRatingA: 60, phaseScope: "demolition" } } } }),
     );
-    expect((model.elements["v-sld"] as ViewElement).props?.diagram?.hints?.minBreakerA).toBe(60);
+    expect((model.elements["v-sld"] as ViewElement).props?.diagram?.hints?.minLoadRatingA).toBe(60);
     expect((model.elements["v-sld"] as ViewElement).props?.diagram?.hints?.phaseScope).toBe("demolition");
   });
 });

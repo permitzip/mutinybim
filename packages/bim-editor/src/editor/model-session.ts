@@ -537,8 +537,9 @@ export class ModelSession {
   private referenceInfo = new Map<string, ReferenceInfo>()
   private unplaced = new Map<string, Map<string, UnplacedElementView>>()
   private revitParametersUrl: string | null = null
-  /** Your views/sheets edits, undone client-side by restoring the records (no redo). */
+  /** Your views/sheets edits, undone and redone client-side by restoring the records. */
   private readonly documentUndoStack: DocumentUndo[] = []
+  private readonly documentRedoStack: DocumentUndo[] = []
   /** Orders both undo stacks, so Undo takes back whichever of your edits is newest. */
   private undoSeq = 0
   /** Bumped on every selection, so a slow answer for an earlier pick never overwrites the current one. */
@@ -873,6 +874,7 @@ export class ModelSession {
     this.undoStack = []
     this.redoStack = []
     this.documentUndoStack.length = 0
+    this.documentRedoStack.length = 0
     this.undoing.clear()
     this.emitUndoState()
     this.people.clear()
@@ -2273,19 +2275,28 @@ export class ModelSession {
       this.undoStack.push({ revision: outcome.revision, label: describeCommand(this.accepted, request.command), seq: ++this.undoSeq })
       if (this.undoStack.length > 100) this.undoStack.shift()
       this.redoStack = []
+      this.documentRedoStack.length = 0
     }
     this.emitUndoState()
     if (!undo && this.view) this.events.onSaved?.(request.command, this.view)
   }
 
   undoState(): UndoState {
-    return { undo: this.newestUndo()?.label ?? null, redo: this.redoStack[this.redoStack.length - 1]?.label ?? null }
+    return { undo: this.newestUndo()?.label ?? null, redo: this.newestRedo()?.label ?? null }
   }
 
   /** Your newest undoable edit, from either stack. */
   private newestUndo(): { readonly kind: 'model' | 'document'; readonly label: string } | null {
     const model = this.undoStack[this.undoStack.length - 1]
     const doc = this.documentUndoStack[this.documentUndoStack.length - 1]
+    if (doc && (!model || doc.seq > model.seq)) return { kind: 'document', label: doc.label }
+    return model ? { kind: 'model', label: model.label } : null
+  }
+
+  /** Your newest redoable edit, from either stack. */
+  private newestRedo(): { readonly kind: 'model' | 'document'; readonly label: string } | null {
+    const model = this.redoStack[this.redoStack.length - 1]
+    const doc = this.documentRedoStack[this.documentRedoStack.length - 1]
     if (doc && (!model || doc.seq > model.seq)) return { kind: 'document', label: doc.label }
     return model ? { kind: 'model', label: model.label } : null
   }
@@ -2310,6 +2321,16 @@ export class ModelSession {
   }
 
   redo(): string | null {
+    if (this.newestRedo()?.kind === 'document') {
+      const res = this.redoDocumentEdit()
+      this.emitUndoState()
+      if (res.ok) {
+        this.events.onActivity(`Redid ${res.label}.`)
+        return null
+      }
+      this.events.onRefused?.(res.message)
+      return res.message
+    }
     return this.step('redo')
   }
 
@@ -4014,6 +4035,8 @@ export class ModelSession {
       }
       this.documentUndoStack.push(entry)
       if (this.documentUndoStack.length > 50) this.documentUndoStack.shift()
+      this.documentRedoStack.length = 0
+      this.redoStack = []
       this.emitUndoState()
     }
     return null
@@ -4048,6 +4071,46 @@ export class ModelSession {
     const refusal = this.submitCommand({ type: 'restore_document_elements', items })
     if (refusal) return { ok: false, message: refusal }
     this.documentUndoStack.pop()
+    this.documentRedoStack.push({ ...entry, seq: ++this.undoSeq })
+    if (this.documentRedoStack.length > 50) this.documentRedoStack.shift()
+    return { ok: true, label: entry.label }
+  }
+
+  /**
+   * Redo your last undone views/sheets change, unless someone changed the same
+   * element since (then nothing changes and the reason comes back).
+   */
+  redoDocumentEdit(): { ok: true; label: string } | { ok: false; message: string } {
+    const kernel = this.kernel
+    const view = this.client?.view()
+    const entry = this.documentRedoStack[this.documentRedoStack.length - 1]
+    if (!kernel || !view) return { ok: false, message: "Live editing isn't connected, so nothing can be redone." }
+    if (!entry) return { ok: false, message: 'Nothing to redo.' }
+    const strip = (el: BimElement) => kernel.canonicalJson({ ...el, version: 0, authoredRev: {} })
+    const items = []
+    for (const [id, after] of Object.entries(entry.after)) {
+      const current = view.elements[id]
+      if (!current) {
+        this.documentRedoStack.pop()
+        return { ok: false, message: `Someone changed this since your undo, so redo would overwrite their work. Nothing was redone.` }
+      }
+      const prior = entry.before[id] ?? null
+      const matchesPrior =
+        prior === null
+          ? (current as { readonly deleted?: boolean }).deleted === true
+          : strip(current) === strip(prior)
+      if (!matchesPrior) {
+        this.documentRedoStack.pop()
+        return { ok: false, message: `Someone changed this since your undo, so redo would overwrite their work. Nothing was redone.` }
+      }
+      const record = kernel.toDocumentRecord(after)
+      items.push({ elementId: id, before: record, expectedVersion: current.version })
+    }
+    const refusal = this.submitCommand({ type: 'restore_document_elements', items })
+    if (refusal) return { ok: false, message: refusal }
+    this.documentRedoStack.pop()
+    this.documentUndoStack.push({ ...entry, seq: ++this.undoSeq })
+    if (this.documentUndoStack.length > 50) this.documentUndoStack.shift()
     return { ok: true, label: entry.label }
   }
 

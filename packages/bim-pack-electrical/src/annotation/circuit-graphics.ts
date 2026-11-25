@@ -678,26 +678,75 @@ function squarePath(a: Node, b: Node, corners: readonly Vec2[]): Vec2[] {
   return pts.filter((q, i) => i === 0 || dist(q, pts[i - 1] ?? q) > 0.5);
 }
 
+/** Outward room unit normal for a wall-hosted part (`+Y` in part local space), or null for free-standing parts. */
+function wallRoomNormal(node: Node): Vec2 | null {
+  if (node.part.host?.kind !== "wall_face") return null;
+  const rad = (node.part.rotationDeg * Math.PI) / 180;
+  return { x: -Math.sin(rad), y: Math.cos(rad) };
+}
+
+/** Furthest extent (model mm) of `node`'s rendered symbol outline along unit vector `dir` from `node.point`. */
+function symbolExtentAlong(node: Node, dir: Vec2): number {
+  let max = 0;
+  for (const o of node.outline) {
+    if (o.kind === "circle") {
+      const proj = (o.c.x - node.point.x) * dir.x + (o.c.y - node.point.y) * dir.y + o.r;
+      if (proj > max) max = proj;
+    } else {
+      const p1 = (o.a.x - node.point.x) * dir.x + (o.a.y - node.point.y) * dir.y;
+      const p2 = (o.b.x - node.point.x) * dir.x + (o.b.y - node.point.y) * dir.y;
+      if (p1 > max) max = p1;
+      if (p2 > max) max = p2;
+    }
+  }
+  return max;
+}
+
 /**
  * Square routes from a to b, shortest first: the two L corners (or the
  * straight run when they line up), then the same shapes with one run pushed
  * sideways by 1, 2, 3 offsets either way, so a run that would sit on top of
  * another can step beside it instead.
+ * When both endpoints are wall-mounted facing the same room along an aligned
+ * wall, stepping outward into the room comes first so wires don't slice through
+ * adjacent receptacles along the wall face.
  */
-function squareCandidates(a: Vec2, b: Vec2, step: number): Vec2[][] {
-  const aligned = Math.abs(a.x - b.x) < 1 || Math.abs(a.y - b.y) < 1;
-  const out: Vec2[][] = aligned ? [[]] : [[{ x: b.x, y: a.y }], [{ x: a.x, y: b.y }]];
-  const horizontal = Math.abs(a.y - b.y) < 1;
+function squareCandidates(a: Node, b: Node, step: number): Vec2[][] {
+  const ap = a.point;
+  const bp = b.point;
+  const aligned = Math.abs(ap.x - bp.x) < 1 || Math.abs(ap.y - bp.y) < 1;
+  const horizontal = Math.abs(ap.y - bp.y) < 1;
+  const out: Vec2[][] = [];
+  if (aligned) {
+    const na = wallRoomNormal(a);
+    const nb = wallRoomNormal(b);
+    const sameWallFace = na && nb && na.x * nb.x + na.y * nb.y > 0.7;
+    const perpWall = sameWallFace && (horizontal ? Math.abs(na.y) > 0.7 : Math.abs(na.x) > 0.7);
+    if (perpWall && na && nb) {
+      const sign = horizontal ? (na.y >= 0 ? 1 : -1) : (na.x >= 0 ? 1 : -1);
+      // Clear both symbol graphics plus enough leg length for a clean rounded fillet off the wall.
+      // Stay strictly on the room side so wires never slice along the wall face or loop behind the wall.
+      const clearOut = Math.max(symbolExtentAlong(a, na), symbolExtentAlong(b, nb)) + Math.max(step * 2.5, 220);
+      for (let k = 0; k <= SQUARE_OFFSETS; k++) {
+        const o = sign * (clearOut + k * step);
+        out.push(horizontal ? [{ x: ap.x, y: ap.y + o }, { x: bp.x, y: ap.y + o }] : [{ x: ap.x + o, y: ap.y }, { x: ap.x + o, y: bp.y }]);
+      }
+      return out;
+    }
+    out.push([]);
+  } else {
+    out.push([{ x: bp.x, y: ap.y }], [{ x: ap.x, y: bp.y }]);
+  }
   for (let k = 1; k <= SQUARE_OFFSETS; k++) {
     for (const o of [k * step, -k * step]) {
       if (aligned) {
-        out.push(horizontal ? [{ x: a.x, y: a.y + o }, { x: b.x, y: a.y + o }] : [{ x: a.x + o, y: a.y }, { x: a.x + o, y: b.y }]);
+        out.push(horizontal ? [{ x: ap.x, y: ap.y + o }, { x: bp.x, y: ap.y + o }] : [{ x: ap.x + o, y: ap.y }, { x: ap.x + o, y: bp.y }]);
         continue;
       }
-      out.push([{ x: a.x, y: a.y + o }, { x: b.x, y: a.y + o }]);
-      out.push([{ x: a.x + o, y: a.y }, { x: a.x + o, y: b.y }]);
-      out.push([{ x: b.x + o, y: a.y }, { x: b.x + o, y: b.y }]);
-      out.push([{ x: a.x, y: b.y + o }, { x: b.x, y: b.y + o }]);
+      out.push([{ x: ap.x, y: ap.y + o }, { x: bp.x, y: ap.y + o }]);
+      out.push([{ x: ap.x + o, y: ap.y }, { x: ap.x + o, y: bp.y }]);
+      out.push([{ x: bp.x + o, y: ap.y }, { x: bp.x + o, y: bp.y }]);
+      out.push([{ x: ap.x, y: bp.y + o }, { x: bp.x, y: bp.y + o }]);
     }
   }
   return out;
@@ -838,7 +887,7 @@ function squareJoin(a: Node, b: Node, waypoints: readonly Vec2[] | undefined, dr
   let best: Vec2[] | null = null;
   let bestOverlap = Infinity;
   let bestLength = Infinity;
-  for (const corners of squareCandidates(a.point, b.point, step)) {
+  for (const corners of squareCandidates(a, b, step)) {
     const path = squarePath(a, b, corners);
     const over = drawn.overlap(path);
     const length = pathLength(path);
@@ -1075,7 +1124,13 @@ function linkGraphic(model: ModelState, link: ServiceLink, shown: ReadonlyMap<st
         if (viaMatch) tags.push(viaMatch[0]);
         const cond = l.electrical?.conductors;
         const rating = l.electrical?.ratingA;
-        if (cond && rating && ((rating <= 20 && cond.phaseSize !== "12" && cond.phaseSize !== "14") || (rating <= 30 && cond.phaseSize !== "10" && cond.phaseSize !== "12"))) {
+        if (
+          settings.style === "chamfered" &&
+          cond &&
+          rating &&
+          ((rating <= 20 && cond.phaseSize !== "12" && cond.phaseSize !== "14") ||
+            (rating > 20 && rating <= 30 && cond.phaseSize !== "10" && cond.phaseSize !== "12"))
+        ) {
           tags.push(`#${cond.phaseSize} ${cond.material.toUpperCase()}`);
         }
         if (tags.length > 0) parts.push(`(${tags.join(", ")})`);

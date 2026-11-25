@@ -28,7 +28,7 @@ import {
 } from '@permitzip/bim-kernel'
 import { DRAFTING_GRID_MM, snapPoint, type Snap } from '../architecture/tools/snap'
 import { endDragHint, endDropCommand } from '../architecture/WallEndGrips'
-import { isSelectableUnderLocks, useSelectionLocks } from '../selection-locks'
+import { isElementLockedInModel, isSelectableUnderLocks, useSelectionLocks } from '../selection-locks'
 import {
   WireContextMenu,
   previewWireCurve,
@@ -186,7 +186,7 @@ export function ModelDrawingLayer({ model, view, bridge, paperOf, paperMmPerPx, 
   const [drag, setDrag] = useState<Drag | null>(null)
   const [wallEndDrag, setWallEndDrag] = useState<{ readonly wallId: string; readonly end: 'start' | 'end'; readonly at: Vec2; readonly snap: Snap | null; readonly disjoin: boolean } | null>(null)
   const overlapRef = useRef<{ stack: string[]; idx: number }>({ stack: [], idx: 0 })
-  const pickIdsAt = (p: Vec2): string[] => idsAt(index, view, p, paperMmPerPx).filter((id) => isSelectableUnderLocks(model.elements[id], locks))
+  const pickIdsAt = (p: Vec2): string[] => idsAt(index, view, p, paperMmPerPx).filter((id) => isSelectableUnderLocks(model.elements[id], locks, model))
   /** Split or Route: where the tool would act under the pointer (a tick on the duct, or the next route point). */
   const [toolMark, setToolMark] = useState<{ readonly paper: Vec2; readonly label: string } | null>(null)
   const r = view.paperRect
@@ -957,6 +957,19 @@ export function ModelDrawingLayer({ model, view, bridge, paperOf, paperMmPerPx, 
   })
   const overSelected = hover !== null && hover.some((id) => bridge.selectedIds.includes(id))
 
+  const lockedOutlines = useMemo(() => {
+    if (!locks.showLocked) return []
+    const out: Array<{ readonly id: string; readonly poly: readonly Vec2[] }> = []
+    for (const id of index.footprints.keys()) {
+      if (out.length >= MAX_OUTLINES) break
+      const el = model.elements[id]
+      if (!el || !isElementLockedInModel(model, el)) continue
+      const poly = outlineOnPaper(index, view, id)
+      if (poly) out.push({ id, poly })
+    }
+    return out
+  }, [locks.showLocked, index, model, view])
+
   // "+" grip: on the one selected (else hovered) element when nothing serves it and a network says what could.
   const gripId = bridge.canEdit && !drag ? (bridge.selectedIds.length === 1 ? bridge.selectedIds[0] : hover?.length === 1 ? hover[0] : undefined) : undefined
   const gripAnswer = useMemo(() => (gripId ? gripFor(model, asElementId(gripId)) : null), [model, gripId])
@@ -972,6 +985,19 @@ export function ModelDrawingLayer({ model, view, bridge, paperOf, paperMmPerPx, 
         </clipPath>
       </defs>
       <g clipPath={`url(#${clipId})`} pointerEvents="none">
+        {lockedOutlines.map(({ id, poly }) => (
+          <polygon
+            key={`lk-${id}`}
+            points={points(poly)}
+            fill="#f59e0b"
+            fillOpacity={0.14}
+            stroke="#d97706"
+            strokeWidth={0.45}
+            strokeDasharray="1.4 0.9"
+            data-testid="model-locked-outline"
+            data-element-id={id}
+          />
+        ))}
         {selectedOutlines.map(({ id, poly }) => (
           <polygon key={`s-${id}`} points={points(poly)} fill={PRIMARY} fillOpacity={0.14} stroke={PRIMARY} strokeWidth={0.5} data-testid="model-selected-outline" data-element-id={id} />
         ))}

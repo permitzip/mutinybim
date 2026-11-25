@@ -2010,7 +2010,7 @@ function buildShowcase(modelId: string): ModelState {
         scale: 96,
         discipline: "electrical",
         categoryOverrides: ELEC_POWER_L2_HIDE,
-        circuitGraphics: { hashMarksOn: "home_runs" },
+        circuitGraphics: { style: "chamfered", hashMarksOn: "home_runs" },
       },
     },
     {
@@ -2083,7 +2083,7 @@ function buildShowcase(modelId: string): ModelState {
             showLoads: true,
             showWarnings: true,
             faultCurrent: true,
-            minBreakerA: 60,
+            minLoadRatingA: 60,
             phaseScope: "new",
             includeEquipmentIds: ["rtu-1"],
           },

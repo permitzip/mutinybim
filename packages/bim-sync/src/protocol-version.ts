@@ -230,7 +230,7 @@ export const PROTOCOL_FEATURES = {
   draftingCadStandards: DRAFTING_CAD_STANDARDS_FEATURE,
   /** Per-view hidden element lists (`ViewProps.hiddenElementIds`). */
   viewsHiddenElements: VIEW_HIDDEN_ELEMENTS_FEATURE,
-  /** Diagram breaker-size and phase-scope filters (`minBreakerA`, `phaseScope`). */
+  /** Diagram load-rating and phase-scope filters (`minLoadRatingA`, `phaseScope`). */
   diagramsFilters: DIAGRAM_FILTERS_FEATURE,
   /** Per-element and per-category model locks (`set_element_locks`, `lock_category`). */
   organizationElementLocks: ORGANIZATION_ELEMENT_LOCKS_FEATURE,

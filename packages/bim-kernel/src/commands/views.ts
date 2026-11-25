@@ -871,7 +871,7 @@ function checkProps(viewType: ViewElement["viewType"], props: ViewProps, viewId:
   const isPlan = viewType === "floor_plan" || viewType === "ceiling_plan";
   if (props.diagram?.hints?.faultCurrent !== undefined && !peerReads(DIAGRAM_FAULT_CURRENT_FEATURE)) fail("Show fault current can't be saved yet: the model server this model is open on is an older version. Try again once the server is updated.", [viewId]);
   if (
-    (props.diagram?.hints?.minBreakerA !== undefined ||
+    (props.diagram?.hints?.minLoadRatingA !== undefined ||
       props.diagram?.hints?.phaseScope !== undefined ||
       props.diagram?.hints?.includeEquipmentIds !== undefined ||
       props.diagram?.hints?.excludeEquipmentIds !== undefined) &&

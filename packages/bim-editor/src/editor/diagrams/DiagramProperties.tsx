@@ -178,10 +178,10 @@ export function DiagramProperties({ model, view, selectedIds, canEdit, blockedRe
             <Field>
               <FieldLabel htmlFor="diagram-min-breaker">Load breaker</FieldLabel>
               <Select
-                value={String(hints.minBreakerA ?? 0)}
+                value={String(hints.minLoadRatingA ?? 0)}
                 onValueChange={(v) => {
                   const amps = Number(v)
-                  set({ minBreakerA: amps > 0 ? amps : undefined }, amps > 0 ? `show loads ≥ ${amps} A on ${view.name}` : `show all load breakers on ${view.name}`)
+                  set({ minLoadRatingA: amps > 0 ? amps : undefined }, amps > 0 ? `show loads ≥ ${amps} A on ${view.name}` : `show all load breakers on ${view.name}`)
                 }}
                 disabled={!canEdit}
               >

@@ -4065,15 +4065,34 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
             hasSelection={selectedIds.length > 0}
             selectionLocked={selectedIds.length > 0 && selectedIds.every((id) => lockOf(model?.elements[id]) !== null)}
             canEdit={canEdit}
+            onLockCategory={(category, locked) => {
+              const refusal = submitWithUndo({ type: 'lock_category', category, locked }, `${locked ? 'lock' : 'unlock'} ${category.replace(/_/g, ' ')}`)
+              if (refusal) toast.error(refusal)
+              else toast.success(`${locked ? 'Locked' : 'Unlocked'} ${category.replace(/_/g, ' ')}.`)
+            }}
             onTogglePin={() => {
               if (!model || selectedIds.length === 0) return
               const allLocked = selectedIds.every((id) => lockOf(model.elements[id]) !== null)
-              submitWithUndo(
-                allLocked
-                  ? { type: 'unlock_elements', elementIds: [...selectedIds] }
-                  : { type: 'lock_elements', elementIds: [...selectedIds], state: 'existing', reason: 'Pinned by user' },
-                allLocked ? 'Unpin selection' : 'Pin selection',
-              )
+              const coreKinds = new Set(['wall', 'slab', 'room', 'column', 'beam', 'grid', 'opening'])
+              const coreIds = selectedIds.filter((id) => {
+                const el = model.elements[id]
+                return el && coreKinds.has(el.kind)
+              })
+              const otherIds = selectedIds.filter((id) => !coreIds.includes(id))
+              if (coreIds.length > 0) {
+                submitWithUndo(
+                  allLocked
+                    ? { type: 'unlock_elements', elementIds: coreIds }
+                    : { type: 'lock_elements', elementIds: coreIds, state: 'existing', reason: 'Pinned by user' },
+                  allLocked ? 'Unpin selection' : 'Pin selection',
+                )
+              }
+              if (otherIds.length > 0) {
+                submitWithUndo(
+                  { type: 'set_element_locks', ids: otherIds, locked: !allLocked, ...(!allLocked ? { reason: 'Pinned by user' } : {}) },
+                  allLocked ? 'Unpin selection' : 'Pin selection',
+                )
+              }
             }}
           />
         )}

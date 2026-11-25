@@ -944,6 +944,13 @@ export const KIT_ENTRIES: readonly KitEntry[] = [
     topics: ["photometric overlay", "iso-contours", "footcandle grid", "egress plan", "life safety plan"],
   },
   {
+    name: "electrical.insertDisconnect",
+    summary: "Places a local NEMA 3R/1 disconnect switch beside an equipment load (NEC 440.14 / 430.102) and re-routes its circuit inline (panel -> disconnect -> equipment) while preserving upstream breaker positions and One-Line topology.",
+    signature: "insertDisconnect(ctx: ScriptContext, equipmentRef: PlacedPart | string, spec?: InsertDisconnectSpec): InsertDisconnectResult",
+    example: layout(`${WALLS}\n    const hp = equipment.place(ctx, { level: "L1", type: "builtin:panelboard-225-480@1", at: { x: units.ft(2), y: units.ft(2) }, mark: "HP-1" });\n    const rtu = equipment.place(ctx, { level: "L1", type: "builtin:rtu-5-ton@1", at: { x: units.ft(20), y: units.ft(10) }, mark: "RTU-1" });\n    ctx.edit({ type: "create_service_link", linkId: "ckt-rtu", sourceId: hp.id, positions: [1, 3, 5], members: [{ elementId: rtu.id }], electrical: { ratingA: 40 } });\n    electrical.insertDisconnect(ctx, rtu, { mark: "SD-RTU-1" });`),
+    topics: ["disconnect", "safety switch", "nec 440.14", "nec 430.102", "equipment connection", "one-line", "inline disconnect", "starter"],
+  },
+  {
     name: "documents.keynote",
     summary: "Gives elements a keynote by its key (\"P1\", \"M3\"); a keynote tag on a view prints the key and the sheet's keynote list (Sheets › Live table › Keynote list) gives its words from the keynote tables in force.",
     signature: "keynote(ctx: ScriptContext, elementIds: readonly string[], key: string): void",
@@ -1115,7 +1122,7 @@ export const KIT_ENTRIES: readonly KitEntry[] = [
   },
   {
     name: "documents.diagram",
-    summary: "Creates a live diagram view derived from the model by any active pack (`\"one_line\"`, `\"electrical_riser\"`, `\"controls_diagram\"`, `\"air_schematic\"`, `\"plumbing_riser\"`, `\"plumbing_isometric\"`, …; `documents.diagramKinds(ctx)` lists all available kinds). For `one_line`, pass `hints: { faultCurrent: true, lengthMode: \"shortest\" | \"manhattan\" | \"explicit\", showLoads: true, minBreakerA: 60, phaseScope: \"all\" | \"new\" | \"existing\" | \"demolition\" }` to annotate live 3D-estimated feeder lengths, available fault current (AFC vs kAIC), filter branch loads by breaker size, or generate new-work vs demolition single-lines. Returns the view id.",
+    summary: "Creates a live diagram view derived from the model by any active pack (`\"one_line\"`, `\"electrical_riser\"`, `\"controls_diagram\"`, `\"air_schematic\"`, `\"plumbing_riser\"`, `\"plumbing_isometric\"`, …; `documents.diagramKinds(ctx)` lists all available kinds). For `one_line`, pass `hints: { faultCurrent: true, lengthMode: \"shortest\" | \"manhattan\" | \"explicit\", showLoads: true, minLoadRatingA: 60, phaseScope: \"all\" | \"new\" | \"existing\" | \"demolition\" }` to annotate live 3D-estimated feeder lengths, available fault current (AFC vs kAIC), filter branch loads by breaker size, or generate new-work vs demolition single-lines. Returns the view id.",
     signature: "diagram(ctx: ScriptContext, spec: { name: string; kind: string; hints?: DiagramHints; id?: string }): string",
     example: layout(`    const sld = documents.diagram(ctx, { name: "E-201 One-Line Diagram", kind: "one_line", hints: { faultCurrent: true, lengthMode: "shortest", showLoads: true } });\n    const sheet = documents.sheet(ctx, { number: "E-201", name: "Electrical Diagrams", discipline: "electrical", sortOrder: 502 });\n    documents.place(ctx, sheet, sld, { x: units.mm(300), y: units.mm(300) }, 1);`),
     topics: ["diagram", "live diagram", "controls diagram", "lighting controls diagram", "one-line", "fault current", "afc", "feeder length", "riser", "isometric", "air schematic"],

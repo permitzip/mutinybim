@@ -698,9 +698,9 @@ export function partFloorMm(model: ModelState, part: PartInstance): number {
 
 /**
  * Automatically shift a wider-than-equipment clearance zone (e.g. 30" working space
- * on a 20" panel) away from an adjacent perpendicular wall, clamped to
- * `±(zoneWidth - equipWidth) / 2` so the clearance always covers the full equipment
- * width (NEC 110.26(A)(2)). Skipped whenever the engineer set a manual `offset`.
+ * on a 500 mm wide unit) away from an adjacent perpendicular wall, clamped to
+ * the box's own depth/width so the footprint still covers the equipment's full
+ * width (per working-space width rules). Skipped whenever the engineer set a manual `offset`.
  */
 function autoShiftClearanceForWalls(
   model: ModelState,

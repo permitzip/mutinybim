@@ -1270,7 +1270,7 @@ export function drawPartClearancesBatch(
 ): void {
   if (zones.length === 0) return;
   const MERGE_TOL_MM = 50;
-  // Canonical orientation angle in [0, pi/2) so 0/90/180/270 panels share one local orthogonal grid.
+  // Canonical orientation angle in [0, pi/2) so 0/90/180/270 boxes share one local orthogonal grid.
   const angleOf = (c: readonly [Vec2, Vec2, Vec2, Vec2]): number => {
     const a = Math.atan2(c[1].y - c[0].y, c[1].x - c[0].x);
     let m = ((a % (Math.PI / 2)) + Math.PI / 2) % (Math.PI / 2);
@@ -1346,7 +1346,7 @@ export function drawPartClearancesBatch(
         continue;
       }
 
-      // Snap near-identical coordinates (within MERGE_TOL_MM) so side-by-side panels with tiny gaps fuse into one smooth outline.
+      // Snap near-identical coordinates (within MERGE_TOL_MM) so side-by-side boxes with tiny gaps fuse into one smooth outline.
       const dedupeCoords = (raw: number[]): number[] => {
         raw.sort((a, b) => a - b);
         const out: number[] = [];

@@ -1,3 +1,4 @@
+import { isRepetitiveDevicePartCategory } from "../categories/registry";
 import { disciplineCovers, disciplineDef } from "../disciplines/registry";
 import { linkedAnchorModelsOf, withLinkedReferenceModels } from "../reference-geometry/linked-anchors";
 import { siteOf } from "../site";
@@ -950,9 +951,7 @@ function drawPlan(
       const partText = (at: Vec2, text: string, size: number, anchor?: "start" | "middle" | "end", style?: TextDrawStyle) =>
         textIn(p, at, text, size, anchor ?? "middle", dp.tone, style);
       const partType = model.elements[dp.el.typeId];
-      const isRepetitiveDevice =
-        partType?.kind === "part_type" &&
-        (partType.definition.category === "electrical_device" || partType.definition.category === "lighting_fixture");
+      const isRepetitiveDevice = partType?.kind === "part_type" && isRepetitiveDevicePartCategory(partType.definition.category);
       const showPartMark = tagsShown && !taggedHere.has(dp.el.id) && !(view.props?.hideDeviceMarks === true && isRepetitiveDevice);
       drawPartSymbol(
         model,
@@ -2913,7 +2912,7 @@ export function planAutoPartMarks(model: ModelState, view: ViewElement, frame: V
     if (!el.mark || taggedHere.has(el.id)) return;
     if (view.props?.hideDeviceMarks === true) {
       const pt = model.elements[el.typeId];
-      if (pt?.kind === "part_type" && (pt.definition.category === "electrical_device" || pt.definition.category === "lighting_fixture")) return;
+      if (pt?.kind === "part_type" && isRepetitiveDevicePartCategory(pt.definition.category)) return;
     }
     markParts.push({ el, planSymbol: look.planSymbol, detail: look.detailLevel ?? display.detail });
   });

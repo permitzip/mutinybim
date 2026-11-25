@@ -163,7 +163,7 @@ export function afcLine(elements: Elements, partId: string, lengthMode?: FeederL
 export function electricalDiagramGraph(elements: Elements, hints: ElectricalDiagramHints = {}): DiagramGraph {
   const detail = hints.detail ?? "full";
   const schematic = detail === "schematic";
-  const minBreakerA = hints.minBreakerA ?? 0;
+  const minLoadRatingA = hints.minLoadRatingA ?? 0;
   const phaseScope = hints.phaseScope ?? "all";
   const org = organizationOf({ elements, connections: [] });
   const existingPhaseIds = new Set<string>();
@@ -246,7 +246,7 @@ export function electricalDiagramGraph(elements: Elements, hints: ElectricalDiag
         const pinnedIn = includeEquipment.has(member.id);
         if (!pinnedIn) {
           if (!hints.showLoads) continue;
-          if (minBreakerA > 0 && (link.electrical?.ratingA ?? 0) < minBreakerA) continue;
+          if (minLoadRatingA > 0 && (link.electrical?.ratingA ?? 0) < minLoadRatingA) continue;
         }
         const memberName = electricalName(elements, member);
         const phaseCheck = partPhaseMatches(member, memberName);

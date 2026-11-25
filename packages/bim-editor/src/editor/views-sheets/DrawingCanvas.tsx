@@ -929,6 +929,28 @@ export function DrawingCanvas({ target, model, sheetTitle, canEdit, blockedReaso
           toast(`Selected joined chain of ${chain.length} items.`)
           return
         }
+        // Otherwise cycle through overlapping drawn items under the currently selected item's footprint.
+        const current = items.find((it) => it.id === selection.id)
+        const curBox = current ? (current.dim || current.tag ? annotationBox(model, annotatedView, current, toPaperPoint) : detailBox(current, toPaperPoint)) : null
+        if (curBox) {
+          const cx = curBox.x + curBox.w / 2
+          const cy = curBox.y + curBox.h / 2
+          const overlapping = items.filter((it) => {
+            if (it.deleted) return false
+            const b = it.dim || it.tag ? annotationBox(model, annotatedView, it, toPaperPoint) : detailBox(it, toPaperPoint)
+            if (!b) return false
+            return cx >= b.x - 1.5 && cx <= b.x + b.w + 1.5 && cy >= b.y - 1.5 && cy <= b.y + b.h + 1.5
+          })
+          if (overlapping.length > 1) {
+            e.preventDefault()
+            const idx = overlapping.findIndex((it) => it.id === selection.id)
+            const next = overlapping[(idx + (e.shiftKey ? overlapping.length - 1 : 1)) % overlapping.length]!
+            setAlsoPicked([])
+            setSelection({ kind: 'item', id: next.id })
+            toast(`Selected ${next.shape} (${((idx + 1) % overlapping.length) + 1} of ${overlapping.length} overlapping).`)
+            return
+          }
+        }
       }
       const plainKey = !e.metaKey && !e.ctrlKey && !e.altKey
       if (plainKey && !e.repeat && similarChord.current.press(e.key, e.timeStamp) && tool === 'select' && selection?.kind === 'item') {
@@ -1302,15 +1324,25 @@ export function DrawingCanvas({ target, model, sheetTitle, canEdit, blockedReaso
       case 'note-new':
         setDrag({ ...drag, b: at })
         break
-      case 'items-move':
+      case 'items-move': {
         if (!drag.started && !dragStarted(drag.from, at, pxPerMm)) break
         if (!canEdit) {
           toast.error(blockedReason)
           setDrag(null)
           break
         }
-        setDrag({ ...drag, started: true, to: dragTo(drag.from, at, draft.settings.ortho, trackBaseDeg) })
+        const orthoOn = draft.settings.ortho || e.shiftKey
+        let snappedTo = dragTo(drag.from, at, orthoOn, trackBaseDeg)
+        // Soft orthogonal alignment guide when dragging freely (snaps cleanly to pure H/V within 1.5 mm paper).
+        if (!orthoOn) {
+          const dx = snappedTo.x - drag.from.x
+          const dy = snappedTo.y - drag.from.y
+          if (Math.abs(dy) < 1.5 && Math.abs(dx) > 3) snappedTo = { x: snappedTo.x, y: drag.from.y }
+          else if (Math.abs(dx) < 1.5 && Math.abs(dy) > 3) snappedTo = { x: drag.from.x, y: snappedTo.y }
+        }
+        setDrag({ ...drag, started: true, to: snappedTo })
         break
+      }
       case 'note-size':
         setDrag({ ...drag, frame: resizeFrame(drag.start, drag.edge, { x: at.x - drag.from.x, y: at.y - drag.from.y }) })
         break

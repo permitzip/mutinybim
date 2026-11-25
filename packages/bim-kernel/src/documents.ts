@@ -123,7 +123,7 @@ export interface ViewProps extends ViewGraphicsHints {
   readonly hiddenElementIds?: readonly string[];
   /** Plans: draw text labels inside clearance zones (dashed outlines always draw). Absent: on. */
   readonly showClearanceLabels?: boolean;
-  /** Plans: hide automatic per-instance marks on repetitive devices (receptacles, switches, fixtures) while keeping equipment & manual tags visible. Absent: off. */
+  /** Plans: hide automatic per-instance marks on repetitive devices (outlets, switches, luminaires) while keeping equipment & manual tags visible. Absent: off. */
   readonly hideDeviceMarks?: boolean;
   /** Drafting categories this view hides (detail lines, hatching, components, insulation…); the model's categories are `hiddenCategories`. */
   readonly hiddenDraftingCategories?: readonly DraftingCategory[];

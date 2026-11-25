@@ -488,7 +488,7 @@ export function createElectricalDemoModel(modelId = "electrical-plan-demo"): Mod
             title: "DISTRIBUTION ONE-LINE DIAGRAM (≥ 60A FEEDERS)",
             showLoads: true,
             showWarnings: true,
-            minBreakerA: 60,
+            minLoadRatingA: 60,
             phaseScope: "new",
           },
         },
