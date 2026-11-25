@@ -85,8 +85,12 @@ describe("structural load-path elastic deflection integration", () => {
       const ratioIdx = headers.indexOf("TOTAL L/Δ");
       const b2Row = paper.table.evaluated.rows.find((r) => r[0] === "B2");
       expect(b2Row).toBeDefined();
-      expect(b2Row![deflIdx]).toMatch(/^\d+\.\d{2}(?: in|")$/);
-      expect(b2Row![ratioIdx]).toMatch(/^L\/\d+$/);
+      const liveDeflIdx = headers.indexOf("LIVE DEFL.");
+      const liveRatioIdx = headers.indexOf("LIVE L/Δ");
+      expect(b2Row![liveDeflIdx]).toBe("1.04 in");
+      expect(b2Row![liveRatioIdx]).toBe("L/345");
+      expect(b2Row![deflIdx]).toBe("1.29 in");
+      expect(b2Row![ratioIdx]).toBe("L/279");
     }
   });
 
@@ -122,7 +126,7 @@ describe("structural load-path elastic deflection integration", () => {
     expect(readStructuralField(m, "B2", "live_deflection_ratio")).toBeNull();
   });
 
-  it("keeps live response independent of dead and equipment changes", () => {
+  it("keeps live response independent of equipment changes", () => {
     const base = frameWithBeamValues({ "struct.elastic_modulus": 29_000 });
     const heavier = frameWithBeamValues({ "struct.elastic_modulus": 29_000 });
     const type = heavier.elements["type-rtu"];
@@ -136,14 +140,42 @@ describe("structural load-path elastic deflection integration", () => {
     expect(to(a.maxDeflection!, "in")).not.toBeCloseTo(to(b.maxDeflection!, "in"), 3);
   });
 
-  it("reports zero live deflection when stiffness exists but no live rate reaches the beam", () => {
+  it("reports zero live deflection for a known model with no live-loaded deck", () => {
     const m = frameWithBeamValues({ "struct.elastic_modulus": 29_000 }, undefined);
-    const deck = m.elements["DECK-1"];
-    if (deck?.kind !== "slab") throw new Error("missing deck");
-    const noLive = { ...m, elements: { ...m.elements, ["DECK-1"]: { ...deck, values: { ...deck.values, "struct.occupancy": "unknown-use" } } } };
-    const b2 = structuralLoadPath(noLive).beams.find((b) => b.id === "B2")!;
+    const { ["DECK-1"]: _removedDeck, ...elements } = m.elements;
+    const noLive = { ...m, elements };
+    const result = structuralLoadPath(noLive);
+    const b2 = result.beams.find((b) => b.id === "B2")!;
     expect(to(b2.maxLiveDeflection!, "in")).toBe(0);
     expect(to(b2.maxLiveDeflectionAt!, "ft")).toBe(0);
+    expect(result.problems.some((p) => p.includes("has no live load in the Structural pack"))).toBe(false);
+  });
+
+  it("reports incomplete live loading for unknown occupancy", () => {
+    const m = frameWithBeamValues({ "struct.elastic_modulus": 29_000 });
+    const deck = m.elements["DECK-1"];
+    if (deck?.kind !== "slab") throw new Error("missing deck");
+    const unknown = { ...m, elements: { ...m.elements, ["DECK-1"]: { ...deck, values: { ...deck.values, "struct.occupancy": "unknown-use" } } } };
+    const result = structuralLoadPath(unknown);
+    const b2 = result.beams.find((b) => b.id === "B2")!;
+    expect(to(b2.maxLiveDeflection!, "in")).toBe(0);
+    expect(result.problems.some((p) => p.includes("has no live load in the Structural pack"))).toBe(true);
+  });
+
+  it("preserves statics when stiffness makes deflection nonrepresentable", () => {
+    const baseline = structuralLoadPath(frameWithBeamValues({ "struct.elastic_modulus": 29_000 }));
+    const overflowing = structuralLoadPath(frameWithBeamValues({ "struct.elastic_modulus": Number.MAX_VALUE }));
+    const before = baseline.beams.find((b) => b.id === "B2")!;
+    const after = overflowing.beams.find((b) => b.id === "B2")!;
+    expect(after).toBeDefined();
+    expect(after.startReaction).toEqual(before.startReaction);
+    expect(after.endReaction).toEqual(before.endReaction);
+    expect(after.maxMoment).toEqual(before.maxMoment);
+    expect(after.maxDeflection).toBeUndefined();
+    expect(after.maxLiveDeflection).toBeUndefined();
+    expect(overflowing.columns.find((c) => c.id === "C2A")!.load.total).toEqual(baseline.columns.find((c) => c.id === "C2A")!.load.total);
+    expect(overflowing.footings.find((f) => f.id === "F2A")!.load.total).toEqual(baseline.footings.find((f) => f.id === "F2A")!.load.total);
+    expect(overflowing.problems.some((p) => p.includes("deflection omitted"))).toBe(true);
   });
 
   it("updates live and total responses when the modeled live-use rate changes", () => {
