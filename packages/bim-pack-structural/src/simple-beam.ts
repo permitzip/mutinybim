@@ -73,11 +73,7 @@ export function simpleBeam(input: SimpleBeamInput): SimpleBeamResult {
   const E = input.elasticModulus;
   const I = input.momentOfInertia;
   if ((E === undefined) !== (I === undefined)) {
-    throw new SimpleBeamInputError(
-      E === undefined
-        ? "Deflection needs the modulus of elasticity (E) as well as the moment of inertia (I). Give both, or neither to skip deflection"
-        : "Deflection needs the moment of inertia (I) as well as the modulus of elasticity (E). Give both, or neither to skip deflection",
-    );
+    throw new SimpleBeamInputError(E === undefined ? "Deflection needs the modulus of elasticity (E) as well as the moment of inertia (I). Give both, or neither to skip deflection" : "Deflection needs the moment of inertia (I) as well as the modulus of elasticity (E). Give both, or neither to skip deflection");
   }
   if (E !== undefined && !(Number.isFinite(E) && E > 0)) throw new SimpleBeamInputError("The modulus of elasticity (E) must be a finite number greater than zero");
   if (I !== undefined && !(Number.isFinite(I) && I > 0)) throw new SimpleBeamInputError("The moment of inertia (I) must be a finite number greater than zero");

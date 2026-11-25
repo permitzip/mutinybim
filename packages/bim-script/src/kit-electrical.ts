@@ -568,4 +568,75 @@ export const electrical = {
       downstreamLinkId,
     };
   },
+
+  /**
+   * Removes an inline local disconnect switch feeding a piece of equipment and restores
+   * direct feed from its upstream panel circuit (preserving breaker positions and ratings).
+   */
+  removeDisconnect(ctx: ScriptContext, equipmentRef: PlacedPart | string): { readonly removedDisconnectId: string; readonly restoredLinkId: string | null } {
+    const refId = typeof equipmentRef === "string" ? equipmentRef : equipmentRef.id;
+    const found = onWorking(ctx, "electrical.removeDisconnect", (m) => {
+      const parts = elementsOfKind(m.elements, "part");
+      const part =
+        parts.find((p) => p.id === refId) ??
+        parts.find((p) => p.mark.trim().toLowerCase() === refId.trim().toLowerCase());
+      if (!part) throw new Error(`Equipment "${refId}" was not found in the model.`);
+      const links = elementsOfKind(m.elements, "service_link");
+      const downstream = links.find((l) => l.members.some((mem) => mem.elementId === part.id));
+      if (!downstream) throw new Error(`Equipment "${part.mark || part.id}" is not fed from a local disconnect.`);
+      const disc = m.elements[downstream.source.elementId];
+      const discType = disc?.kind === "part" ? m.elements[disc.typeId] : undefined;
+      if (disc?.kind !== "part" || discType?.kind !== "part_type" || !/disconnect/i.test(discType.definition.familyName)) {
+        throw new Error(`Equipment "${part.mark || part.id}" is fed directly, not through a local disconnect switch.`);
+      }
+      const upstream = links.find((l) => l.members.some((mem) => mem.elementId === disc.id)) ?? null;
+      return { part, disc, downstream, upstream };
+    });
+
+    ctx.edit({ type: "delete_elements", ids: [found.downstream.id, found.disc.id], policy: "cascade" });
+    if (found.upstream) {
+      ctx.edit({
+        type: "create_service_link",
+        linkId: found.upstream.id,
+        sourceId: found.upstream.source.elementId,
+        ...(found.upstream.source.positions.length > 0 ? { positions: [...found.upstream.source.positions] } : {}),
+        members: [{ elementId: found.part.id }],
+        ...(found.upstream.description ? { description: found.upstream.description } : {}),
+        ...(found.upstream.electrical ? { electrical: found.upstream.electrical } : {}),
+      });
+    }
+    return { removedDisconnectId: found.disc.id, restoredLinkId: found.upstream?.id ?? null };
+  },
+
+  /**
+   * Marks whether a piece of equipment requires a local disconnect switch (e.g. set `required: false`
+   * when the unit has a factory-installed integral disconnect or lockable breaker per NEC 430.102(B)).
+   */
+  setDisconnectRequirement(
+    ctx: ScriptContext,
+    equipmentRef: PlacedPart | string,
+    required: boolean,
+    reason?: string,
+  ): { readonly equipmentId: string; readonly disconnectRequired: boolean } {
+    const refId = typeof equipmentRef === "string" ? equipmentRef : equipmentRef.id;
+    const partId = onWorking(ctx, "electrical.setDisconnectRequirement", (m) => {
+      const parts = elementsOfKind(m.elements, "part");
+      const part =
+        parts.find((p) => p.id === refId) ??
+        parts.find((p) => p.mark.trim().toLowerCase() === refId.trim().toLowerCase());
+      if (!part) throw new Error(`Equipment "${refId}" was not found in the model.`);
+      return part.id;
+    });
+    ctx.edit({
+      type: "set_parameters",
+      id: partId,
+      scope: "instance",
+      values: {
+        disconnect_required: required,
+        local_disconnect: required ? "required" : "not_required",
+        ...(reason ? { disconnect_note: reason } : {}),
+      },
+    });
+    return { equipmentId: partId, disconnectRequired: required };
+  },
 };

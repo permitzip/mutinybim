@@ -351,10 +351,10 @@ function buildShowcase(modelId: string): ModelState {
     // Structural Element Types (AISC W-Shapes + Reinforced Concrete Pad Footings)
     { type: "create_element_type", typeId: "type-col-w10x33", name: "Steel Column — W10×33 (ASTM A992)", forKinds: ["column"], values: { "struct.section": "W10x33", "struct.grade": "A992", "material.id": "architecture.bronze_mullion" } },
     { type: "create_element_type", typeId: "type-col-w8x31", name: "Steel Column — W8×31 (ASTM A992)", forKinds: ["column"], values: { "struct.section": "W8x31", "struct.grade": "A992", "material.id": "architecture.bronze_mullion" } },
-    { type: "create_element_type", typeId: "type-bm-w18x35", name: "Steel Girder — W18×35 (ASTM A992)", forKinds: ["beam"], values: { "struct.section": "W18x35", "struct.grade": "A992", "material.id": "architecture.charcoal_metal" } },
-    { type: "create_element_type", typeId: "type-bm-w16x26", name: "Steel Beam — W16×26 (ASTM A992)", forKinds: ["beam"], values: { "struct.section": "W16x26", "struct.grade": "A992", "material.id": "architecture.charcoal_metal" } },
-    { type: "create_element_type", typeId: "type-bm-w14x22", name: "Steel Roof Beam — W14×22 (ASTM A992)", forKinds: ["beam"], values: { "struct.section": "W14x22", "struct.grade": "A992", "material.id": "architecture.charcoal_metal" } },
-    { type: "create_element_type", typeId: "type-bm-w12x26", name: "Steel Tie Beam — W12×26 (ASTM A992)", forKinds: ["beam"], values: { "struct.section": "W12x26", "struct.grade": "A992", "material.id": "architecture.charcoal_metal" } },
+    { type: "create_element_type", typeId: "type-bm-w18x35", name: "Steel Girder — W18×35 (ASTM A992)", forKinds: ["beam"], values: { "struct.section": "W18x35", "struct.grade": "A992", "struct.elastic_modulus": 29000, "material.id": "architecture.charcoal_metal" } },
+    { type: "create_element_type", typeId: "type-bm-w16x26", name: "Steel Beam — W16×26 (ASTM A992)", forKinds: ["beam"], values: { "struct.section": "W16x26", "struct.grade": "A992", "struct.elastic_modulus": 29000, "material.id": "architecture.charcoal_metal" } },
+    { type: "create_element_type", typeId: "type-bm-w14x22", name: "Steel Roof Beam — W14×22 (ASTM A992)", forKinds: ["beam"], values: { "struct.section": "W14x22", "struct.grade": "A992", "struct.elastic_modulus": 29000, "material.id": "architecture.charcoal_metal" } },
+    { type: "create_element_type", typeId: "type-bm-w12x26", name: "Steel Tie Beam — W12×26 (ASTM A992)", forKinds: ["beam"], values: { "struct.section": "W12x26", "struct.grade": "A992", "struct.elastic_modulus": 29000, "material.id": "architecture.charcoal_metal" } },
     { type: "create_element_type", typeId: "type-ftg-6x6", name: `Pad Footing — 6'-0" × 6'-0" × 20" (4000 PSI)`, forKinds: ["component"], values: { "struct.footing_thickness_mm": Math.round(20 * IN), "material.id": "architecture.concrete_slab" } },
     { type: "create_element_type", typeId: "type-ftg-5x5", name: `Pad Footing — 5'-0" × 5'-0" × 18" (4000 PSI)`, forKinds: ["component"], values: { "struct.footing_thickness_mm": Math.round(18 * IN), "material.id": "architecture.concrete_slab" } },
     { type: "create_element_type", typeId: "type-ftg-4x4", name: `Pad Footing — 4'-0" × 4'-0" × 16" (4000 PSI)`, forKinds: ["component"], values: { "struct.footing_thickness_mm": Math.round(16 * IN), "material.id": "architecture.concrete_slab" } },
@@ -1467,8 +1467,8 @@ function buildShowcase(modelId: string): ModelState {
     { type: "place_part", partId: "hp-1", typeId: hpnl.id, levelId: "L1", position: pt(0, 0), host: { kind: "wall_face", elementId: "w-l1-w", stationMm: Math.round(7.1 * FT), side: -1 }, mark: "HP-1", values: { aic: 42000 } },
     { type: "place_part", partId: "sd-1e", typeId: discFused.id, levelId: "L1", position: pt(0, 0), host: { kind: "wall_face", elementId: "w-l1-core", stationMm: Math.round(6.8 * FT), side: 1 }, mark: "SD-1(E)" },
     { type: "place_part", partId: "sd-2d", typeId: discFused.id, levelId: "L1", position: pt(0, 0), host: { kind: "wall_face", elementId: "w-l1-core", stationMm: Math.round(5.0 * FT), side: 1 }, mark: "SD-2(D)" },
-    // Local NEMA 3R non-fused disconnect beside RTU-1 on the East Roof (NEC 440.14 within sight of equipment)
-    { type: "place_part", partId: "disc-rtu-1", typeId: discNf30.id, levelId: "L2", position: pt(44.2 * FT, 16.0 * FT), offsetMm: 0, host: { kind: "slab", elementId: "deck-roof-east" }, mark: "SD-RTU-1", values: { panel_name: "SD-RTU-1", serves: "RTU-1" } },
+    // Local NEMA 3R non-fused disconnect wall-mounted on the East Roof parapet beside RTU-1 (NEC 440.14 within sight of equipment)
+    { type: "place_part", partId: "disc-rtu-1", typeId: discNf30.id, levelId: "L2", position: pt(0, 0), host: { kind: "wall_face", elementId: "w-l2-para-e", stationMm: Math.round(19.0 * FT), side: 1 }, offsetMm: Math.round(16 * IN), mark: "SD-RTU-1", values: { panel_name: "SD-RTU-1", serves: "RTU-1" } },
     { type: "place_part", partId: "t-1", typeId: xfmr.id, levelId: "L1", position: pt(12.5 * FT, 3.0 * FT), mark: "T-1", values: { impedance_pct: 4.5 } },
     { type: "place_part", partId: "lp-1", typeId: lpnl.id, levelId: "L1", position: pt(0, 0), host: { kind: "wall_face", elementId: "w-l1-core", stationMm: Math.round(10.5 * FT), side: 1 }, mark: "LP-1", values: { aic: 22000 } },
 
@@ -1652,6 +1652,77 @@ function buildShowcase(modelId: string): ModelState {
   const plumbingScheduleDef = { ...PLUMBING_FIXTURE_SCHEDULE, filters: [] };
 
   m = runCmds(m, [
+    // ---- First-Class View Templates (Kernel Bedrock — live-bound across discipline plans) ----
+    {
+      type: "create_view_template",
+      viewTemplateId: "vt-arch-plan",
+      name: "Arch — Floor Plan",
+      description: "Standard architectural floor plan hiding MEP runs and equipment.",
+      viewTypes: ["floor_plan"],
+      locks: ["discipline", "category_overrides"],
+      props: { discipline: "architecture", categoryOverrides: ARCH_HIDE_MEP },
+    },
+    {
+      type: "create_view_template",
+      viewTemplateId: "vt-mech-hvac",
+      name: "Mech — HVAC Plan (Level Above)",
+      description: "Mechanical floor plan using Revit-standard Level Above view top so overhead ductwork and air devices always cut cleanly.",
+      viewTypes: ["floor_plan"],
+      locks: ["discipline", "view_range", "visual_style", "category_overrides"],
+      props: {
+        discipline: "mechanical",
+        visualStyle: "hidden_line",
+        viewBottomMm: 0,
+        cutHeightMm: Math.round(4 * FT),
+        viewTopRef: "level_above",
+        categoryOverrides: MECH_HIDE_NON_HVAC,
+      },
+    },
+    {
+      type: "create_view_template",
+      viewTemplateId: "vt-elec-power",
+      name: "Elec — Power Plan (Binoy)",
+      description: "Electrical power plan locking Binoy chamfered circuit graphics and clean device marks.",
+      viewTypes: ["floor_plan"],
+      locks: ["discipline", "annotations", "pack_props"],
+      props: {
+        discipline: "electrical",
+        hideDeviceMarks: true,
+        circuitGraphics: { style: "chamfered", hashMarksOn: "home_runs" },
+      },
+    },
+    {
+      type: "create_view_template",
+      viewTemplateId: "vt-elec-lighting",
+      name: "Elec — Lighting Plan (Binoy)",
+      description: "Electrical lighting RCP locking Binoy chamfered wiring and lighting visibility filters.",
+      viewTypes: ["ceiling_plan"],
+      locks: ["discipline", "category_overrides", "pack_props"],
+      props: {
+        discipline: "electrical",
+        categoryOverrides: ELEC_LTG_HIDE,
+        circuitGraphics: { style: "chamfered", hashMarksOn: "home_runs", switchLegs: false },
+      },
+    },
+    {
+      type: "create_view_template",
+      viewTemplateId: "vt-plumb-water",
+      name: "Plumb — Domestic Water Plan",
+      description: "Plumbing domestic hot/cold water plan hiding DWV and non-plumbing trades.",
+      viewTypes: ["floor_plan"],
+      locks: ["discipline", "category_overrides"],
+      props: { discipline: "plumbing", categoryOverrides: PLUMB_WATER_HIDE },
+    },
+    {
+      type: "create_view_template",
+      viewTemplateId: "vt-plumb-dwv",
+      name: "Plumb — Sanitary & Vent Plan",
+      description: "Plumbing sanitary & vent DWV plan hiding pressurized water and non-plumbing trades.",
+      viewTypes: ["floor_plan"],
+      locks: ["discipline", "category_overrides"],
+      props: { discipline: "plumbing", categoryOverrides: PLUMB_DWV_HIDE },
+    },
+
     // ---- Saved 3D Perspective Views (Hero Exterior + NW MEP Cutaway, with fovDeg!) ----
     {
       type: "create_3d_view",
@@ -1681,9 +1752,9 @@ function buildShowcase(modelId: string): ModelState {
     },
 
     // ---- Architectural Views & Sheets (A-101 .. A-302) ----
-    { type: "create_view", viewId: "view-plan-l1", name: "Level 1 — Floor Plan", viewType: "floor_plan", crop: { min: pt(-11 * FT, -11 * FT), max: pt(W_ALL + 11 * FT, D_ALL + 11 * FT) }, props: { level: "Level 1", scale: 48, discipline: "architecture", categoryOverrides: ARCH_HIDE_MEP } },
-    { type: "create_view", viewId: "view-plan-l2", name: "Level 2 — Floor Plan", viewType: "floor_plan", crop: { min: pt(-4 * FT, -7 * FT), max: pt(W_ALL + 4 * FT, D_ALL + 4 * FT) }, props: { level: "Level 2", scale: 64, discipline: "architecture", categoryOverrides: ARCH_HIDE_MEP } },
-    { type: "create_view", viewId: "view-enlarged-rr", name: "Enlarged Restroom 202", viewType: "floor_plan", crop: { min: pt(-1 * FT, 19.5 * FT), max: pt(19 * FT, 29 * FT) }, props: { level: "Level 2", scale: 24, discipline: "architecture", categoryOverrides: ARCH_HIDE_MEP } },
+    { type: "create_view", viewId: "view-plan-l1", name: "Level 1 — Floor Plan", viewType: "floor_plan", crop: { min: pt(-11 * FT, -11 * FT), max: pt(W_ALL + 11 * FT, D_ALL + 11 * FT) }, props: { level: "Level 1", scale: 48, viewTemplateId: "vt-arch-plan" } },
+    { type: "create_view", viewId: "view-plan-l2", name: "Level 2 — Floor Plan", viewType: "floor_plan", crop: { min: pt(-4 * FT, -7 * FT), max: pt(W_ALL + 4 * FT, D_ALL + 4 * FT) }, props: { level: "Level 2", scale: 64, viewTemplateId: "vt-arch-plan" } },
+    { type: "create_view", viewId: "view-enlarged-rr", name: "Enlarged Restroom 202", viewType: "floor_plan", crop: { min: pt(-1 * FT, 19.5 * FT), max: pt(19 * FT, 29 * FT) }, props: { level: "Level 2", scale: 24, viewTemplateId: "vt-arch-plan" } },
     // Live parametric enlarged-plan callout box on Level 2 Floor Plan referencing Enlarged Restroom 202 (2 / A-102)
     { type: "add_drawing_item", itemId: "co-rr-l2", ownerId: "view-plan-l2", shape: "callout", points: [pt(-0.5 * FT, 19.5 * FT), pt(18.5 * FT, 28.5 * FT), pt(-3.0 * FT, 29.8 * FT)], callout: { viewId: "view-enlarged-rr", showLabel: false } },
     { type: "create_view", viewId: "view-rcp-l1", name: "Level 1 — Reflected Ceiling Plan", viewType: "ceiling_plan", crop: { min: pt(-2 * FT, -2 * FT), max: pt(W_ALL + 2 * FT, D_ALL + 2 * FT) }, props: { level: "Level 1", scale: 48, discipline: "architecture", categoryOverrides: RCP_HIDE_NON_CEILING } },
@@ -1772,6 +1843,7 @@ function buildShowcase(modelId: string): ModelState {
       name: "Room Schedule",
       viewType: "schedule",
       props: {
+        discipline: "architecture",
         scheduleV2: {
           ...DOOR_SCHEDULE,
           name: "ROOM SCHEDULE",
@@ -1787,9 +1859,9 @@ function buildShowcase(modelId: string): ModelState {
         },
       },
     },
-    { type: "create_view", viewId: "view-sched-doors", name: "Door Schedule", viewType: "schedule", props: { scheduleV2: DOOR_SCHEDULE } },
-    { type: "create_view", viewId: "view-sched-windows", name: "Window Schedule", viewType: "schedule", props: { scheduleV2: WINDOW_SCHEDULE } },
-    { type: "create_view", viewId: "view-sched-walls", name: "Wall Type Schedule", viewType: "schedule", props: { scheduleV2: WALL_TYPES_SCHEDULE } },
+    { type: "create_view", viewId: "view-sched-doors", name: "Door Schedule", viewType: "schedule", props: { discipline: "architecture", scheduleV2: DOOR_SCHEDULE } },
+    { type: "create_view", viewId: "view-sched-windows", name: "Window Schedule", viewType: "schedule", props: { discipline: "architecture", scheduleV2: WINDOW_SCHEDULE } },
+    { type: "create_view", viewId: "view-sched-walls", name: "Wall Type Schedule", viewType: "schedule", props: { discipline: "architecture", scheduleV2: WALL_TYPES_SCHEDULE } },
 
     { type: "create_sheet", sheetId: "sheet-a101", number: "A-101", name: "LEVEL 1 ARCHITECTURAL FLOOR PLAN", discipline: "architecture", group: "Architectural", sortOrder: 101 },
     { type: "place_viewport", viewportId: "vp-plan-l1", sheetId: "sheet-a101", viewId: "view-plan-l1", center: { x: 410, y: 305 } },
@@ -1870,9 +1942,9 @@ function buildShowcase(modelId: string): ModelState {
         section: { start: pt(W_MAIN, -7 * FT), end: pt(W_MAIN, D_ALL + 4 * FT), depthMm: Math.round(18 * FT), direction: 1, referencingViewId: "view-struct-fnd", showInDisciplines: ["structure"] },
       },
     },
-    { type: "create_view", viewId: "view-sched-footings", name: "Pad Footing Schedule", viewType: "schedule", props: { scheduleV2: FOOTING_SCHEDULE } },
-    { type: "create_view", viewId: "view-sched-columns", name: "Structural Column Schedule", viewType: "schedule", props: { scheduleV2: COLUMN_SCHEDULE } },
-    { type: "create_view", viewId: "view-sched-beams", name: "Structural Beam Framing Schedule", viewType: "schedule", props: { scheduleV2: BEAM_SCHEDULE } },
+    { type: "create_view", viewId: "view-sched-footings", name: "Pad Footing Schedule", viewType: "schedule", props: { discipline: "structure", scheduleV2: FOOTING_SCHEDULE } },
+    { type: "create_view", viewId: "view-sched-columns", name: "Structural Column Schedule", viewType: "schedule", props: { discipline: "structure", scheduleV2: COLUMN_SCHEDULE } },
+    { type: "create_view", viewId: "view-sched-beams", name: "Structural Beam Framing Schedule", viewType: "schedule", props: { discipline: "structure", scheduleV2: BEAM_SCHEDULE } },
 
     { type: "create_sheet", sheetId: "sheet-s101", number: "S-101", name: "FOUNDATION & LEVEL 1 COLUMN PLAN", discipline: "structure", group: "Structural", sortOrder: 351 },
     { type: "place_viewport", viewportId: "vp-struct-fnd", sheetId: "sheet-s101", viewId: "view-struct-fnd", center: { x: 275, y: 300 } },
@@ -1901,13 +1973,8 @@ function buildShowcase(modelId: string): ModelState {
       props: {
         level: "Level 1",
         scale: 64,
-        discipline: "mechanical",
-        visualStyle: "hidden_line",
-        viewBottomMm: 0,
-        cutHeightMm: Math.round(4 * FT),
-        viewTopRef: "level_above",
+        viewTemplateId: "vt-mech-hvac",
         hiddenElementIds: ["cafe-island-l1"],
-        categoryOverrides: MECH_HIDE_NON_HVAC,
       },
     },
     {
@@ -1916,7 +1983,7 @@ function buildShowcase(modelId: string): ModelState {
       name: "Roof — Mechanical Equipment Plan",
       viewType: "floor_plan",
       crop: { min: pt(-2 * FT, -2 * FT), max: pt(W_ALL + 2 * FT, D_ALL + 2 * FT) },
-      props: { level: "Level 2", scale: 64, discipline: "mechanical", visualStyle: "hidden_line", categoryOverrides: MECH_HIDE_NON_HVAC },
+      props: { level: "Level 2", scale: 64, viewTemplateId: "vt-mech-hvac" },
     },
     {
       type: "create_view",
@@ -1924,6 +1991,7 @@ function buildShowcase(modelId: string): ModelState {
       name: "Air Device Schedule (By Type)",
       viewType: "schedule",
       props: {
+        discipline: "mechanical",
         scheduleV2: {
           ...AIR_DEVICE_SCHEDULE,
           name: "AIR DEVICE SCHEDULE (BY TYPE)",
@@ -1949,6 +2017,7 @@ function buildShowcase(modelId: string): ModelState {
       name: "Rooftop Unit Schedule",
       viewType: "schedule",
       props: {
+        discipline: "mechanical",
         scheduleV2: {
           ...MECHANICAL_EQUIPMENT_SCHEDULE,
           name: "ROOFTOP UNIT SCHEDULE",
@@ -1963,6 +2032,7 @@ function buildShowcase(modelId: string): ModelState {
       name: "Exhaust Fan Schedule",
       viewType: "schedule",
       props: {
+        discipline: "mechanical",
         scheduleV2: {
           ...MECHANICAL_EQUIPMENT_SCHEDULE,
           name: "EXHAUST FAN SCHEDULE",
@@ -1973,7 +2043,7 @@ function buildShowcase(modelId: string): ModelState {
         },
       },
     },
-    { type: "create_view", viewId: "view-diag-air", name: "Live Air Schematic", viewType: "detail", props: { diagram: { kind: "air_schematic" } } },
+    { type: "create_view", viewId: "view-diag-air", name: "Live Air Schematic", viewType: "detail", props: { discipline: "mechanical", diagram: { kind: "air_schematic" } } },
     { type: "create_sheet", sheetId: "sheet-m101", number: "M-101", name: "MECHANICAL HVAC PLAN & SCHEDULES", discipline: "mechanical", group: "Mechanical", sortOrder: 401 },
     { type: "place_viewport", viewportId: "vp-mech-l1", sheetId: "sheet-m101", viewId: "view-mech-l1", center: { x: 245, y: 195 } },
     { type: "place_viewport", viewportId: "vp-sched-air", sheetId: "sheet-m101", viewId: "view-sched-air", center: { x: 635, y: 185 } },
@@ -1993,13 +2063,11 @@ function buildShowcase(modelId: string): ModelState {
       props: {
         level: "Level 1",
         scale: 96,
-        discipline: "electrical",
+        viewTemplateId: "vt-elec-power",
         viewBottomMm: 0,
         cutHeightMm: Math.round(4 * FT),
         viewTopMm: Math.round(10 * FT),
-        hideDeviceMarks: true,
         categoryOverrides: ELEC_POWER_HIDE,
-        circuitGraphics: { style: "chamfered", hashMarksOn: "home_runs" },
       },
     },
     {
@@ -2011,9 +2079,8 @@ function buildShowcase(modelId: string): ModelState {
       props: {
         level: "Level 2",
         scale: 96,
-        discipline: "electrical",
+        viewTemplateId: "vt-elec-power",
         categoryOverrides: ELEC_POWER_L2_HIDE,
-        circuitGraphics: { style: "chamfered", hashMarksOn: "home_runs" },
       },
     },
     {
@@ -2025,9 +2092,7 @@ function buildShowcase(modelId: string): ModelState {
       props: {
         level: "Level 1",
         scale: 64,
-        discipline: "electrical",
-        categoryOverrides: ELEC_LTG_HIDE,
-        circuitGraphics: { style: "chamfered", hashMarksOn: "home_runs", switchLegs: false },
+        viewTemplateId: "vt-elec-lighting",
       },
     },
     {
@@ -2044,15 +2109,16 @@ function buildShowcase(modelId: string): ModelState {
         circuitGraphics: { style: "chamfered", hashMarksOn: "home_runs_and_switch_legs", showCircuits: false, switchLegs: true },
       },
     },
-    { type: "create_view", viewId: "view-sched-hp1", name: "Panel HP-1 Schedule (480Y/277V)", viewType: "schedule", props: { formSchedule: { kind: "panel", elementId: "hp-1", template: builtinFormTemplate("panel"), rules: "nec-2023" } } },
-    { type: "create_view", viewId: "view-sched-lp1", name: "Panel LP-1 Schedule (208Y/120V)", viewType: "schedule", props: { formSchedule: { kind: "panel", elementId: "lp-1", template: builtinFormTemplate("panel"), rules: "nec-2023" } } },
-    { type: "create_view", viewId: "view-sched-lctrl", name: "Lighting Controls Schedule", viewType: "schedule", props: { formSchedule: { kind: "lighting_controls", template: builtinFormTemplate("lighting_controls") } } },
+    { type: "create_view", viewId: "view-sched-hp1", name: "Panel HP-1 Schedule (480Y/277V)", viewType: "schedule", props: { discipline: "electrical", formSchedule: { kind: "panel", elementId: "hp-1", template: builtinFormTemplate("panel"), rules: "nec-2023" } } },
+    { type: "create_view", viewId: "view-sched-lp1", name: "Panel LP-1 Schedule (208Y/120V)", viewType: "schedule", props: { discipline: "electrical", formSchedule: { kind: "panel", elementId: "lp-1", template: builtinFormTemplate("panel"), rules: "nec-2023" } } },
+    { type: "create_view", viewId: "view-sched-lctrl", name: "Lighting Controls Schedule", viewType: "schedule", props: { discipline: "electrical", formSchedule: { kind: "lighting_controls", template: builtinFormTemplate("lighting_controls") } } },
     {
       type: "create_view",
       viewId: "view-sched-ltg",
       name: "Lighting Fixture Schedule",
       viewType: "schedule",
       props: {
+        discipline: "electrical",
         scheduleV2: {
           ...LIGHTING_FIXTURE_SCHEDULE,
           name: "LIGHTING FIXTURE SCHEDULE (BY TYPE)",
@@ -2072,13 +2138,14 @@ function buildShowcase(modelId: string): ModelState {
         },
       },
     },
-    { type: "create_view", viewId: "view-oneline", name: "Electrical One-Line Diagram", viewType: "detail", props: { diagram: { kind: "one_line", hints: { title: "ELECTRICAL ONE-LINE DIAGRAM", showLoads: true, showWarnings: true, faultCurrent: true, lengthMode: "shortest" } } } },
+    { type: "create_view", viewId: "view-oneline", name: "Electrical One-Line Diagram", viewType: "detail", props: { discipline: "electrical", diagram: { kind: "one_line", hints: { title: "ELECTRICAL ONE-LINE DIAGRAM", showLoads: true, showWarnings: true, faultCurrent: true, lengthMode: "shortest" } } } },
     {
       type: "create_view",
       viewId: "view-oneline-dist",
       name: "Electrical Distribution One-Line (≥ 60A)",
       viewType: "detail",
       props: {
+        discipline: "electrical",
         diagram: {
           kind: "one_line",
           hints: {
@@ -2099,6 +2166,7 @@ function buildShowcase(modelId: string): ModelState {
       name: "Lighting Controls Diagram",
       viewType: "detail",
       props: {
+        discipline: "electrical",
         diagram: {
           kind: "controls_diagram",
           hints: {
@@ -2168,14 +2236,14 @@ function buildShowcase(modelId: string): ModelState {
       viewId: "view-sched-photometrics",
       name: "Photometric Summary Schedule",
       viewType: "schedule",
-      props: { formSchedule: { kind: "photometric_summary", template: builtinFormTemplate("photometric_summary") } },
+      props: { discipline: "electrical", formSchedule: { kind: "photometric_summary", template: builtinFormTemplate("photometric_summary") } },
     },
     {
       type: "create_view",
       viewId: "view-sched-egress",
       name: "Emergency / Egress Lighting Compliance Schedule",
       viewType: "schedule",
-      props: { formSchedule: { kind: "egress_lighting_compliance", template: builtinFormTemplate("egress_lighting_compliance") } },
+      props: { discipline: "electrical", formSchedule: { kind: "egress_lighting_compliance", template: builtinFormTemplate("egress_lighting_compliance") } },
     },
     { type: "create_sheet", sheetId: "sheet-e203", number: "E-203", name: "PHOTOMETRICS & EGRESS COMPLIANCE", discipline: "electrical", group: "Electrical", sortOrder: 505 },
     { type: "place_viewport", viewportId: "vp-elec-photometrics", sheetId: "sheet-e203", viewId: "view-elec-photometrics", center: { x: 235, y: 175 } },
@@ -2190,7 +2258,7 @@ function buildShowcase(modelId: string): ModelState {
       name: "Level 1 — Overall Domestic Water Plan",
       viewType: "floor_plan",
       crop: { min: pt(-12 * FT, -2 * FT), max: pt(W_ALL + 2 * FT, D_ALL + 3 * FT) },
-      props: { level: "Level 1", scale: 96, discipline: "plumbing", categoryOverrides: PLUMB_WATER_HIDE },
+      props: { level: "Level 1", scale: 96, viewTemplateId: "vt-plumb-water" },
     },
     // Live L-shape P-line callout & polygonal crop on P-101 wrapping Restroom 102 + MEP Room 101 + Break Room KS-1 while excluding dry corridor/stairwell!
     {
@@ -2202,8 +2270,7 @@ function buildShowcase(modelId: string): ModelState {
       props: {
         level: "Level 1",
         scale: 48,
-        discipline: "plumbing",
-        categoryOverrides: PLUMB_WATER_HIDE,
+        viewTemplateId: "vt-plumb-water",
         cropPolygon: [
           pt(-0.5 * FT, 11.5 * FT),
           pt(22.5 * FT, 11.5 * FT),
@@ -2240,16 +2307,16 @@ function buildShowcase(modelId: string): ModelState {
       name: "Level 2 — Domestic Water Plan",
       viewType: "floor_plan",
       crop: { min: pt(-2 * FT, 18.5 * FT), max: pt(21 * FT, D_ALL + 2 * FT) },
-      props: { level: "Level 2", scale: 48, discipline: "plumbing", categoryOverrides: PLUMB_WATER_HIDE },
+      props: { level: "Level 2", scale: 48, viewTemplateId: "vt-plumb-water" },
     },
     {
       type: "create_view",
       viewId: "view-plumb-riser-water",
       name: "Domestic Water Riser Diagram",
       viewType: "detail",
-      props: { diagram: { kind: "plumbing_riser", hints: { systemKinds: ["domestic_cold_water", "domestic_hot_water"] } } },
+      props: { discipline: "plumbing", diagram: { kind: "plumbing_riser", hints: { systemKinds: ["domestic_cold_water", "domestic_hot_water"] } } },
     },
-    { type: "create_view", viewId: "view-sched-plumb", name: "Plumbing Fixture Schedule", viewType: "schedule", props: { scheduleV2: plumbingScheduleDef } },
+    { type: "create_view", viewId: "view-sched-plumb", name: "Plumbing Fixture Schedule", viewType: "schedule", props: { discipline: "plumbing", scheduleV2: plumbingScheduleDef } },
     { type: "create_sheet", sheetId: "sheet-p101", number: "P-101", name: "DOMESTIC WATER PLANS & RISER", discipline: "plumbing", group: "Plumbing", sortOrder: 601 },
     { type: "place_viewport", viewportId: "vp-water-l1", sheetId: "sheet-p101", viewId: "view-plumb-water-l1", center: { x: 185, y: 140 } },
     { type: "place_viewport", viewportId: "vp-water-enlarged", sheetId: "sheet-p101", viewId: "view-plumb-water-enlarged", center: { x: 165, y: 335 } },
@@ -2263,7 +2330,7 @@ function buildShowcase(modelId: string): ModelState {
       name: "Level 1 — Overall Sanitary & Vent Plan",
       viewType: "floor_plan",
       crop: { min: pt(-13 * FT, -2 * FT), max: pt(W_ALL + 2 * FT, D_ALL + 3 * FT) },
-      props: { level: "Level 1", scale: 96, discipline: "plumbing", categoryOverrides: PLUMB_DWV_HIDE },
+      props: { level: "Level 1", scale: 96, viewTemplateId: "vt-plumb-dwv" },
     },
     {
       type: "create_view",
@@ -2271,7 +2338,7 @@ function buildShowcase(modelId: string): ModelState {
       name: "Enlarged L1 — DWV Core",
       viewType: "floor_plan",
       crop: { min: pt(-1 * FT, 11.5 * FT), max: pt(22 * FT, D_ALL + 1.5 * FT) },
-      props: { level: "Level 1", scale: 48, discipline: "plumbing", categoryOverrides: PLUMB_DWV_HIDE },
+      props: { level: "Level 1", scale: 48, viewTemplateId: "vt-plumb-dwv" },
     },
     // Live callout box on Overall Sanitary & Vent Plan pointing to Enlarged Sanitary & Vent Wet Core
     { type: "add_drawing_item", itemId: "co-dwv-l1", ownerId: "view-plumb-dwv-l1", shape: "callout", points: [pt(-0.5 * FT, 12.0 * FT), pt(21.5 * FT, D_ALL + 1 * FT), pt(25.0 * FT, D_ALL + 2.5 * FT)], callout: { viewId: "view-plumb-dwv-enlarged", showLabel: false } },
@@ -2281,21 +2348,21 @@ function buildShowcase(modelId: string): ModelState {
       name: "Level 2 — Sanitary & Vent Plan",
       viewType: "floor_plan",
       crop: { min: pt(-2 * FT, 18.5 * FT), max: pt(21 * FT, D_ALL + 2 * FT) },
-      props: { level: "Level 2", scale: 48, discipline: "plumbing", categoryOverrides: PLUMB_DWV_HIDE },
+      props: { level: "Level 2", scale: 48, viewTemplateId: "vt-plumb-dwv" },
     },
     {
       type: "create_view",
       viewId: "view-plumb-riser-dwv",
       name: "Sanitary & Vent Riser Diagram",
       viewType: "detail",
-      props: { diagram: { kind: "plumbing_riser", hints: { systemKinds: ["sanitary", "vent"] } } },
+      props: { discipline: "plumbing", diagram: { kind: "plumbing_riser", hints: { systemKinds: ["sanitary", "vent"] } } },
     },
     {
       type: "create_view",
       viewId: "view-plumb-iso",
       name: "Sanitary & Vent Isometric Diagram",
       viewType: "detail",
-      props: { diagram: { kind: "plumbing_isometric", hints: { systemKinds: ["sanitary", "vent"] } } },
+      props: { discipline: "plumbing", diagram: { kind: "plumbing_isometric", hints: { systemKinds: ["sanitary", "vent"] } } },
     },
     { type: "create_sheet", sheetId: "sheet-p102", number: "P-102", name: "SANITARY & VENT PLANS & ISO", discipline: "plumbing", group: "Plumbing", sortOrder: 602 },
     { type: "place_viewport", viewportId: "vp-dwv-l1", sheetId: "sheet-p102", viewId: "view-plumb-dwv-l1", center: { x: 185, y: 140 } },

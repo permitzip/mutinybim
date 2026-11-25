@@ -8,6 +8,7 @@ import {
   pushTo,
   resolveConnectors,
   resolveTextStyle,
+  resolveViewElement,
   serviceLinkName,
   type DetailLevel,
   type GroupEntry,
@@ -116,8 +117,11 @@ export function resolveCircuitGraphics(view: ViewElement): ResolvedCircuitGraphi
 /** The conductors a circuit's home run marks, in order: one per hot, the neutral on a single-pole or a circuit that states one, then the ground. */
 export function circuitConductorMarks(model: Pick<ModelState, "elements">, linkId: string | null, style: CircuitHashMarkStyle): ReadonlyArray<"hot" | "neutral" | "ground"> {
   if (style === "off" || !linkId) return [];
-  const link = model.elements[linkId];
-  if (link?.kind !== "service_link") return [];
+  const raw = model.elements[linkId];
+  if (raw?.kind !== "service_link") return [];
+  const rawSrc = model.elements[raw.source.elementId];
+  const upstream = rawSrc?.kind === "part" && isLocalDisconnectPart(model, rawSrc) ? upstreamLinkOfPart(model, rawSrc.id) : null;
+  const link = upstream ?? raw;
   const hots = Math.max(1, link.source.positions.length);
   const neutral = hots === 1 || link.electrical?.conductors?.neutralSize !== undefined;
   return [...Array.from({ length: hots }, () => "hot" as const), ...(neutral ? ["neutral" as const] : []), ...(style === "hots_neutral_ground" ? ["ground" as const] : [])];
@@ -1125,6 +1129,24 @@ function nodeOf(model: ModelState, part: PartInstance, connector: string, scale:
   return { id: part.id, part, point: wireAnchorPoint(base, part, outline, bounds), outline };
 }
 
+export function isLocalDisconnectPart(model: Pick<ModelState, "elements">, part: PartInstance): boolean {
+  const type = model.elements[part.typeId];
+  return (
+    type?.kind === "part_type" &&
+    type.definition.category === "electrical_equipment" &&
+    /disconnect/i.test(type.definition.familyName)
+  );
+}
+
+/** Find the upstream feeder/branch link feeding a local disconnect switch so plan wiring runs `equipment -> disconnect -> home run (upstream panel circuit)`. */
+export function upstreamLinkOfPart(model: Pick<ModelState, "elements">, partId: string): ServiceLink | null {
+  for (const el of Object.values(model.elements)) {
+    if (el.kind !== "service_link") continue;
+    if (el.members.some((m) => m.elementId === partId)) return el;
+  }
+  return null;
+}
+
 /** The circuit drawing for one link in model mm, or null when none of its members is shown. */
 function linkGraphic(model: ModelState, link: ServiceLink, shown: ReadonlyMap<string, PartInstance>, settings: ResolvedCircuitGraphics, scale: number, typ: boolean, drawn: DrawnRuns, detail: DetailLevel = "medium", symbolScale = 1): CircuitGraphic | null {
   const nodes: Node[] = [];
@@ -1135,15 +1157,33 @@ function linkGraphic(model: ModelState, link: ServiceLink, shown: ReadonlyMap<st
   if (nodes.length === 0) return null;
   const hint = settings.hints[link.id];
   const hrHint = hint?.homeRun;
-  const source = model.elements[link.source.elementId];
+  const rawSource = model.elements[link.source.elementId];
+  // When a branch link is fed from a local disconnect switch (e.g. HP-1-1,3,5 -> SD-RTU-1 -> RTU-1),
+  // connect equipment -> disconnect with a real branch wire and draw the home-run arrow OUT OF the
+  // disconnect pointing toward the upstream panel with the panel circuit designation (never "SD-RTU-1 to RTU-1").
+  const localDisconnect = rawSource?.kind === "part" && isLocalDisconnectPart(model, rawSource) ? rawSource : null;
+  const upstreamLink = localDisconnect ? upstreamLinkOfPart(model, localDisconnect.id) : null;
+  const effectiveLink = upstreamLink ?? link;
+  const source = model.elements[effectiveLink.source.elementId] ?? rawSource;
   const sourceAt = source?.kind === "part" ? source.position : null;
-  let home = (hrHint?.memberId ? nodes.find((n) => n.id === hrHint.memberId) : undefined) ?? nodes[0]!;
-  if (!hrHint?.memberId && sourceAt) {
+  let discNode: Node | null = null;
+  if (localDisconnect) {
+    const shownDisc = shown.get(localDisconnect.id);
+    if (shownDisc && !nodes.some((n) => n.id === shownDisc.id)) {
+      const discConn = model.elements[shownDisc.typeId]?.kind === "part_type"
+        ? (model.elements[shownDisc.typeId] as { definition: { connectors: readonly { id: string }[] } }).definition.connectors[0]?.id ?? "line"
+        : "line";
+      discNode = nodeOf(model, shownDisc, discConn, scale, detail, symbolScale);
+      nodes.push(discNode);
+    }
+  }
+  let home = (hrHint?.memberId ? nodes.find((n) => n.id === hrHint.memberId) : undefined) ?? discNode ?? nodes[0]!;
+  if (!hrHint?.memberId && !discNode && sourceAt) {
     for (const n of nodes) if (dist(n.part.position, sourceAt) < dist(home.part.position, sourceAt)) home = n;
   }
   const paths: Vec2[][] = [];
   const joins: Array<[string, string]> = [];
-  const name = serviceLinkName(model.elements, link);
+  const name = serviceLinkName(model.elements, effectiveLink);
   let homeRun: CircuitGraphic["homeRun"] = null;
   if (settings.homeRuns) {
     let tip: Vec2;
@@ -1211,7 +1251,7 @@ function linkGraphic(model: ModelState, link: ServiceLink, shown: ReadonlyMap<st
       from,
       tip,
       ...(hrPath.length > 2 ? { path: hrPath } : {}),
-      label: buildHomeRunLabel(link, name, typ, hrHint?.note),
+      label: buildHomeRunLabel(effectiveLink, name, typ, hrHint?.note),
       ...(labelAt ? { labelAt } : {}),
     };
     drawn.add(hrPath);
@@ -1626,7 +1666,8 @@ export interface CircuitJoinOnPaper {
 }
 
 /** The plan's editable wire spans (original circuits and switch legs, not typical copies), on paper. */
-export function circuitJoinsOnPaper(model: ModelState, view: ViewElement, shown: ReadonlyMap<string, PartInstance>, scale: number, toPaper: (p: Vec2) => Vec2): CircuitJoinOnPaper[] {
+export function circuitJoinsOnPaper(model: ModelState, rawView: ViewElement, shown: ReadonlyMap<string, PartInstance>, scale: number, toPaper: (p: Vec2) => Vec2): CircuitJoinOnPaper[] {
+  const view = resolveViewElement(model.elements, rawView);
   const settings = resolveCircuitGraphics(view);
   const out: CircuitJoinOnPaper[] = [];
   for (const g of deriveCircuitGraphics(model, view, shown, scale)) {
@@ -1682,7 +1723,8 @@ export interface CircuitHomeRunOnPaper {
 }
 
 /** Every original circuit's home run on paper so the editor can drag its tip, curve, or label. */
-export function circuitHomeRunsOnPaper(model: ModelState, view: ViewElement, shown: ReadonlyMap<string, PartInstance>, scale: number, toPaper: (p: Vec2) => Vec2): CircuitHomeRunOnPaper[] {
+export function circuitHomeRunsOnPaper(model: ModelState, rawView: ViewElement, shown: ReadonlyMap<string, PartInstance>, scale: number, toPaper: (p: Vec2) => Vec2): CircuitHomeRunOnPaper[] {
+  const view = resolveViewElement(model.elements, rawView);
   const settings = resolveCircuitGraphics(view);
   const textLook = resolveTextStyle(model, "link_label");
   const labelSize = textLook?.textSizeMm ?? LABEL_MM;
@@ -1787,11 +1829,12 @@ export interface CircuitSwitchLegLabelOnPaper {
 /** Every editable switch-leg label on a plan (excludes typical copies), on paper. */
 export function circuitSwitchLegLabelsOnPaper(
   model: ModelState,
-  view: ViewElement,
+  rawView: ViewElement,
   shown: ReadonlyMap<string, PartInstance>,
   scale: number,
   toPaper: (p: Vec2) => Vec2,
 ): CircuitSwitchLegLabelOnPaper[] {
+  const view = resolveViewElement(model.elements, rawView);
   const settings = resolveCircuitGraphics(view);
   const symbolScale = view.props?.symbolScale ?? 1;
   const out: CircuitSwitchLegLabelOnPaper[] = [];

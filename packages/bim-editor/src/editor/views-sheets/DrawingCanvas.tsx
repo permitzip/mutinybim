@@ -53,7 +53,7 @@ import { useLinkedReferenceState } from '../linked-reference/use-linked-referenc
 import { DetailSelectionProperties } from './draft/DetailSelectionProperties'
 import { DraftOptionsBar } from './draft/DraftOptionsBar'
 import { DraftOverlay } from './draft/DraftOverlay'
-import { marqueeHits } from './draft/draft-input'
+import { isDraftShape, marqueeHits } from './draft/draft-input'
 import { useDraftController, type DraftController } from './draft/useDraftController'
 import { useDraftInput } from './draft/useDraftInput'
 import { ToolHintBar } from '../ToolHintBar'
@@ -245,6 +245,7 @@ const ANNOTATE_EXTRA: ReadonlyArray<{ tool: Tool; label: string; icon: React.Rea
   { tool: 'keynote', label: 'Keynote', icon: <KeyRound /> },
   { tool: 'callout', label: 'Callout', icon: <SquareDashed /> },
   { tool: 'line', label: 'Line', icon: <Minus /> },
+  { tool: 'rect', label: 'Rectangle', icon: <Square /> },
   { tool: 'cloud', label: 'Revision cloud', icon: <Cloud /> },
   ...DRAFT_EXTRA,
 ]
@@ -434,16 +435,17 @@ export function DrawingCanvas({ target, model, sheetTitle, canEdit, blockedReaso
   /** Points a dimension snaps to (and then follows): element ends, middles, edges and insertion points, or a detail's linework. */
   const dimSelected = selection?.kind === 'item' && Boolean(items.find((i) => i.id === selection.id)?.dim)
   const linkedReference = useLinkedReferenceState()
-  const snaps = useMemo<SnapPoint[]>(() => {
-    if (!annotatedView || (tool !== 'dimension' && !dimSelected)) return []
-    const own = snapPoints(model, annotatedView, items, toPaperPoint)
-    // A linked model's walls too: the dimension follows the wall by its GlobalId when the link updates.
-    return linkedReference.status === 'ready' ? [...own, ...linkedDimensionAnchors(linkedReference.index, model, annotatedView, toPaperPoint)] : own
-  }, [model, annotatedView, items, toPaperPoint, tool, dimSelected, linkedReference])
-  const [hoverSnap, setHoverSnap] = useState<SnapPoint | null>(null)
-  const snapReach = SNAP_REACH_MM / Math.max(zoom, 0.25)
   const ownDraft = useDraftController()
   const draft = sharedDraft ?? ownDraft
+  const draftingSnapActive = isDraftShape(tool) || draft.pending !== null
+  const snaps = useMemo<SnapPoint[]>(() => {
+    if (!annotatedView || (tool !== 'dimension' && !dimSelected && !draftingSnapActive)) return []
+    const own = snapPoints(model, annotatedView, items, toPaperPoint)
+    // A linked model's walls too: dimensions and detail lines snap to linked walls cleanly.
+    return linkedReference.status === 'ready' ? [...own, ...linkedDimensionAnchors(linkedReference.index, model, annotatedView, toPaperPoint)] : own
+  }, [model, annotatedView, items, toPaperPoint, tool, dimSelected, draftingSnapActive, linkedReference])
+  const [hoverSnap, setHoverSnap] = useState<SnapPoint | null>(null)
+  const snapReach = SNAP_REACH_MM / Math.max(zoom, 0.25)
   /** Drawn items picked besides the selection (Shift+click), for modify operations on several. */
   const [alsoPicked, setAlsoPicked] = useState<readonly string[]>([])
   /** Sheet viewports picked besides the selection (Shift+click), for moving or removing several together. */
@@ -463,10 +465,11 @@ export function DrawingCanvas({ target, model, sheetTitle, canEdit, blockedReaso
   }
   /** Edit Boundary on a filled/masking region OR enlarged callout: its corners (paper mm) until Finish or Cancel. */
   const [boundary, setBoundary] = useState<{ readonly itemId: string; readonly kind: 'region' | 'callout'; readonly points: readonly Vec2[]; readonly picked: number | null } | null>(null)
-  /** Paper-space snap index for wall faces/corners, grids & intersections — computed lazily while editing callouts or sketching P-lines. */
+  /** Paper-space snap index for wall faces/corners, grids & intersections — active for all drafting tools, callouts, and P-lines. */
   const needGraphicsSnap =
     annotatedView !== null &&
-    (tool === 'callout' ||
+    (draftingSnapActive ||
+      tool === 'callout' ||
       boundary?.kind === 'callout' ||
       plineSketch !== null ||
       (selection?.kind === 'item' && items.some((i) => i.id === selection.id && i.shape === 'callout')))
@@ -571,6 +574,7 @@ export function DrawingCanvas({ target, model, sheetTitle, canEdit, blockedReaso
     reachMm: snapReach,
     trackBaseDeg,
     anchors: snaps,
+    graphicsIndex,
     send,
     onSaved: (id) => {
       setAlsoPicked([])
@@ -2787,6 +2791,7 @@ export function DrawingCanvas({ target, model, sheetTitle, canEdit, blockedReaso
               )}
               {draftInput.active && (
                 <DraftOverlay
+                  tool={draftInput.preview.tool}
                   prims={draftInput.preview.prims}
                   rubber={draftInput.preview.rubber}
                   marker={draftInput.preview.marker}

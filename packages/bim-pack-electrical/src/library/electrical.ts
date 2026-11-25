@@ -483,18 +483,30 @@ function distributionTypes(version: string): LibraryEntry[] {
     },
   };
 
+  const disconnectSymbol = (fused: boolean): SymbolPrimitive[] => [
+    // ANSI/NECA 100 wall-mounted safety disconnect switch: wall face sits on y = 0, box projects into room (+y).
+    // Thin wall-side mounting bar clearly indicates wall orientation on all 4 sides without obscuring upright DS/DF text.
+    { kind: "rect", center: [0, 2.0], size: [5.4, 4.0], fill: "mask", pen: "medium", units: "paper" },
+    { kind: "rect", center: [0, 0.35], size: [5.4, 0.7], fill: "solid", pen: "medium", units: "paper" },
+    ...(fused
+      ? [{ kind: "line" as const, from: [-2.7, 0.7] as [number, number], to: [-1.7, 1.7] as [number, number], pen: "thin" as const, units: "paper" as const }]
+      : []),
+    { kind: "text", at: [0, 2.35], text: fused ? "DF" : "DS", heightMm: 1.75, units: "paper" },
+  ];
+
   const disconnect = (fused: boolean, amps: number, fuseA: number | null, enclosure: string): LibraryEntry => ({
     id: `builtin:disconnect-${fused ? "fused" : "nf"}-${amps}-480@1`,
     definition: {
       familyName: fused ? "Disconnect switch, fused" : "Disconnect switch, non-fused",
       typeName: `${amps}A 600V 3P${fused ? `, ${fuseA}A fuses` : ""}, ${enclosure}`,
       category: "electrical_equipment",
+      hosting: "wall_face",
       typeParams: [length("width", "Width"), length("height", "Height"), length("depth", "Depth"), num("bus_rating", "Switch rating", "a"), num("voltage", "System voltage", "v"), choice("phases", "Phases", ["1", "3"]), choice("enclosure", "Enclosure", ["NEMA 1", "NEMA 3R", "NEMA 4X"]), ...(fused ? [num("fuse_rating", "Fuses", "a")] : [])],
       typeValues: { width: 8 * IN, height: 14 * IN, depth: 5 * IN, bus_rating: amps, voltage: 480, phases: "3", enclosure, ...(fused && fuseA !== null ? { fuse_rating: fuseA } : {}) },
       instanceParams: [text("panel_name", "Name"), text("serves", "Serves")],
       connectors: [{ ...power("line", p("height"), p("voltage"), 3, 0), label: "Line" }],
-      ...CABINET,
-      symbol: [...(CABINET.symbol ?? []), { kind: "text", at: [0, half("depth")], text: fused ? "DF" : "DS", heightMm: 70 }],
+      geometry: CABINET.geometry,
+      symbol: disconnectSymbol(fused),
       tagFields: ["panel_name"],
       source: source(version),
     },

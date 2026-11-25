@@ -30,6 +30,7 @@ import {
   planAutoTopDescription,
   planReachRange,
   polygonBounds,
+  resolveViewProps,
   sheetLayoutCommand,
   viewCamera3d,
   viewCropBox3d,
@@ -53,6 +54,9 @@ import {
   type View3dCamera,
   type ViewElement,
   type ViewProjection,
+  type ViewTemplateElement,
+  type ViewTemplateLockKey,
+  type ViewType,
   type VisualStyle,
 } from "@permitzip/bim-kernel";
 import { openSchedule, scheduleV1ToV2, ScheduleDefinitionError, type ColumnValues, type RowSet } from "@permitzip/bim-kernel/schedules";
@@ -467,10 +471,14 @@ export interface PlanViewSpec {
   readonly crop?: { readonly from: { readonly x: Measure; readonly y: Measure }; readonly to: { readonly x: Measure; readonly y: Measure } };
   /** Optional custom closed polygon crop boundary (L-shape / P-line in model coordinates, >= 3 corners). */
   readonly cropPolygon?: readonly { readonly x: Measure; readonly y: Measure }[];
+  /** Optional `view_template` id or name to bind live to this view. */
+  readonly viewTemplate?: string;
   readonly id?: string;
 }
 
 export interface ViewChanges {
+  /** Bind a `view_template` (id or name) or pass `null` to detach. */
+  readonly viewTemplate?: string | null;
   readonly discipline?: string | null;
   readonly scale?: number;
   readonly cutHeight?: Measure;
@@ -656,10 +664,82 @@ function planPolyMm(pts: readonly { readonly x: Measure; readonly y: Measure }[]
   return pts.map((p, i) => ({ x: mm(p.x, `${what}[${i}].x`), y: mm(p.y, `${what}[${i}].y`) }));
 }
 
+/** Spec for creating or updating a first-class reusable `view_template`. */
+export interface ViewTemplateSpec {
+  readonly id?: string;
+  readonly name: string;
+  readonly description?: string;
+  /** View types this template applies to (empty/omitted = any view type). */
+  readonly viewTypes?: readonly ViewType[];
+  /** Property groups locked & enforced by this template on every bound view. */
+  readonly locks: readonly ViewTemplateLockKey[];
+  readonly discipline?: string;
+  readonly browserGroup?: string;
+  readonly scale?: number;
+  readonly cutHeight?: Measure;
+  readonly viewTop?: Measure;
+  readonly viewTopRef?: "associated_level" | "level_above" | "unlimited";
+  readonly viewBottom?: Measure;
+  readonly viewDepth?: Measure;
+  readonly detailLevel?: DetailLevel;
+  readonly visualStyle?: VisualStyle;
+  readonly showLineCodes?: boolean;
+  readonly offsetStackedRuns?: boolean;
+  readonly showReferenceDisciplines?: readonly string[];
+  readonly symbolScale?: number;
+  readonly hide?: ViewProps["hiddenCategories"];
+  readonly showClearanceLabels?: boolean;
+  readonly hideDeviceMarks?: boolean;
+  readonly categoryOverrides?: Readonly<Record<string, CategoryOverrideSpec>>;
+  /** Add-on view graphics hints stored on the template (e.g. `{ circuitGraphics: ... }`), applied when `"pack_props"` is locked. */
+  readonly packProps?: Readonly<Record<string, unknown>>;
+  /** Optional library item id this template came from (firm or add-on library). */
+  readonly sourceLibraryId?: string;
+}
+
+function viewTemplateIn(model: ModelState, ref: string): ViewTemplateElement {
+  const byId = model.elements[ref];
+  if (byId && byId.kind === "view_template" && !byId.deleted) return byId;
+  const lower = ref.trim().toLowerCase();
+  const byName = Object.values(model.elements).find(
+    (e): e is ViewTemplateElement => e.kind === "view_template" && !e.deleted && e.name.trim().toLowerCase() === lower,
+  );
+  if (byName) return byName;
+  throw new ScriptRunError(`View template "${ref}" does not exist.`);
+}
+
+function toTemplateProps(spec: Omit<ViewTemplateSpec, "id" | "name" | "description" | "viewTypes" | "locks" | "sourceLibraryId">): Record<string, unknown> {
+  return {
+    ...(spec.packProps ?? {}),
+    ...(spec.discipline !== undefined ? { discipline: spec.discipline } : {}),
+    ...(spec.browserGroup !== undefined ? { browserGroup: spec.browserGroup } : {}),
+    ...(spec.scale !== undefined ? { scale: spec.scale } : {}),
+    ...(spec.cutHeight !== undefined ? { cutHeightMm: mm(spec.cutHeight, "Cut height") } : {}),
+    ...(spec.viewTop !== undefined ? { viewTopMm: mm(spec.viewTop, "View top") } : {}),
+    ...(spec.viewTopRef !== undefined ? { viewTopRef: spec.viewTopRef } : {}),
+    ...(spec.viewBottom !== undefined ? { viewBottomMm: mm(spec.viewBottom, "View bottom") } : {}),
+    ...(spec.viewDepth !== undefined ? { viewDepthMm: mm(spec.viewDepth, "View depth") } : {}),
+    ...(spec.detailLevel !== undefined ? { detailLevel: spec.detailLevel } : {}),
+    ...(spec.visualStyle !== undefined ? { visualStyle: spec.visualStyle } : {}),
+    ...(spec.showLineCodes !== undefined ? { showLineCodes: spec.showLineCodes } : {}),
+    ...(spec.offsetStackedRuns !== undefined ? { offsetStackedRuns: spec.offsetStackedRuns } : {}),
+    ...(spec.showReferenceDisciplines !== undefined ? { showReferenceDisciplines: [...spec.showReferenceDisciplines] } : {}),
+    ...(spec.symbolScale !== undefined ? { symbolScale: spec.symbolScale } : {}),
+    ...(spec.hide !== undefined ? { hiddenCategories: spec.hide } : {}),
+    ...(spec.showClearanceLabels !== undefined ? { showClearanceLabels: spec.showClearanceLabels } : {}),
+    ...(spec.hideDeviceMarks !== undefined ? { hideDeviceMarks: spec.hideDeviceMarks } : {}),
+    ...(spec.categoryOverrides !== undefined ? { categoryOverrides: toCategoryOverrides(spec.categoryOverrides) } : {}),
+  };
+}
+
 function view(ctx: ScriptContext, viewType: CreateView["viewType"], spec: PlanViewSpec): string {
   const cropPolygon = spec.cropPolygon ? planPolyMm(spec.cropPolygon, "Crop polygon") : undefined;
+  const viewTemplateId = spec.viewTemplate
+    ? onWorking(ctx, "documents.planView", (m) => viewTemplateIn(m, spec.viewTemplate!).id)
+    : undefined;
   const props: ViewProps = {
     level: levelName(ctx, spec.level),
+    ...(viewTemplateId ? { viewTemplateId } : {}),
     ...(spec.discipline ? { discipline: spec.discipline } : {}),
     ...(spec.scale ? { scale: spec.scale } : {}),
     ...(spec.cutHeight ? { cutHeightMm: mm(spec.cutHeight, "Cut height") } : {}),
@@ -1050,14 +1130,21 @@ export const documents = {
       ...(sectionUpdate ? { section: sectionUpdate } : {}),
     });
   },
-  /** Changes a view's detail level, visual style, inline service codes, scale, discipline, polygonal crop, or per-category/service graphics overrides. */
+  /** Changes a view's detail level, visual style, inline service codes, scale, discipline, view template, polygonal crop, or per-category/service graphics overrides. */
   setView(ctx: ScriptContext, viewId: string, changes: ViewChanges): void {
     const cropPolygon =
       changes.cropPolygon === undefined ? undefined : changes.cropPolygon === null ? null : planPolyMm(changes.cropPolygon, "Crop polygon");
+    const resolvedTemplateId =
+      changes.viewTemplate === undefined
+        ? undefined
+        : changes.viewTemplate === null
+          ? null
+          : onWorking(ctx, "documents.setView", (m) => viewTemplateIn(m, changes.viewTemplate!).id);
     ctx.edit({
       type: "set_view_properties",
       viewId,
       props: {
+        ...(resolvedTemplateId !== undefined ? { viewTemplateId: resolvedTemplateId } : {}),
         ...(changes.discipline !== undefined ? { discipline: changes.discipline } : {}),
         ...(changes.scale !== undefined ? { scale: changes.scale } : {}),
         ...(changes.cutHeight !== undefined ? { cutHeightMm: mm(changes.cutHeight, "Cut height") } : {}),
@@ -1088,16 +1175,88 @@ export const documents = {
     ctx.edit({ type: "duplicate_view", viewId, newViewId, name });
     return newViewId;
   },
-  /** Inspects a view's effective settings (view type, level, discipline, scale, effective view range in mm, browser group/sortOrder, and overrides) so scripts and agents can verify or audit view setup. */
+  /** Creates or updates a reusable first-class view template (`kind: "view_template"`), returning its id. Locked groups enforce view range, overrides, detail level, discipline, annotations, and pack graphics live across every bound view. */
+  viewTemplate(ctx: ScriptContext, spec: ViewTemplateSpec): string {
+    const existing = onWorking(ctx, "documents.viewTemplate", (m) => {
+      if (spec.id) {
+        const byId = m.elements[spec.id];
+        if (byId && byId.kind === "view_template" && !byId.deleted) return byId;
+      }
+      const lower = spec.name.trim().toLowerCase();
+      return Object.values(m.elements).find(
+        (e): e is ViewTemplateElement => e.kind === "view_template" && !e.deleted && e.name.trim().toLowerCase() === lower,
+      ) ?? null;
+    });
+    const props = toTemplateProps(spec) as unknown as Parameters<typeof ctx.edit>[0] extends { type: "create_view_template"; props: infer P } ? P : never;
+    if (existing) {
+      ctx.edit({
+        type: "update_view_template",
+        viewTemplateId: existing.id,
+        name: spec.name,
+        ...(spec.description !== undefined ? { description: spec.description } : {}),
+        ...(spec.viewTypes !== undefined ? { viewTypes: [...spec.viewTypes] } : {}),
+        locks: [...spec.locks],
+        props,
+      });
+      return existing.id;
+    }
+    const viewTemplateId = spec.id ?? ctx.id("vt");
+    ctx.edit({
+      type: "create_view_template",
+      viewTemplateId,
+      name: spec.name,
+      ...(spec.description !== undefined ? { description: spec.description } : {}),
+      ...(spec.viewTypes && spec.viewTypes.length > 0 ? { viewTypes: [...spec.viewTypes] } : {}),
+      locks: [...spec.locks],
+      props,
+      ...(spec.sourceLibraryId ? { sourceLibraryId: spec.sourceLibraryId } : {}),
+    });
+    return viewTemplateId;
+  },
+  /** Binds a view template (by id or name) to one or many views, or passes `null` to detach. */
+  applyViewTemplate(ctx: ScriptContext, viewRef: string | readonly string[], templateRef: string | null): void {
+    const refs = typeof viewRef === "string" ? [viewRef] : [...viewRef];
+    const resolved = onWorking(ctx, "documents.applyViewTemplate", (m) => ({
+      viewIds: refs.map((r) => viewIn(m, r, "view").id),
+      templateId: templateRef === null ? null : viewTemplateIn(m, templateRef).id,
+    }));
+    for (const viewId of resolved.viewIds) {
+      ctx.edit({ type: "set_view_properties", viewId, props: { viewTemplateId: resolved.templateId } });
+    }
+  },
+  /** Lists all active view templates in the model along with their locked groups and bound views. */
+  viewTemplates(ctx: ScriptContext) {
+    return onWorking(ctx, "documents.viewTemplates", (m) => {
+      const views = Object.values(m.elements).filter((e): e is ViewElement => e.kind === "view" && !e.deleted);
+      return Object.values(m.elements)
+        .filter((e): e is ViewTemplateElement => e.kind === "view_template" && !e.deleted)
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map((t) => ({
+          id: t.id,
+          name: t.name,
+          description: t.description ?? null,
+          viewTypes: t.viewTypes ?? [],
+          locks: t.locks,
+          sourceLibraryId: t.sourceLibraryId ?? null,
+          boundViewIds: views.filter((v) => v.props?.viewTemplateId === t.id).map((v) => v.id),
+        }));
+    });
+  },
+  /** Inspects a view's effective settings (resolved through any bound `view_template`, including view range in mm, locked groups, browser group/sortOrder, and overrides). */
   viewSettings(ctx: ScriptContext, viewRef: string) {
     return onWorking(ctx, "documents.viewSettings", (m) => {
       const v = viewIn(m, viewRef, "view");
-      const props = v.props ?? {};
-      const reach = planReachRange(m, v);
+      const resolved = resolveViewProps(m.elements, v);
+      const props = resolved.props;
+      const resolvedView = resolved.template ? { ...v, props } : v;
+      const reach = planReachRange(m, resolvedView);
       return {
         id: v.id,
         name: v.name,
         viewType: v.viewType,
+        viewTemplateId: resolved.template?.id ?? null,
+        viewTemplateName: resolved.template?.name ?? null,
+        lockedGroups: [...resolved.lockedGroups],
         level: props.level ?? null,
         discipline: props.discipline ?? null,
         scale: props.scale ?? null,
@@ -1111,7 +1270,7 @@ export const documents = {
           viewDepthMm: props.viewDepthMm ?? null,
           effectiveLowMm: reach?.lowMm ?? null,
           effectiveHighMm: reach?.highMm ?? null,
-          autoTopDescription: planAutoTopDescription(m, v),
+          autoTopDescription: planAutoTopDescription(m, resolvedView),
         },
         detailLevel: props.detailLevel ?? null,
         visualStyle: props.visualStyle ?? null,

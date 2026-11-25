@@ -12,6 +12,8 @@ import {
   DEFAULT_ANNOTATION_CROP_OFFSET_MM,
   DEFAULT_DETAIL_SCALE,
   DEFAULT_PLAN_SCALE,
+  resolveViewElement,
+  resolveViewProps,
   sheetPaperSize,
   scaleLabel,
   type CutPattern,
@@ -533,7 +535,8 @@ export function planAutoTopDescription(
  * range where it sets one; otherwise from its floor up to the next building
  * story (or highest roof above on a top/single-story floor, else a storey's reach).
  */
-export function planReachRange(model: ModelState, view: Pick<ViewElement, "viewType" | "props">): { readonly lowMm: number; readonly highMm: number } | null {
+export function planReachRange(model: ModelState, rawView: Pick<ViewElement, "viewType" | "props">): { readonly lowMm: number; readonly highMm: number } | null {
+  const view = rawView.props?.viewTemplateId ? { ...rawView, props: resolveViewProps(model.elements, rawView).props } : rawView;
   const isPlan = view.viewType === "floor_plan" || view.viewType === "ceiling_plan";
   if (!isPlan || !view.props?.level) return null;
   const floor = viewFloorMm(model, view.props.level, view.props.levelElevationMm) ?? 0;
@@ -604,7 +607,8 @@ export function planElements(model: ModelState, view: ViewElement): BimElement[]
 }
 
 /** Placed parts that actually draw in a plan view (matching discipline, category/element visibility, view range, and organization filters). */
-export function visiblePlanParts(model: ModelState, view: ViewElement): Map<string, PartInstance> {
+export function visiblePlanParts(model: ModelState, rawView: ViewElement): Map<string, PartInstance> {
+  const view = resolveViewElement(model.elements, rawView);
   const shown = new Map<string, PartInstance>();
   if (view.viewType !== "floor_plan" && view.viewType !== "ceiling_plan") return shown;
   const shownAs = organizationDisplay(model, view);
@@ -845,7 +849,8 @@ function seedPartLabelObstacles(
       // For unmarked paper-only symbols (e.g. hundreds of small schematic devices), use a conservative paper-space bound to avoid a redundant full resolve pass; compute exact bounds for marked or model-sized parts.
       const t = model.elements[el.typeId];
       const sym = t?.kind === "part_type" ? t.definition.symbol : undefined;
-      const paperOnly = !el.mark && sym !== undefined && sym.length > 0 && sym.every((s) => s.units === "paper");
+      const displayMark = el.mark || (t?.kind === "part_type" ? (t.definition.typeMark ?? "") : "");
+      const paperOnly = !displayMark && sym !== undefined && sym.length > 0 && sym.every((s) => s.units === "paper");
       if (paperOnly) {
         const r = 5.0 * symScale * frame.scale + partPad;
         takenPartBoxes.add({ min: { x: el.position.x - r, y: el.position.y - r }, max: { x: el.position.x + r, y: el.position.y + r } });
@@ -1026,8 +1031,9 @@ function drawPlan(
   // Only pre-seed the spatial collision index when at least one visible part will place an automatic mark or clearance label.
   const hasPartLabels = candidates.some((el) => {
     if (el.kind !== "part") return false;
-    if (tagsShown && Boolean(el.mark) && !taggedHere.has(el.id)) return true;
     const t = model.elements[el.typeId];
+    const displayMark = el.mark || (t?.kind === "part_type" ? (t.definition.typeMark ?? "") : "");
+    if (tagsShown && Boolean(displayMark) && !taggedHere.has(el.id)) return true;
     return t?.kind === "part_type" && (t.definition.clearances?.length ?? 0) > 0;
   });
   if (hasPartLabels) {
@@ -1415,6 +1421,17 @@ function drawPlan(
   const bgParts = maskedRunOwners.size > 0 ? deferredParts.filter((dp) => isBackgroundPart(dp.el, top.get(dp.el.id), maxRunNear)) : [];
   const fgParts = maskedRunOwners.size > 0 ? deferredParts.filter((dp) => !isBackgroundPart(dp.el, top.get(dp.el.id), maxRunNear)) : deferredParts;
   const bgStart = bgParts.length > 0 ? drawPartList(bgParts, { index, top }) : -1;
+  // In hidden-line floor plans, opaque white interior masks for double-line overhead runs (e.g. ducts & fittings)
+  // paint inline over walls, cut poché, room labels, grids, and lower furniture before the run's own ink outlines draw on top.
+  if (hidesEdges(style) && !fillsFaces(style) && !ceiling && maskedRunOwners.size > 0) {
+    const runFaces = faces.filter((f) => maskedRunOwners.has(f.owner)).sort((a, b) => a.meanNear - b.meanNear);
+    for (const f of runFaces) {
+      const poly = f.poly.map((q) => ({ x: q.u, y: q.v }));
+      for (const piece of clipFillToPainter(p, poly)) {
+        p.prims.push({ kind: "fill", points: piece.map((q) => p.toPaper(q)), grey: 1 });
+      }
+    }
+  }
   // Exact local 3D depth along curved/sloped flex runs so a drop collar below an overhead main never pokes above that main.
   const flexNearAt = (el: Extract<BimElement, { kind: "run_segment" }>, u: number, v: number): number => {
     const pts = flexPoints(el);
@@ -2482,7 +2499,8 @@ function drawItemInModel(p: Painter, item: DrawingItem, a: Vec2, b: Vec2 | undef
  * first, screened unless the view turns halftone off; then fills and poche;
  * then the view's linework and annotations.
  */
-export function drawView(prims: Primitive[], tags: TagPlacement[], model: ModelState, view: ViewElement, frame: ViewFrame, backgrounds: readonly SheetReference[] = [], blocks: TextBlock[] = []): void {
+export function drawView(prims: Primitive[], tags: TagPlacement[], model: ModelState, rawView: ViewElement, frame: ViewFrame, backgrounds: readonly SheetReference[] = [], blocks: TextBlock[] = []): void {
+  const view = resolveViewElement(model.elements, rawView);
   // A print carries the linked elements its dimensions name: they resolve from those, not only the page's loaded links.
   withLinkedReferenceModels(linkedAnchorModelsOf(backgrounds), () => drawViewBody(prims, tags, model, view, frame, backgrounds, blocks));
 }
@@ -2735,8 +2753,9 @@ export function buildSheetSceneFor(model: ModelState, sheetId: string, opts: She
 
 /** One view on its own, framed with a small margin (the detail editor and view previews). */
 export function buildViewScene(model: ModelState, viewId: string, backgrounds: readonly SheetReference[] = []): { scene: SheetScene; frame: ViewFrame } {
-  const view = model.elements[viewId];
-  if (!view || view.kind !== "view" || view.deleted) throw new Error(`View ${viewId} does not exist`);
+  const rawView = model.elements[viewId];
+  if (!rawView || rawView.kind !== "view" || rawView.deleted) throw new Error(`View ${viewId} does not exist`);
+  const view = resolveViewElement(model.elements, rawView);
   const s = viewScale(view);
   const { window } = viewCropAndWindow(model, view);
   const turned = turnedFrame({ x: 0, y: 0 }, window, s, viewRotationDeg(siteOf(model), view));
@@ -2910,7 +2929,8 @@ export interface AutoPartMarkHit {
  * Mirrors `drawView`'s exact collision-avoiding placement so interactive canvas
  * drags grab the exact mark the engineer sees and promote it into a movable tag.
  */
-export function planAutoPartMarks(model: ModelState, view: ViewElement, frame: ViewFrame, toPaperOverride?: (q: Vec2) => Vec2): AutoPartMarkHit[] {
+export function planAutoPartMarks(model: ModelState, rawView: ViewElement, frame: ViewFrame, toPaperOverride?: (q: Vec2) => Vec2): AutoPartMarkHit[] {
+  const view = resolveViewElement(model.elements, rawView);
   if (view.viewType !== "floor_plan" && view.viewType !== "ceiling_plan") return [];
   if (!categoryLook(view, "tags").visible) return [];
   const taggedHere = new Set((documentIndex(model).itemsByOwner.get(view.id) ?? []).flatMap((i) => (i.tag && !i.deleted ? [i.tag.elementId] : [])));
@@ -2925,9 +2945,10 @@ export function planAutoPartMarks(model: ModelState, view: ViewElement, frame: V
   const p = painter([], [], [], frame, view, viewCropAndWindow(model, view).crop, []);
   const markParts: { readonly el: PartInstance; readonly planSymbol: boolean | null; readonly detail: DetailLevel }[] = [];
   seedPartLabelObstacles(model, view, p, frame, display, shownAs, candidates, taken, symScale, (el, look) => {
-    if (!el.mark || taggedHere.has(el.id)) return;
+    const pt = model.elements[el.typeId];
+    const displayMark = el.mark || (pt?.kind === "part_type" ? (pt.definition.typeMark ?? "") : "");
+    if (!displayMark || taggedHere.has(el.id)) return;
     if (view.props?.hideDeviceMarks === true) {
-      const pt = model.elements[el.typeId];
       if (pt?.kind === "part_type" && isRepetitiveDevicePartCategory(pt.definition.category)) return;
     }
     markParts.push({ el, planSymbol: look.planSymbol, detail: look.detailLevel ?? display.detail });

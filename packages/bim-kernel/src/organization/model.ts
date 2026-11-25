@@ -511,6 +511,7 @@ export function carryOrganization(from: Readonly<Record<string, BimElement>>, to
 /** Kinds that are not model content: they belong to no group and no phase. */
 const UNORGANIZED_KINDS: ReadonlySet<BimElement["kind"]> = new Set([
   "view",
+  "view_template",
   "sheet",
   "viewport",
   "drawing_item",

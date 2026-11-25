@@ -37,7 +37,7 @@ const PLAN_ONLY = new Set<BimElement["kind"]>(["opening", "room", "space", "ceil
 /** Picked only when nothing else is under the pointer (they cover whole rooms and floors). */
 const BACKGROUND = new Set<BimElement["kind"]>(["room", "space", "ceiling", "grid"]);
 /** Changes to these never change what a drawing can pick. */
-const INERT = new Set<BimElement["kind"]>(["view", "viewport", "sheet", "drawing_item", "mep_system", "tag", "dimension"]);
+const INERT = new Set<BimElement["kind"]>(["view", "view_template", "viewport", "sheet", "drawing_item", "mep_system", "tag", "dimension"]);
 
 /**
  * True when the kind's row makes its records pickable: `pickShape` says where

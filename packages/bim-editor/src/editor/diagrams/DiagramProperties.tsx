@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react'
 import { ArrowDown, ArrowUp, EyeOff, RotateCcw, TriangleAlert } from 'lucide-react'
-import { DIAGRAM_KIND_LABELS, evaluateDiagram, resolveField, type DiagramHints, type ModelState, type ViewElement } from '@permitzip/bim-kernel'
+import { DIAGRAM_KIND_LABELS, elementsOfKind, evaluateDiagram, resolveField, type DiagramHints, type ModelState, type ViewElement } from '@permitzip/bim-kernel'
 import { Alert, AlertDescription, AlertTitle } from '../../ui/alert'
 import { Button } from '../../ui/button'
 import { Field, FieldDescription, FieldLabel } from '../../ui/field'
@@ -206,9 +206,8 @@ export function DiagramProperties({ model, view, selectedIds, canEdit, blockedRe
       {isOneLine && (() => {
         const included = hints.includeEquipmentIds ?? []
         const excluded = hints.excludeEquipmentIds ?? []
-        const loadChoices = Object.values(model.elements)
-          .filter((el): el is Extract<typeof el, { kind: 'part' }> => {
-            if (el.kind !== 'part') return false
+        const loadChoices = elementsOfKind(model.elements, 'part')
+          .filter((el) => {
             const t = model.elements[el.typeId]
             return t?.kind === 'part_type' && t.definition.category === 'mechanical_equipment'
           })

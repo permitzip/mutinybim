@@ -42,6 +42,8 @@ export interface FrameBeam {
   readonly endZMm: number;
   readonly sectionName: string;
   readonly section: WideFlangeSection | null;
+  /** Explicit modulus of elasticity E read from the beam or its type (`struct.elastic_modulus`, ksi); null when absent (never defaulted). */
+  readonly elasticModulus: Quantity<"stress"> | null;
 }
 
 /** A column as a support: where it stands and what it reaches, without its section. */
@@ -221,7 +223,9 @@ function read(elements: Elements): Frame {
       continue;
     }
     const sectionName = typedText(elements, b, STRUCT_KEYS.section) ?? b.sectionName;
-    beams.push({ id: b.id, label: nameOf(b, b.id), levelId: p.levelId, start: b.start, end: b.end, startZMm: at.z0 + p.startOffsetMm, endZMm: at.z0 + p.endOffsetMm, sectionName, section: sectionById(sectionName) });
+    const rawE = elementTypeValue(elements, b, STRUCT_KEYS.elasticModulus);
+    const elasticModulus = typeof rawE === "number" && Number.isFinite(rawE) && rawE > 0 ? qty("stress", rawE, "ksi") : null;
+    beams.push({ id: b.id, label: nameOf(b, b.id), levelId: p.levelId, start: b.start, end: b.end, startZMm: at.z0 + p.startOffsetMm, endZMm: at.z0 + p.endOffsetMm, sectionName, section: sectionById(sectionName), elasticModulus });
   }
 
   for (const c of elementsOfKind(elements, "column")) {

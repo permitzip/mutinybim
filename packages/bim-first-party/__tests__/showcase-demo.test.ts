@@ -12,11 +12,11 @@
  * - Renders all 12 Arch D construction sheets cleanly via `buildSheetSceneFor`
  * - Leaves the legacy `createDemoModel("f-a-demo")` mechanical fixture untouched
  */
-import { buildSheetSceneFor, ceilingGridCellCenter, columnVerticalSpan, elementValues, evaluateDiagram, resolveElementMaterial, sceneToSvg, TILE_2FT_MM, TILE_4FT_MM, validateModel } from "@permitzip/bim-kernel";
-import { evaluateEgressPhotometrics, evaluateNormalPhotometrics } from "@permitzip/bim-pack-electrical";
+import { buildSheetSceneFor, buildViewScene, ceilingGridCellCenter, columnVerticalSpan, documentIndex, elementValues, evaluateDiagram, planAutoPartMarks, resolveElementMaterial, resolveViewProps, sceneToSvg, scheduleV2Paper, tagLines, TILE_2FT_MM, TILE_4FT_MM, validateModel, visiblePlanParts } from "@permitzip/bim-kernel";
+import { circuitHomeRunsOnPaper, circuitJoinsOnPaper, evaluateEgressPhotometrics, evaluateNormalPhotometrics } from "@permitzip/bim-pack-electrical";
 import { createDemoModel } from "@permitzip/bim-pack-mechanical/seed";
 import { plumbingDiagramGraph } from "@permitzip/bim-pack-plumbing";
-import { beamStrips, footingUnsupportedAll, frameOf, structuralLoadPath } from "@permitzip/bim-pack-structural";
+import { BEAM_SCHEDULE, COLUMN_SCHEDULE, beamStrips, footingUnsupportedAll, frameOf, structuralLoadPath } from "@permitzip/bim-pack-structural";
 import { createShowcaseDemoModel } from "../src/seed";
 
 describe("createShowcaseDemoModel", () => {
@@ -141,24 +141,29 @@ describe("createShowcaseDemoModel", () => {
       expect(ev?.items.length ?? 0).toBeGreaterThan(20);
     }
 
-    // Discipline & system filters use canonical category and service:<id> keys
+    // Discipline & system filters use canonical category and service:<id> keys (resolved through bound View Templates)
     const archL1 = views.find((v) => v.id === "view-plan-l1");
-    expect(archL1?.props?.categoryOverrides?.duct?.visible).toBe(false);
-    expect(archL1?.props?.categoryOverrides?.lighting_fixtures?.visible).toBe(false);
+    const archL1Props = archL1 ? resolveViewProps(model.elements, archL1).props : undefined;
+    expect(archL1Props?.categoryOverrides?.duct?.visible).toBe(false);
+    expect(archL1Props?.categoryOverrides?.lighting_fixtures?.visible).toBe(false);
 
     const powerL1 = views.find((v) => v.id === "view-elec-power");
-    expect(powerL1?.props?.categoryOverrides?.["electrical.lighting_control"]?.visible).toBe(false);
+    const powerL1Props = powerL1 ? resolveViewProps(model.elements, powerL1).props : undefined;
+    expect(powerL1Props?.categoryOverrides?.["electrical.lighting_control"]?.visible).toBe(false);
 
     const lightingL1 = views.find((v) => v.id === "view-elec-ltg");
-    expect(lightingL1?.props?.categoryOverrides?.["electrical.receptacle"]?.visible).toBe(false);
+    const lightingL1Props = lightingL1 ? resolveViewProps(model.elements, lightingL1).props : undefined;
+    expect(lightingL1Props?.categoryOverrides?.["electrical.receptacle"]?.visible).toBe(false);
 
     const waterL1 = views.find((v) => v.id === "view-plumb-water-l1");
-    expect(waterL1?.props?.categoryOverrides?.["service:sanitary"]?.visible).toBe(false);
-    expect(waterL1?.props?.categoryOverrides?.["service:vent"]?.visible).toBe(false);
+    const waterL1Props = waterL1 ? resolveViewProps(model.elements, waterL1).props : undefined;
+    expect(waterL1Props?.categoryOverrides?.["service:sanitary"]?.visible).toBe(false);
+    expect(waterL1Props?.categoryOverrides?.["service:vent"]?.visible).toBe(false);
 
     const dwvL1 = views.find((v) => v.id === "view-plumb-dwv-l1");
-    expect(dwvL1?.props?.categoryOverrides?.["service:domestic_cold_water"]?.visible).toBe(false);
-    expect(dwvL1?.props?.categoryOverrides?.["service:domestic_hot_water"]?.visible).toBe(false);
+    const dwvL1Props = dwvL1 ? resolveViewProps(model.elements, dwvL1).props : undefined;
+    expect(dwvL1Props?.categoryOverrides?.["service:domestic_cold_water"]?.visible).toBe(false);
+    expect(dwvL1Props?.categoryOverrides?.["service:domestic_hot_water"]?.visible).toBe(false);
 
     // Exterior water meter (MTR-1) and sanitary manhole (MH-1) keep >= 5'-0" IPC 603.2 separation; FCO-1 extends via parametric riser_height
     const mtr = model.elements["mtr-1"];
@@ -340,7 +345,7 @@ describe("createShowcaseDemoModel", () => {
     expect(mechL1?.kind).toBe("view");
     if (mechL1?.kind === "view") {
       expect(mechL1.props?.hiddenElementIds).toContain("cafe-island-l1");
-      expect(mechL1.props?.viewTopRef).toBe("level_above");
+      expect(resolveViewProps(model.elements, mechL1).props.viewTopRef).toBe("level_above");
     }
 
     const distOneLine = model.elements["view-oneline-dist"];
@@ -411,7 +416,7 @@ describe("createShowcaseDemoModel", () => {
     const ltg = model.elements["view-elec-ltg"];
     expect(ltg?.kind).toBe("view");
     if (ltg?.kind === "view") {
-      expect((ltg.props as { circuitGraphics?: { style?: string } } | undefined)?.circuitGraphics?.style).toBe("chamfered");
+      expect((resolveViewProps(model.elements, ltg).props as { circuitGraphics?: { style?: string } }).circuitGraphics?.style).toBe("chamfered");
     }
     const ctrl = model.elements["view-elec-ctrl"];
     expect(ctrl?.kind).toBe("view");
@@ -429,7 +434,7 @@ describe("createShowcaseDemoModel", () => {
     const powerView = model.elements["view-elec-power"];
     expect(powerView?.kind).toBe("view");
     if (powerView?.kind === "view") {
-      expect(powerView.props?.hideDeviceMarks).toBe(true);
+      expect(resolveViewProps(model.elements, powerView).props.hideDeviceMarks).toBe(true);
     }
 
     // Verify per-equipment includeEquipmentIds pins RTU-1 (25A) onto the >=60A Distribution One-Line
@@ -439,5 +444,113 @@ describe("createShowcaseDemoModel", () => {
       const ev60 = evaluateDiagram(model.elements, dist60);
       expect(ev60?.equipment).toContain("rtu-1");
     }
+
+    // Verify PR #151 elastic beam deflection wired into gravity load path + Sheet S-301
+    const lp = structuralLoadPath(model);
+    const loadedWithDefl = lp.beams.filter((b) => b.maxDeflection !== undefined && b.maxDeflection > 0);
+    expect(loadedWithDefl.length).toBeGreaterThanOrEqual(8);
+    const s301 = model.elements["sheet-s301"];
+    expect(s301?.kind).toBe("sheet");
+    if (s301?.kind === "sheet") {
+      const s301Scene = buildSheetSceneFor(model, s301.id, { projectName: "MutinyBIM Showcase" });
+      const s301Svg = sceneToSvg(s301Scene);
+      expect(s301Svg).toContain("MAX DEFL.");
+      expect(s301Svg).toContain("L/Δ");
+      expect(s301Svg).toMatch(/L\/\d+/);
+      // Verify the two placed schedule viewports on Arch D Sheet S-301 do not overlap horizontally and fit inside the titleblock margin
+      const colVp = model.elements["vp-sched-columns"];
+      const bmVp = model.elements["vp-sched-beams"];
+      const colPaper = scheduleV2Paper(model, COLUMN_SCHEDULE);
+      const bmPaper = scheduleV2Paper(model, BEAM_SCHEDULE);
+      expect(colVp?.kind).toBe("viewport");
+      expect(bmVp?.kind).toBe("viewport");
+      expect(colPaper.kind).toBe("list");
+      expect(bmPaper.kind).toBe("list");
+      if (colVp?.kind === "viewport" && bmVp?.kind === "viewport" && colPaper.kind === "list" && bmPaper.kind === "list") {
+        const colW = colPaper.table.columnWidths.reduce((a, b) => a + b, 0);
+        const bmW = bmPaper.table.columnWidths.reduce((a, b) => a + b, 0);
+        expect(colVp.center.x + colW / 2).toBeLessThan(bmVp.center.x - bmW / 2);
+        expect(bmVp.center.x + bmW / 2).toBeLessThan(815);
+      }
+    }
+
+    // Verify first-class View Templates and full discipline tagging across Showcase views, schedules, and diagrams
+    const docs = documentIndex(model);
+    expect(docs.viewTemplates.map((t) => t.id).sort()).toEqual([
+      "vt-arch-plan",
+      "vt-elec-lighting",
+      "vt-elec-power",
+      "vt-mech-hvac",
+      "vt-plumb-dwv",
+      "vt-plumb-water",
+    ]);
+    const mechPlan = model.elements["view-mech-l1"];
+    expect(mechPlan?.kind).toBe("view");
+    if (mechPlan?.kind === "view") {
+      const resolvedMech = resolveViewProps(model.elements, mechPlan);
+      expect(resolvedMech.template?.id).toBe("vt-mech-hvac");
+      expect(resolvedMech.props.viewTopRef).toBe("level_above");
+      expect(resolvedMech.props.discipline).toBe("mechanical");
+      // Hidden-line overhead ducts emit opaque white mask fills over walls/furniture below
+      const mechBuilt = buildViewScene(model, mechPlan.id);
+      const whiteMasks = mechBuilt.scene.primitives.filter((pr) => pr.kind === "fill" && pr.grey === 1);
+      expect(whiteMasks.length).toBeGreaterThan(10);
+      // Type-mark GRDs (SD-1, RG-1) expose draggable auto-mark hit boxes and promote cleanly into mark tags
+      const mechMarks = planAutoPartMarks(model, mechPlan, mechBuilt.frame);
+      expect(mechMarks.some((h) => h.text === "SD-1")).toBe(true);
+      expect(mechMarks.some((h) => h.text === "RG-1")).toBe(true);
+      const sdHit = mechMarks.find((h) => h.text === "SD-1")!;
+      expect(tagLines(model, { elementId: sdHit.partId, template: "mark", leader: false })).toEqual(["SD-1"]);
+    }
+    const elecPower = model.elements["view-elec-power"];
+    expect(elecPower?.kind).toBe("view");
+    if (elecPower?.kind === "view") {
+      const resolvedElec = resolveViewProps(model.elements, elecPower);
+      expect(resolvedElec.template?.id).toBe("vt-elec-power");
+      expect((resolvedElec.props as Record<string, unknown>).circuitGraphics).toEqual({
+        style: "chamfered",
+        hashMarksOn: "home_runs",
+      });
+      // Wire & home-run interactive picking resolves through the bound View Template automatically
+      const shownElec = visiblePlanParts(model, elecPower);
+      expect(circuitJoinsOnPaper(model, elecPower, shownElec, 96, (pt) => pt).length).toBeGreaterThan(0);
+      expect(circuitHomeRunsOnPaper(model, elecPower, shownElec, 96, (pt) => pt).length).toBeGreaterThan(0);
+    }
+    // Roof / L2 Electrical Power Plan: SD-RTU-1 is wall-mounted on East parapet, RTU-1 connects to SD-RTU-1
+    // with a branch wire, and the home run leaves SD-RTU-1 labelled HP-1-1,3,5 (never "SD-RTU-1 to RTU-1").
+    const discRtu = model.elements["disc-rtu-1"];
+    expect(discRtu?.kind).toBe("part");
+    if (discRtu?.kind === "part") {
+      expect(discRtu.host?.kind).toBe("wall_face");
+      const discType = model.elements[discRtu.typeId];
+      expect(discType?.kind).toBe("part_type");
+      if (discType?.kind === "part_type") {
+        expect(discType.definition.hosting).toBe("wall_face");
+      }
+    }
+    const elecL2 = model.elements["view-elec-power-l2"];
+    expect(elecL2?.kind).toBe("view");
+    if (elecL2?.kind === "view") {
+      const shownL2 = visiblePlanParts(model, elecL2);
+      const joinsL2 = circuitJoinsOnPaper(model, elecL2, shownL2, 96, (pt) => pt);
+      const hrsL2 = circuitHomeRunsOnPaper(model, elecL2, shownL2, 96, (pt) => pt);
+      // Branch wire connects RTU-1 <-> SD-RTU-1
+      const rtuToDisc = joinsL2.find(
+        (j) =>
+          (j.a === "rtu-1" && j.b === "disc-rtu-1") ||
+          (j.a === "disc-rtu-1" && j.b === "rtu-1"),
+      );
+      expect(rtuToDisc).toBeDefined();
+      // Home run originates at SD-RTU-1 (disc-rtu-1) and carries upstream panel circuit HP-1-1,3,5
+      const rtuHr = hrsL2.find((h) => h.memberId === "disc-rtu-1");
+      expect(rtuHr).toBeDefined();
+      expect(rtuHr!.label).toContain("HP-1-1,3,5");
+      expect(hrsL2.some((h) => h.label.includes("SD-RTU-1 to RTU-1"))).toBe(false);
+    }
+    const missingDisciplineViews = docs.views
+      .filter((v) => v.viewType !== "three_d")
+      .filter((v) => !resolveViewProps(model.elements, v).props.discipline)
+      .map((v) => v.id);
+    expect(missingDisciplineViews).toEqual([]);
   });
 });

@@ -19,6 +19,9 @@ import {
   type Rect,
   type ViewElement,
   type ViewPropsPatch,
+  type ViewTemplateElement,
+  type ViewTemplateLockKey,
+  resolveViewProps,
   DRAFTING_CATEGORIES,
   type DraftingCategory,
   type VisualStyle,
@@ -183,11 +186,44 @@ function hiddenElementLabel(elements: ModelState['elements'] | undefined, id: st
   return id
 }
 
+const TEMPLATE_LOCK_LABELS: Readonly<Record<ViewTemplateLockKey, string>> = {
+  view_range: 'View range',
+  category_overrides: 'Visibility / Graphics',
+  detail_level: 'Detail & scale',
+  visual_style: 'Visual style',
+  discipline: 'Discipline',
+  annotations: 'Annotations',
+  pack_props: 'Trade graphics',
+}
+
 export function ViewPropertiesPanel({ view: saved, canEdit, blockedReason, submit, references, display, onDisplay, onRename, background, hostLevelId = null, levelName = null, phaseFields, crop3d, schedule, diagram, onOpenTextStyles, elements }: Props) {
   const [error, setError] = useState<string | null>(null)
   const quick = useQuickViewProps(saved, setError)
-  const view = quick.view
-  const props = view.props ?? {}
+  const rawView = quick.view
+  const resolvedTemplate = useMemo(
+    () => (elements ? resolveViewProps(elements, rawView) : { props: rawView.props ?? {}, template: null, lockedGroups: new Set<ViewTemplateLockKey>() }),
+    [elements, rawView],
+  )
+  const view = useMemo<ViewElement>(
+    () => (resolvedTemplate.template ? { ...rawView, props: resolvedTemplate.props } : rawView),
+    [rawView, resolvedTemplate],
+  )
+  const props = resolvedTemplate.props
+  const boundTemplate = resolvedTemplate.template
+  const locked = resolvedTemplate.lockedGroups
+  const compatibleTemplates = useMemo<readonly ViewTemplateElement[]>(() => {
+    if (!elements) return []
+    return Object.values(elements)
+      .filter(
+        (el): el is ViewTemplateElement =>
+          el.kind === 'view_template' &&
+          !el.deleted &&
+          (!el.viewTypes || el.viewTypes.length === 0 || el.viewTypes.includes(view.viewType)),
+      )
+      .sort((a, b) => a.name.localeCompare(b.name))
+  }, [elements, view.viewType])
+  const lockHint = (group: ViewTemplateLockKey) =>
+    locked.has(group) && boundTemplate ? `Controlled by view template "${boundTemplate.name}". Detach template to edit here.` : disabledHint
   const send = (patch: ViewPropsPatch, label: string): string | null => submit({ type: 'set_view_properties', viewId: view.id, props: patch }, label)
   const set = (patch: ViewPropsPatch, label: string) => setError(send(patch, label))
   const disciplineChoices = useMemo(() => viewDisciplineChoices(props.discipline), [props.discipline])
@@ -262,11 +298,56 @@ export function ViewPropertiesPanel({ view: saved, canEdit, blockedReason, submi
       <>
       <Separator />
       <LayoutSection surface={PROPERTIES_SURFACE} id="vp-general" title="General & scale">
+        {(compatibleTemplates.length > 0 || boundTemplate) && !props.diagram && (
+          <Field>
+            <FieldLabel htmlFor="vp-view-template">View template</FieldLabel>
+            <Select
+              value={boundTemplate?.id ?? '__none__'}
+              onValueChange={(v) =>
+                set(
+                  { viewTemplateId: v === '__none__' ? null : v },
+                  v === '__none__' ? 'detach view template' : 'apply view template',
+                )
+              }
+              disabled={!canEdit}
+            >
+              <SelectTrigger id="vp-view-template" size="sm" data-testid="vp-view-template">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="__none__">None (custom)</SelectItem>
+                  {compatibleTemplates.map((t) => (
+                    <SelectItem key={t.id} value={t.id}>
+                      {t.name}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+            {boundTemplate ? (
+              <FieldDescription className="text-xs">
+                Locks: {boundTemplate.locks.map((k) => TEMPLATE_LOCK_LABELS[k]).join(', ') || 'none'}.{' '}
+                {canEdit && (
+                  <button
+                    type="button"
+                    className="underline hover:text-foreground"
+                    onClick={() => set({ viewTemplateId: null }, 'detach view template')}
+                  >
+                    Detach
+                  </button>
+                )}
+              </FieldDescription>
+            ) : (
+              <FieldDescription className="text-xs">Bind a reusable template to standardize view range, overrides, and trade graphics across views.</FieldDescription>
+            )}
+          </Field>
+        )}
         {props.diagram && <p className="text-xs text-muted-foreground">Scale: none. A live diagram prints at its own size on any sheet, like a schedule.</p>}
         {view.viewType !== 'three_d' && !props.diagram && (
           <Field>
             <FieldLabel htmlFor="vp-view-scale">Scale</FieldLabel>
-            <Select value={String(props.scale ?? 48)} onValueChange={(v) => set({ scale: Number(v) }, 'change the scale')} disabled={!canEdit}>
+            <Select value={String(props.scale ?? 48)} onValueChange={(v) => set({ scale: Number(v) }, 'change the scale')} disabled={!canEdit || locked.has('detail_level')}>
               <SelectTrigger id="vp-view-scale" size="sm">
                 <SelectValue />
               </SelectTrigger>
@@ -280,7 +361,7 @@ export function ViewPropertiesPanel({ view: saved, canEdit, blockedReason, submi
                 </SelectGroup>
               </SelectContent>
             </Select>
-            <FieldDescription>{disabledHint ?? 'Used when this view is placed on a sheet.'}</FieldDescription>
+            <FieldDescription>{lockHint('detail_level') ?? 'Used when this view is placed on a sheet.'}</FieldDescription>
           </Field>
         )}
 
@@ -373,8 +454,8 @@ export function ViewPropertiesPanel({ view: saved, canEdit, blockedReason, submi
       {isPlan && (
         <>
           <Separator />
-          <LayoutSection surface={PROPERTIES_SURFACE} id="vp-view-range" title="View range">
-            <HeightRangeFields view={view} levels={levels} canEdit={canEdit} set={set} />
+          <LayoutSection surface={PROPERTIES_SURFACE} id="vp-view-range" title="View range" meta={locked.has('view_range') ? 'Template' : undefined}>
+            <HeightRangeFields view={view} levels={levels} canEdit={canEdit && !locked.has('view_range')} set={set} />
           </LayoutSection>
         </>
       )}
@@ -382,13 +463,13 @@ export function ViewPropertiesPanel({ view: saved, canEdit, blockedReason, submi
       {isPlan && (
         <>
           <Separator />
-          <LayoutSection surface={PROPERTIES_SURFACE} id="vp-annotations" title="Annotations & clearances">
+          <LayoutSection surface={PROPERTIES_SURFACE} id="vp-annotations" title="Annotations & clearances" meta={locked.has('annotations') ? 'Template' : undefined}>
             <FieldGroup className="gap-1.5">
               <Field orientation="horizontal">
                 <Checkbox
                   id="vp-clearance-labels"
                   checked={props.showClearanceLabels !== false}
-                  disabled={!canEdit}
+                  disabled={!canEdit || locked.has('annotations')}
                   data-testid="vp-clearance-labels"
                   onCheckedChange={(v) => setQuick({ showClearanceLabels: v === true }, v === true ? 'show clearance labels' : 'hide clearance labels')}
                 />
@@ -403,7 +484,7 @@ export function ViewPropertiesPanel({ view: saved, canEdit, blockedReason, submi
                 <Checkbox
                   id="vp-hide-device-marks"
                   checked={props.hideDeviceMarks === true}
-                  disabled={!canEdit}
+                  disabled={!canEdit || locked.has('annotations')}
                   data-testid="vp-hide-device-marks"
                   onCheckedChange={(v) => setQuick({ hideDeviceMarks: v === true }, v === true ? 'hide repetitive device marks' : 'show device marks')}
                 />
@@ -422,8 +503,8 @@ export function ViewPropertiesPanel({ view: saved, canEdit, blockedReason, submi
       {isPlan && (
         <>
           <Separator />
-          <LayoutSection surface={PROPERTIES_SURFACE} id="vp-electrical" title="Electrical graphics" defaultCollapsed={!isElectricalView}>
-            <CircuitGraphicsFields view={view} canEdit={canEdit} disabledHint={disabledHint} set={set} />
+          <LayoutSection surface={PROPERTIES_SURFACE} id="vp-electrical" title="Electrical graphics" meta={locked.has('pack_props') ? 'Template' : undefined} defaultCollapsed={!isElectricalView}>
+            <CircuitGraphicsFields view={view} canEdit={canEdit && !locked.has('pack_props')} disabledHint={lockHint('pack_props')} set={set} />
           </LayoutSection>
         </>
       )}
@@ -431,17 +512,17 @@ export function ViewPropertiesPanel({ view: saved, canEdit, blockedReason, submi
       {view.viewType !== 'detail' && (
         <>
           <Separator />
-          <LayoutSection surface={PROPERTIES_SURFACE} id="vp-lines" title="Lines & appearance">
-            <LinesFields view={view} canEdit={canEdit} set={set} setQuick={setQuick} onOpenTextStyles={onOpenTextStyles} />
+          <LayoutSection surface={PROPERTIES_SURFACE} id="vp-lines" title="Lines & appearance" meta={locked.has('detail_level') || locked.has('visual_style') ? 'Template' : undefined}>
+            <LinesFields view={view} canEdit={canEdit && !locked.has('detail_level') && !locked.has('visual_style')} set={set} setQuick={setQuick} onOpenTextStyles={onOpenTextStyles} />
           </LayoutSection>
 
           <Separator />
-          <LayoutSection surface={PROPERTIES_SURFACE} id="vp-visibility-graphics" title="Visibility / Graphics" defaultCollapsed>
+          <LayoutSection surface={PROPERTIES_SURFACE} id="vp-visibility-graphics" title="Visibility / Graphics" meta={locked.has('category_overrides') ? 'Template' : undefined} defaultCollapsed>
             <CategoryGraphicsTable
               view={view}
               services={firstPartyServiceRegistry().rows}
-              canEdit={canEdit}
-              {...(disabledHint ? { disabledHint } : {})}
+              canEdit={canEdit && !locked.has('category_overrides')}
+              {...(lockHint('category_overrides') ? { disabledHint: lockHint('category_overrides') } : {})}
               onPatch={(patch, label) => {
                 if (patch.hiddenCategories && Object.keys(patch).length === 1) {
                   setQuick({ hiddenCategories: patch.hiddenCategories }, label)

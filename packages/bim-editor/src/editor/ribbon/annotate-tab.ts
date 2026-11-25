@@ -30,7 +30,6 @@ export function drawingReason(ctx: BuildingModelRibbonContext, tool: DrawingTool
   if (tool === 'dimension') return 'Dimensions measure a view. Open a plan, section or detail view, or double-click one on the sheet.'
   if (tool === 'tag') return 'Tags label the model. Open a plan or a section, or double-click one on the sheet.'
   if (tool === 'keynote') return 'Keynotes go on elements in a view. Open a plan or a section, or double-click one on the sheet.'
-  if (tool === 'rect') return 'Rectangles are drawn on sheets and in detail views.'
   return 'A 3D view or schedule takes no annotation. Draw on the sheet, or in a plan, section or detail view.'
 }
 

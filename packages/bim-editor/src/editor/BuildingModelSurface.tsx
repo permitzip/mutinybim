@@ -666,6 +666,9 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
   const propertiesOpen = selection !== null || (!showDrawing && openView !== null)
   /** A schedule view on its live side opens as the editable grid. */
   const scheduleGridOpen = openView !== null && openView.viewType === 'schedule' && !showDrawing
+  useEffect(() => {
+    viewer?.setPaused(showDrawing || scheduleGridOpen)
+  }, [viewer, showDrawing, scheduleGridOpen])
   /** A saved view with a live model is showing its drawing: the model tools switch it to the live model. */
   const liveViewOnDrawing = openView !== null && openView.viewType !== 'detail' && showDrawing
   const planOpen = openView !== null && (openView.viewType === 'floor_plan' || openView.viewType === 'ceiling_plan') && viewDisplay === 'model'

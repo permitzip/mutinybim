@@ -1,4 +1,4 @@
-import type { DrawingItem, SheetProps, ViewProps, ViewType, Viewport } from "./documents";
+import type { DrawingItem, SheetProps, ViewProps, ViewTemplateElement, ViewType, Viewport } from "./documents";
 import { readStoredPackPins } from "./packs/pin";
 
 /**
@@ -473,7 +473,7 @@ export interface PartInstance extends ModelElementBase, ClassifiedCore {
 export type ParamValue = number | string | boolean;
 
 export type BuildingElement = Wall | Slab | Opening | Room | GridLine | Column | Beam | RiserSegment | Component | Ceiling;
-export type DocumentElement = ViewElement | Sheet | Tag | Dimension | Viewport | DrawingItem;
+export type DocumentElement = ViewElement | ViewTemplateElement | Sheet | Tag | Dimension | Viewport | DrawingItem;
 export type PartElement = Level | PartTypeElement | PartInstance | MountingPlane | ElementTypeElement;
 
 /** A group, phase, phase filter or the active-group/phase settings (organization/model.ts). */

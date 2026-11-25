@@ -744,8 +744,8 @@ function autoShiftClearanceForWalls(
     return lvl?.kind === "level" ? lvl.name : part.partition?.level ?? null;
   })();
 
-  for (const el of Object.values(model.elements)) {
-    if (el.kind !== "wall" || el.id === hostWallId) continue;
+  for (const el of elementsOfKind(model.elements, "wall")) {
+    if (el.id === hostWallId) continue;
     if (partLevelName && el.partition?.level && el.partition.level !== partLevelName) continue;
     const halfT = el.thickness / 2;
     const a = toLocal(el.start.x, el.start.y);
