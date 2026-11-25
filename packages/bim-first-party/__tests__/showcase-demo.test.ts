@@ -454,8 +454,8 @@ describe("createShowcaseDemoModel", () => {
     if (s301?.kind === "sheet") {
       const s301Scene = buildSheetSceneFor(model, s301.id, { projectName: "MutinyBIM Showcase" });
       const s301Svg = sceneToSvg(s301Scene);
-      expect(s301Svg).toContain("MAX DEFL.");
-      expect(s301Svg).toContain("L/Δ");
+      expect(s301Svg).toContain("TOTAL DEFL.");
+      expect(s301Svg).toContain("LIVE L/Δ");
       expect(s301Svg).toMatch(/L\/\d+/);
       // Verify the two placed schedule viewports on Arch D Sheet S-301 do not overlap horizontally and fit inside the titleblock margin
       const colVp = model.elements["vp-sched-columns"];

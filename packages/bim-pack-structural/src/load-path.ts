@@ -71,6 +71,10 @@ export interface BeamLoadResult {
   readonly maxDeflection?: Quantity<"length">;
   /** Distance from beam start to `maxDeflection`; present with `maxDeflection`. */
   readonly maxDeflectionAt?: Quantity<"length">;
+  /** Largest elastic bending deflection under the modeled live load only. */
+  readonly maxLiveDeflection?: Quantity<"length">;
+  /** Distance from beam start to `maxLiveDeflection`; present with `maxLiveDeflection`. */
+  readonly maxLiveDeflectionAt?: Quantity<"length">;
 }
 
 export interface ColumnLoadResult {
@@ -361,6 +365,7 @@ function build(model: ModelState): Built {
     const uniform = (c: LoadCase) => fromCanonical("line_load", c === "dead" ? w.deadNPerM : c === "live" ? w.liveNPerM : 0);
     let start = ZERO;
     let end = ZERO;
+    let live: ReturnType<typeof simpleBeam>;
     let all: ReturnType<typeof simpleBeam>;
     try {
       for (const c of LOAD_CASES) {
@@ -368,14 +373,32 @@ function build(model: ModelState): Built {
         start = addVectors(start, vectorOf(c, r.startReaction));
         end = addVectors(end, vectorOf(c, r.endReaction));
       }
-      all = simpleBeam({
-        span,
-        uniform: fromCanonical("line_load", w.deadNPerM + w.liveNPerM),
-        pointLoads: point("equipment"),
-        ...(w.beam.elasticModulus !== null && w.beam.section !== null
-          ? { elasticModulus: w.beam.elasticModulus, momentOfInertia: w.beam.section.ix }
-          : {}),
-      });
+      const stiffness = w.beam.elasticModulus !== null && w.beam.section !== null ? { elasticModulus: w.beam.elasticModulus, momentOfInertia: w.beam.section.ix } : undefined;
+      const liveInput = { span, uniform: uniform("live"), pointLoads: [] as PointLoad[] };
+      const totalInput = { span, uniform: fromCanonical("line_load", w.deadNPerM + w.liveNPerM), pointLoads: point("equipment") };
+      if (stiffness) {
+        try {
+          live = simpleBeam({ ...liveInput, ...stiffness });
+        } catch (err) {
+          if (!(err instanceof SimpleBeamInputError)) throw err;
+          console.error("[struct.load_path] live deflection omitted", { beamId: w.beam.id, message: err.message });
+          problems.push(`${w.beam.label}: live-load deflection omitted: ${err.message}`);
+          live = simpleBeam(liveInput);
+        }
+      } else {
+        live = simpleBeam(liveInput);
+      }
+      try {
+        all = simpleBeam({
+          ...totalInput,
+          ...(stiffness ?? {}),
+        });
+      } catch (err) {
+        if (!(err instanceof SimpleBeamInputError)) throw err;
+        console.error("[struct.load_path] total deflection omitted", { beamId: w.beam.id, message: err.message });
+        problems.push(`${w.beam.label}: total-load deflection omitted: ${err.message}`);
+        all = simpleBeam(totalInput);
+      }
     } catch (err) {
       if (!(err instanceof SimpleBeamInputError)) throw err;
       console.error("[struct.load_path] beam skipped", { beamId: w.beam.id, message: err.message });
@@ -406,6 +429,9 @@ function build(model: ModelState): Built {
       maxMomentAt: all.maxMomentAt,
       ...(all.maxDeflection !== undefined && all.maxDeflectionAt !== undefined
         ? { maxDeflection: all.maxDeflection, maxDeflectionAt: all.maxDeflectionAt }
+        : {}),
+      ...(live.maxDeflection !== undefined && live.maxDeflectionAt !== undefined
+        ? { maxLiveDeflection: live.maxDeflection, maxLiveDeflectionAt: live.maxDeflectionAt }
         : {}),
     });
   }
