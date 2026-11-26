@@ -1,3 +1,4 @@
+import { smoothStrokeSvgPath } from "../annotation/markups";
 import { textBlockToSvg } from "../annotation/text-note";
 import { TONE_GREY, fillGrey, lineWidthMm, type SheetScene, type Tone } from "./sheet";
 
@@ -57,6 +58,22 @@ export function sceneToSvg(scene: SheetScene, opts: { readonly hideNoteIds?: Rea
       parts.push(
         `<circle cx="${p.at.x.toFixed(2)}" cy="${p.at.y.toFixed(2)}" r="${p.r.toFixed(3)}" fill="none" stroke="${stroke(p.tone, ink(p.color))}" stroke-width="${lineWidthMm(p)}"${dash}/>`,
       );
+    } else if (p.kind === "stroke") {
+      const color = p.preserveColor ? (p.color ?? "#dc2626") : (ink(p.color) ?? "#000");
+      const opacity = p.opacity !== undefined && p.opacity < 1 ? ` stroke-opacity="${p.opacity.toFixed(2)}"` : "";
+      const fillOpacity = p.opacity !== undefined && p.opacity < 1 ? ` fill-opacity="${p.opacity.toFixed(2)}"` : "";
+      const tagAttr = p.markupId ? ` data-markup-id="${esc(p.markupId)}"` : "";
+      if (p.points.length === 1) {
+        const q = p.points[0];
+        if (q) parts.push(`<circle cx="${q.x.toFixed(2)}" cy="${q.y.toFixed(2)}" r="${(p.widthMm / 2).toFixed(2)}" fill="${color}"${fillOpacity} stroke="none"${tagAttr}/>`);
+      } else {
+        const d = p.sharp
+          ? `M${p.points.map((q) => `${q.x.toFixed(2)} ${q.y.toFixed(2)}`).join(" L")}${p.closed ? " Z" : ""}`
+          : smoothStrokeSvgPath(p.points, p.closed);
+        if (d) {
+          parts.push(`<path d="${d}" fill="none" stroke="${color}" stroke-width="${p.widthMm.toFixed(2)}" stroke-linecap="round" stroke-linejoin="round"${opacity}${tagAttr}/>`);
+        }
+      }
     } else {
       // SVG font-size is the em box; cap height is ~0.72 em for Helvetica (a scene font says its own).
       const face = p.font ? fonts.get(p.font) : undefined;

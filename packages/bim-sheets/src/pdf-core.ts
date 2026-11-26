@@ -1,6 +1,6 @@
 import fontkit from "@pdf-lib/fontkit";
-import { PDFArray, PDFDocument, PDFName, PDFString, StandardFonts, degrees, rgb, type PDFFont, type RGB } from "pdf-lib";
-import { TONE_GREY, fillGrey, lineWidthMm, organizationOf, type ModelState, type SheetScene, type Tone } from "@permitzip/bim-kernel";
+import { LineCapStyle, PDFArray, PDFDocument, PDFName, PDFString, StandardFonts, degrees, rgb, type PDFFont, type RGB } from "pdf-lib";
+import { TONE_GREY, fillGrey, lineWidthMm, organizationOf, smoothStrokeSvgPath, type ModelState, type SheetScene, type Tone } from "@permitzip/bim-kernel";
 import { drawTextBlocks } from "./text/pdf-text";
 import { WinAnsiWriter } from "./text/win-ansi";
 import type { NoteFontSource } from "./text/fonts";
@@ -219,6 +219,35 @@ export async function renderSheetPdfWith(scene: SheetScene, meta: PdfMetadata, d
         borderWidth: lineWidthMm(p) * MM_TO_PT,
         ...(p.dash ? { borderDashArray: p.dash.map((d) => d * MM_TO_PT) } : {}),
       });
+    } else if (p.kind === "stroke") {
+      const strokeColor = p.preserveColor ? hexColor(p.color ?? "#dc2626") : toneColor(undefined, p.color);
+      const opacity = p.opacity ?? 1;
+      if (p.points.length === 1) {
+        const q = p.points[0];
+        if (q) {
+          page.drawCircle({
+            x: x(q.x),
+            y: y(q.y),
+            size: (p.widthMm / 2) * MM_TO_PT,
+            color: strokeColor,
+            opacity,
+            borderWidth: 0,
+          });
+        }
+      } else {
+        const ptPoints = p.points.map((q) => ({ x: q.x * MM_TO_PT, y: q.y * MM_TO_PT }));
+        const path = smoothStrokeSvgPath(ptPoints, p.closed);
+        if (path) {
+          page.drawSvgPath(path, {
+            x: 0,
+            y: height,
+            borderColor: strokeColor,
+            borderWidth: p.widthMm * MM_TO_PT,
+            borderOpacity: opacity,
+            borderLineCap: LineCapStyle.Round,
+          });
+        }
+      }
     } else {
       const face = p.font ? sceneFonts.get(p.font) : undefined;
       const font: PDFFont = face?.font ?? (await standardFontFor(p.fontFamily, p.bold, p.italic));
