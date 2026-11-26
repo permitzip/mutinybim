@@ -185,4 +185,42 @@ describe("sheet review markups", () => {
     expect(ctx[0]!.viewId).toBe("view-plan");
     expect(ctx[0]!.scale).toBe(48);
   });
+
+  it("cascades sheet markups on delete_sheet and delete_elements (cascade), and paints markup ink after text blocks", () => {
+    let m = modelWithSheet();
+    m = run(m, {
+      type: "create_text_note",
+      itemId: "note-1",
+      ownerId: "sheet-m101",
+      at: { x: 100, y: 100 },
+      width: 60,
+      textSize: 3,
+      paragraphs: [{ runs: [{ text: "GENERAL NOTE" }] }],
+    });
+    m = run(m, {
+      type: "add_sheet_markup",
+      itemId: "mk-over-note",
+      sheetId: "sheet-m101",
+      points: [{ x: 95, y: 95 }, { x: 135, y: 110 }],
+      markup: { color: "#dc2626", widthMm: 2.4, tool: "marker", status: "open" },
+    });
+    const scene = buildSheetSceneFor(m, "sheet-m101", { projectName: "Test", includeMarkups: true });
+    expect(scene.textBlocks?.length).toBeGreaterThan(0);
+    const svg = sceneToSvg(scene);
+    const noteIdx = svg.indexOf('data-note-id="note-1"');
+    const markupIdx = svg.indexOf('data-markup-id="mk-over-note"');
+    expect(noteIdx).toBeGreaterThan(-1);
+    expect(markupIdx).toBeGreaterThan(noteIdx);
+
+    // delete_sheet cascades markups cleanly
+    const afterDeleteSheet = run(m, { type: "delete_sheet", sheetId: "sheet-m101" });
+    const deletedViaSheet = afterDeleteSheet.elements["mk-over-note"];
+    expect(deletedViaSheet?.kind === "drawing_item" && deletedViaSheet.deleted).toBe(true);
+    expect(documentIndex(afterDeleteSheet).markupsBySheet.get("sheet-m101")).toBeUndefined();
+
+    // delete_elements (cascade) also removes markups cleanly
+    const afterCascade = run(m, { type: "delete_elements", ids: ["sheet-m101"], policy: "cascade" });
+    expect(afterCascade.elements["mk-over-note"]).toBeUndefined();
+    expect(documentIndex(afterCascade).markupsBySheet.get("sheet-m101")).toBeUndefined();
+  });
 });

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { DEFAULT_SETTINGS, canonicalJson, elementCount, elementValues, executeCommand, gatedRecordFeatures, type ModelState } from "@permitzip/bim-kernel";
+import { DEFAULT_SETTINGS, canonicalJson, elementCount, elementValues, executeCommand, gatedRecordFeatures, withUpgradePolicy, type ModelState } from "@permitzip/bim-kernel";
 import { contentHashOf, makeItem, scriptItemSchema, scriptReadsSchema, type ScriptItem, type ScriptReads } from "@permitzip/bim-library";
 import {
   CLASH_DETAIL_LEVELS,
@@ -915,12 +915,19 @@ export function registerBimScriptTools(server: McpServer, helpers: ScriptToolHel
         if (renderRequests.length > 0 && args.model_id) {
           if (helpers.renderImages) {
             try {
-              const targetModel = await helpers.withModel(extra, { project_id: args.project_id, model_id: args.model_id }, async (s) => {
-                let m = s.model();
+              // Replay from `run.head` (the exact validated snapshot) under `run.slice.features`
+              // so rendered previews match reports/checks and honor feature-gated commands (e.g. markups).
+              const featureSet = new Set(run.slice.features);
+              const targetModel = withUpgradePolicy((f) => featureSet.has(f), () => {
+                let m = run.head;
                 if (got.output.kind === "edits" && got.output.steps > 0) {
+                  const at = new Date().toISOString();
                   for (const batch of got.output.batches) {
-                    const res = executeCommand(m, batch, { actorId: "script-preview", at: new Date().toISOString() });
-                    if (res.ok) m = res.model;
+                    const res = executeCommand(m, batch, { actorId: "script-preview", at });
+                    if (!res.ok) {
+                      throw new Error(`Preview replay refused: ${res.error.message}`);
+                    }
+                    m = res.model;
                   }
                 }
                 return m;

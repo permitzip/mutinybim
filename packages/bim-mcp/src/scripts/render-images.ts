@@ -1,11 +1,21 @@
 import {
   buildSheetSceneFor,
   buildViewScene,
+  detailItemBounds,
   documentIndex,
+  elementsAabb,
+  frameForViewport,
   markupBounds,
+  modelToPaper,
   sceneToSvg,
+  sheetViewports,
+  viewMapping,
+  type DrawingItem,
   type ModelState,
   type SheetScene,
+  type Vec2,
+  type ViewElement,
+  type ViewFrame,
 } from "@permitzip/bim-kernel";
 import type { ScriptRenderRequest } from "@permitzip/bim-script";
 import type { ScriptRenderedImage } from "../host";
@@ -27,6 +37,24 @@ function clampBox(b: PaperBox, paper: { readonly x: number; readonly y: number }
   return { min: { x: minX, y: minY }, max: { x: maxX, y: maxY } };
 }
 
+function unionPaperBoxes(boxes: readonly PaperBox[]): PaperBox | null {
+  if (boxes.length === 0) return null;
+  return {
+    min: { x: Math.min(...boxes.map((b) => b.min.x)), y: Math.min(...boxes.map((b) => b.min.y)) },
+    max: { x: Math.max(...boxes.map((b) => b.max.x)), y: Math.max(...boxes.map((b) => b.max.y)) },
+  };
+}
+
+function drawnItemBox(item: DrawingItem, toPaper: (p: Vec2) => Vec2): PaperBox | null {
+  return detailItemBounds(item, toPaper) ?? unionPaperBoxes(item.points.map((p) => toPaper(p)).map((p) => ({ min: p, max: p })));
+}
+
+function corners3d(box: { min: { x: number; y: number; z: number }; max: { x: number; y: number; z: number } }) {
+  const out: Array<{ x: number; y: number; z: number }> = [];
+  for (const x of [box.min.x, box.max.x]) for (const y of [box.min.y, box.max.y]) for (const z of [box.min.z, box.max.z]) out.push({ x, y, z });
+  return out;
+}
+
 function cropSvg(svg: string, region: PaperBox, highlights: readonly PaperBox[]): string {
   const w = Math.max(1, region.max.x - region.min.x);
   const h = Math.max(1, region.max.y - region.min.y);
@@ -45,14 +73,78 @@ function cropSvg(svg: string, region: PaperBox, highlights: readonly PaperBox[])
   return out.replace("</svg>", `<g data-highlight="script-render">${boxes}</g></svg>`);
 }
 
+function highlightBoxesForView(model: ModelState, view: ViewElement, frame: ViewFrame, ids: readonly string[] | undefined): PaperBox[] {
+  if (!ids || ids.length === 0) return [];
+  const boxes: PaperBox[] = [];
+  const index = documentIndex(model);
+  const drawn = new Map<string, DrawingItem>((index.itemsByOwner.get(view.id) ?? []).map((i) => [i.id, i]));
+  let mapping: ReturnType<typeof viewMapping> | null = null;
+  try {
+    mapping = viewMapping(model, view);
+  } catch {
+    mapping = null;
+  }
+  for (const id of ids) {
+    const item = drawn.get(id);
+    if (item && !item.deleted && item.points.length > 0) {
+      const box = drawnItemBox(item, (p) => modelToPaper(frame, p));
+      if (box) {
+        boxes.push({ min: { x: box.min.x - 1.5, y: box.min.y - 1.5 }, max: { x: box.max.x + 1.5, y: box.max.y + 1.5 } });
+        continue;
+      }
+    }
+    const aabb = mapping && mapping.modelReason === null ? elementsAabb(model, [id]) : null;
+    if (!aabb || !mapping) continue;
+    const m = mapping;
+    const pts = corners3d(aabb).map((c) => {
+      const d = m.toDrawing(c);
+      return modelToPaper(frame, { x: d.u, y: d.v });
+    });
+    const box = unionPaperBoxes(pts.map((p) => ({ min: p, max: p })));
+    if (box) boxes.push({ min: { x: box.min.x - 1.5, y: box.min.y - 1.5 }, max: { x: box.max.x + 1.5, y: box.max.y + 1.5 } });
+  }
+  return boxes;
+}
+
 function highlightBoxesForSheet(model: ModelState, sheetId: string, ids: readonly string[] | undefined): PaperBox[] {
   if (!ids || ids.length === 0) return [];
-  const wanted = new Set(ids);
+  const sheet = model.elements[sheetId];
+  if (!sheet || sheet.kind !== "sheet" || sheet.deleted) return [];
+  const index = documentIndex(model);
+  const ownMarkups = new Map<string, DrawingItem>((index.markupsBySheet.get(sheet.id) ?? []).map((i) => [i.id, i]));
+  const ownItems = new Map<string, DrawingItem>((index.itemsByOwner.get(sheet.id) ?? []).map((i) => [i.id, i]));
   const boxes: PaperBox[] = [];
-  for (const item of documentIndex(model).markupsBySheet.get(sheetId) ?? []) {
-    if (!wanted.has(item.id)) continue;
-    const b = markupBounds(item);
-    if (b) boxes.push({ min: { x: b.min.x - 4, y: b.min.y - 4 }, max: { x: b.max.x + 4, y: b.max.y + 4 } });
+  const rest: string[] = [];
+  for (const id of ids) {
+    const mk = ownMarkups.get(id);
+    if (mk && !mk.deleted) {
+      const b = markupBounds(mk);
+      if (b) {
+        boxes.push({ min: { x: b.min.x - 4, y: b.min.y - 4 }, max: { x: b.max.x + 4, y: b.max.y + 4 } });
+        continue;
+      }
+    }
+    const item = ownItems.get(id);
+    if (item && !item.deleted && item.points.length > 0) {
+      const b = drawnItemBox(item, (p) => p);
+      if (b) {
+        boxes.push({ min: { x: b.min.x - 1.5, y: b.min.y - 1.5 }, max: { x: b.max.x + 1.5, y: b.max.y + 1.5 } });
+        continue;
+      }
+    }
+    rest.push(id);
+  }
+  if (rest.length > 0) {
+    for (const { viewport, view } of sheetViewports(model, sheet)) {
+      if (view.viewType === "schedule") continue;
+      const frame = frameForViewport(model, viewport, view);
+      const left = frame.center.x - frame.size.x / 2;
+      const top = frame.center.y - frame.size.y / 2;
+      for (const b of highlightBoxesForView(model, view, frame, rest)) {
+        if (b.max.x < left || b.min.x > left + frame.size.x || b.max.y < top || b.min.y > top + frame.size.y) continue;
+        boxes.push(b);
+      }
+    }
   }
   return boxes;
 }
@@ -86,9 +178,13 @@ async function rasterizeScene(
   req: ScriptRenderRequest,
   highlights: readonly PaperBox[],
   fontDirs: readonly string[],
-): Promise<{ png: Buffer; widthPx: number; heightPx: number; dpi: number; region: PaperBox } | null> {
+): Promise<{ png: Buffer; widthPx: number; heightPx: number; dpi: number; region: PaperBox }> {
   const resvgMod = await loadResvg();
-  if (!resvgMod) return null;
+  if (!resvgMod) {
+    throw new Error(
+      "Optional PNG rasterizer '@resvg/resvg-js' is not installed on this host; install '@resvg/resvg-js' or configure a custom renderImages host to attach sheet/view images.",
+    );
+  }
   const full: PaperBox = { min: { x: 0, y: 0 }, max: { x: scene.paper.x, y: scene.paper.y } };
   const region = req.regionMm ? clampBox(req.regionMm, scene.paper) : full;
   const wMm = Math.max(1, region.max.x - region.min.x);
@@ -140,7 +236,6 @@ export async function renderScriptRequests(
         includeResolvedMarkups: req.includeResolvedMarkups ?? false,
       });
       const rendered = await rasterizeScene(scene, req, highlightBoxesForSheet(model, sheet.id, req.highlightIds), fontDirs);
-      if (!rendered) continue;
       out.push({
         label: req.label,
         kind: "sheet",
@@ -156,9 +251,8 @@ export async function renderScriptRequests(
     } else {
       const view = model.elements[req.targetId];
       if (!view || view.kind !== "view" || view.deleted) continue;
-      const { scene } = buildViewScene(model, view.id);
-      const rendered = await rasterizeScene(scene, req, [], fontDirs);
-      if (!rendered) continue;
+      const { scene, frame } = buildViewScene(model, view.id);
+      const rendered = await rasterizeScene(scene, req, highlightBoxesForView(model, view, frame, req.highlightIds), fontDirs);
       out.push({
         label: req.label,
         kind: "view",

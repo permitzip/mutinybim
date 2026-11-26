@@ -186,6 +186,39 @@ export async function renderSheetPdfWith(scene: SheetScene, meta: PdfMetadata, d
     page.drawImage(embedded, { x: x(im.at.x), y: y(im.at.y + im.size.y), width: im.size.x * MM_TO_PT, height: im.size.y * MM_TO_PT });
   }
 
+  const drawStroke = (p: Extract<SheetScene["primitives"][number], { kind: "stroke" }>) => {
+    const strokeColor = p.preserveColor ? hexColor(p.color ?? "#dc2626") : toneColor(undefined, p.color);
+    const opacity = p.opacity ?? 1;
+    if (p.points.length === 1) {
+      const q = p.points[0];
+      if (q) {
+        page.drawCircle({
+          x: x(q.x),
+          y: y(q.y),
+          size: (p.widthMm / 2) * MM_TO_PT,
+          color: strokeColor,
+          opacity,
+          borderWidth: 0,
+        });
+      }
+    } else {
+      const ptPoints = p.points.map((q) => ({ x: q.x * MM_TO_PT, y: q.y * MM_TO_PT }));
+      const path = p.sharp
+        ? `M${ptPoints.map((q) => `${q.x.toFixed(3)} ${q.y.toFixed(3)}`).join(" L")}${p.closed ? " Z" : ""}`
+        : smoothStrokeSvgPath(ptPoints, p.closed);
+      if (path) {
+        page.drawSvgPath(path, {
+          x: 0,
+          y: height,
+          borderColor: strokeColor,
+          borderWidth: p.widthMm * MM_TO_PT,
+          borderOpacity: opacity,
+          borderLineCap: LineCapStyle.Round,
+        });
+      }
+    }
+  };
+  const overlayStrokes: Array<Extract<SheetScene["primitives"][number], { kind: "stroke" }>> = [];
   for (const p of scene.primitives) {
     if (p.kind === "line") {
       page.drawLine({
@@ -220,34 +253,8 @@ export async function renderSheetPdfWith(scene: SheetScene, meta: PdfMetadata, d
         ...(p.dash ? { borderDashArray: p.dash.map((d) => d * MM_TO_PT) } : {}),
       });
     } else if (p.kind === "stroke") {
-      const strokeColor = p.preserveColor ? hexColor(p.color ?? "#dc2626") : toneColor(undefined, p.color);
-      const opacity = p.opacity ?? 1;
-      if (p.points.length === 1) {
-        const q = p.points[0];
-        if (q) {
-          page.drawCircle({
-            x: x(q.x),
-            y: y(q.y),
-            size: (p.widthMm / 2) * MM_TO_PT,
-            color: strokeColor,
-            opacity,
-            borderWidth: 0,
-          });
-        }
-      } else {
-        const ptPoints = p.points.map((q) => ({ x: q.x * MM_TO_PT, y: q.y * MM_TO_PT }));
-        const path = smoothStrokeSvgPath(ptPoints, p.closed);
-        if (path) {
-          page.drawSvgPath(path, {
-            x: 0,
-            y: height,
-            borderColor: strokeColor,
-            borderWidth: p.widthMm * MM_TO_PT,
-            borderOpacity: opacity,
-            borderLineCap: LineCapStyle.Round,
-          });
-        }
-      }
+      if (p.markupId) overlayStrokes.push(p);
+      else drawStroke(p);
     } else {
       const face = p.font ? sceneFonts.get(p.font) : undefined;
       const font: PDFFont = face?.font ?? (await standardFontFor(p.fontFamily, p.bold, p.italic));
@@ -328,6 +335,8 @@ export async function renderSheetPdfWith(scene: SheetScene, meta: PdfMetadata, d
     if (!noteFonts) throw new Error("This sheet has notes, and their fonts weren't provided, so it can't be printed here");
     await drawTextBlocks(doc, page, blocks, noteFonts);
   }
+  // Review markup strokes paint after text blocks so masked rich-text notes never obscure review ink.
+  for (const s of overlayStrokes) drawStroke(s);
 
   return { bytes: await doc.save({ useObjectStreams: false }), embeddedDetails, substitutedText: winAnsi.substituted };
 }

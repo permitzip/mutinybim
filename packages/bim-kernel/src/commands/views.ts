@@ -1669,6 +1669,10 @@ export function executeViewCommand(model: ModelState, command: ViewCommand): Exe
           reader.find(item.id);
           write({ ...item, deleted: true });
         }
+        for (const item of docs().markupsBySheet.get(sheet.id) ?? []) {
+          reader.find(item.id);
+          write({ ...item, deleted: true });
+        }
         write({ ...sheet, viewIds: [], deleted: true });
         authored.push({ elementId: sheet.id, field: F.deleted, value: "true" });
         break;

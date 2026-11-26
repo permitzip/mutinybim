@@ -313,6 +313,33 @@ async function handle(req: IncomingMessage, res: ServerResponse, clientJs: () =>
     return send(res, 200, "application/json", JSON.stringify({ modelId: head.modelId, revision: head.revision, count: all.length, markups: all }, null, 2));
   }
   if (req.method === "POST" && url.pathname === "/debug/save-showcase-markups") {
+    const allowSave = process.env.MUTINYBIM_ALLOW_SAVE_SHOWCASE_MARKUPS === "1" || process.argv.includes("--allow-save-showcase-markups");
+    if (!allowSave) {
+      return send(
+        res,
+        403,
+        "application/json",
+        JSON.stringify({
+          error: "Showcase markup saving is disabled by default. Restart devserver with MUTINYBIM_ALLOW_SAVE_SHOWCASE_MARKUPS=1 (or --allow-save-showcase-markups) and send header 'X-Mutiny-Dev-Save: 1'.",
+        }),
+      );
+    }
+    const remote = req.socket.remoteAddress ?? "";
+    const isLoopback = remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1";
+    const origin = req.headers.origin;
+    const originOk =
+      !origin ||
+      origin === `http://127.0.0.1:${url.port || "80"}` ||
+      origin === `http://localhost:${url.port || "80"}`;
+    const saveHeader = req.headers["x-mutiny-dev-save"];
+    if (!isLoopback || !originOk || saveHeader !== "1") {
+      return send(
+        res,
+        403,
+        "application/json",
+        JSON.stringify({ error: "Forbidden: requires loopback client, same-origin (or no Origin), and 'X-Mutiny-Dev-Save: 1' header." }),
+      );
+    }
     const served = await models.open(url.searchParams.get("model") ?? mainModelId);
     if (!served) return send(res, 404, "application/json", JSON.stringify({ error: "No such model or branch here." }));
     const head = await served.sequencer.head();

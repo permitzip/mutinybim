@@ -2,7 +2,7 @@
  * @jest-environment node
  */
 import { createShowcaseDemoModel } from "@permitzip/bim-first-party/seed";
-import { defineScript, markups, runScript, sliceModel } from "@permitzip/bim-script";
+import { defineScript, documents, markups, runScript, sliceModel } from "@permitzip/bim-script";
 import { renderScriptRequests } from "../src/scripts/render-images";
 
 describe("bim_run_script sheet markup PNG rendering", () => {
@@ -37,5 +37,32 @@ describe("bim_run_script sheet markup PNG rendering", () => {
     const cropW = images[0]!.regionMm.max.x - images[0]!.regionMm.min.x;
     const fullW = images[1]!.regionMm.max.x - images[1]!.regionMm.min.x;
     expect(cropW).toBeLessThan(fullW);
+  });
+
+  it("honors highlightIds for model elements on both sheet and view renders", async () => {
+    const model = createShowcaseDemoModel("showcase-highlight-render-test");
+    const firstPart = Object.values(model.elements).find((e) => e.kind === "part");
+    const firstPlan = Object.values(model.elements).find((e) => e.kind === "view" && !e.deleted && e.viewType === "floor_plan");
+    expect(firstPart).toBeDefined();
+    expect(firstPlan).toBeDefined();
+    const script = defineScript({
+      kind: "layout",
+      reads: { kinds: ["sheet", "viewport", "view", "drawing_item", "part"] },
+      parameters: {},
+      run(ctx) {
+        documents.renderSheet(ctx, "M-101", { highlightIds: [firstPart!.id], dpi: 72, maxPx: 800 });
+        documents.renderView(ctx, firstPlan!.id, { highlightIds: [firstPart!.id], dpi: 72, maxPx: 800 });
+      },
+    });
+    const output = await runScript(script, { slice: sliceModel(model, script.manifest.reads), values: {}, scriptHash: "highlight-test" });
+    expect(output.kind).toBe("edits");
+    if (output.kind !== "edits") return;
+    const images = await renderScriptRequests(model, output.renders!);
+    expect(images).toHaveLength(2);
+    expect(images[0]!.kind).toBe("sheet");
+    expect(images[1]!.kind).toBe("view");
+    for (const img of images) {
+      expect(img.png.subarray(0, 4).toString("hex")).toBe("89504e47");
+    }
   });
 });
