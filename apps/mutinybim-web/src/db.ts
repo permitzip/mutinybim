@@ -20,6 +20,7 @@ import { occupiedSlots, sqliteTransfers, SQLITE_TRANSFER_SCHEMA, type Transfers 
 export interface UserRow {
   readonly id: string;
   readonly email: string;
+  readonly email_confirmed_at: string | null;
   readonly display_name: string;
   readonly password_hash: string | null;
   readonly created_at: string;
@@ -396,6 +397,7 @@ export interface WebStore {
 
   userByIdentity(provider: string, subject: string): Promise<UserRow | null>;
   linkIdentity(provider: string, subject: string, userId: string): Promise<void>;
+  confirmIdentityEmail(provider: string, subject: string, userId: string, email: string): Promise<void>;
   identitySubject(userId: string, provider: string): Promise<string | null>;
   identitiesOf(userId: string): Promise<readonly string[]>;
 
@@ -407,8 +409,19 @@ export interface WebStore {
   setPassword(userId: string, passwordHash: string): Promise<void>;
 
   createPasswordReset(tokenHash: string, userId: string, expiresAt: Date): Promise<void>;
+  /** Local accounts use the app's SMTP relay. Supabase Auth handles its own recovery email. */
+  readonly resetMail?: {
+    stage(tokenHash: string, userId: string, expiresAt: Date): Promise<void>;
+    delivered(tokenHash: string): void;
+    discard(tokenHash: string): void;
+  };
   userByPasswordReset(tokenHash: string): Promise<UserRow | null>;
-  usePasswordReset(tokenHash: string): Promise<void>;
+  /**
+   * In one database operation: uses up an unexpired reset link, saves the new
+   * password and ends every session of its account. Returns that account, or
+   * null when the link is unknown, expired or already used (nothing changes then).
+   */
+  redeemPasswordReset(tokenHash: string, passwordHash: string): Promise<UserRow | null>;
 
   createModel(input: { id: string; ownerId: string; name: string }): Promise<ModelRow>;
   creationByKey(ownerId: string, key: string): Promise<ModelCreation | null>;
@@ -505,7 +518,7 @@ function strOrNull(row: Record<string, unknown>, key: string): string | null {
 export function toUser(row: unknown): UserRow | null {
   if (!isRecord(row)) return null;
   const scheme = row.color_scheme;
-  return { id: str(row, "id"), email: str(row, "email"), display_name: str(row, "display_name"), password_hash: strOrNull(row, "password_hash"), created_at: str(row, "created_at"), color_scheme: isColorScheme(scheme) ? scheme : "system" };
+  return { id: str(row, "id"), email: str(row, "email"), email_confirmed_at: strOrNull(row, "email_confirmed_at"), display_name: str(row, "display_name"), password_hash: strOrNull(row, "password_hash"), created_at: str(row, "created_at"), color_scheme: isColorScheme(scheme) ? scheme : "system" };
 }
 
 export function toModel(row: unknown): ModelRow | null {
@@ -674,6 +687,25 @@ const UPGRADES: readonly string[] = [
   SQLITE_TRANSFER_SCHEMA,
 ];
 
+// This account upgrade can run before or after the numbered model and team upgrades.
+function ensureEmailConfirmation(db: DatabaseSync): void {
+  if (db.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'trigger' AND name = 'users_clear_email_confirmation'").get()) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    if (!db.prepare("SELECT 1 FROM pragma_table_info('users') WHERE name = 'email_confirmed_at'").get()) {
+      db.exec("ALTER TABLE users ADD COLUMN email_confirmed_at TEXT");
+    }
+    db.exec(`CREATE TRIGGER IF NOT EXISTS users_clear_email_confirmation
+      AFTER UPDATE OF email ON users
+      WHEN OLD.email <> NEW.email COLLATE NOCASE
+      BEGIN UPDATE users SET email_confirmed_at = NULL WHERE id = NEW.id; END;`);
+    db.exec("COMMIT");
+  } catch (err) {
+    db.exec("ROLLBACK");
+    throw err;
+  }
+}
+
 export function openDb(file: string): WebStore {
   if (file !== ":memory:") mkdirSync(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
@@ -703,6 +735,11 @@ export function openDb(file: string): WebStore {
       db.exec("ROLLBACK");
       throw err;
     }
+  }
+  ensureEmailConfirmation(db);
+
+  function insertReset(tokenHash: string, userId: string, expiresAt: Date): void {
+    db.prepare("INSERT INTO password_resets (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)").run(tokenHash, userId, now(), expiresAt.toISOString());
   }
 
   return {
@@ -747,6 +784,12 @@ export function openDb(file: string): WebStore {
     async linkIdentity(provider, subject, userId) {
       db.prepare("INSERT OR IGNORE INTO identities (provider, subject, user_id, created_at) VALUES (?, ?, ?, ?)").run(provider, subject, userId, now());
     },
+    async confirmIdentityEmail(provider, subject, userId, email) {
+      db.prepare(`UPDATE users SET email_confirmed_at = ?
+        WHERE id = ? AND email = ? AND email_confirmed_at IS NULL
+          AND EXISTS (SELECT 1 FROM identities WHERE provider = ? AND subject = ? AND user_id = users.id)`)
+        .run(now(), userId, email, provider, subject);
+    },
     async identitySubject(userId, provider) {
       const row = db.prepare("SELECT subject FROM identities WHERE user_id = ? AND provider = ?").get(userId, provider);
       return isRecord(row) && typeof row.subject === "string" ? row.subject : null;
@@ -778,14 +821,42 @@ export function openDb(file: string): WebStore {
     },
 
     async createPasswordReset(tokenHash, userId, expiresAt) {
-      db.prepare("DELETE FROM password_resets WHERE user_id = ? OR expires_at < ?").run(userId, now());
-      db.prepare("INSERT INTO password_resets (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)").run(tokenHash, userId, now(), expiresAt.toISOString());
+      writeTransaction(() => {
+        db.prepare("DELETE FROM password_resets WHERE user_id = ? OR expires_at < ?").run(userId, now());
+        insertReset(tokenHash, userId, expiresAt);
+      });
+    },
+    resetMail: {
+      async stage(tokenHash, userId, expiresAt) {
+        writeTransaction(() => {
+          db.prepare("DELETE FROM password_resets WHERE expires_at <= ?").run(now());
+          insertReset(tokenHash, userId, expiresAt);
+        });
+      },
+      delivered(tokenHash) {
+        // SMTP replies may arrive out of order. Retire only earlier links for
+        // this account while the delivered link is still present.
+        db.prepare(`DELETE FROM password_resets
+          WHERE user_id = (SELECT user_id FROM password_resets WHERE token_hash = ? AND expires_at > ?)
+            AND rowid < (SELECT rowid FROM password_resets WHERE token_hash = ?)`).run(tokenHash, now(), tokenHash);
+      },
+      discard(tokenHash) {
+        db.prepare("DELETE FROM password_resets WHERE token_hash = ?").run(tokenHash);
+      },
     },
     async userByPasswordReset(tokenHash) {
       return toUser(db.prepare("SELECT u.* FROM password_resets r JOIN users u ON u.id = r.user_id WHERE r.token_hash = ? AND r.expires_at > ?").get(tokenHash, now()));
     },
-    async usePasswordReset(tokenHash) {
-      db.prepare("DELETE FROM password_resets WHERE token_hash = ?").run(tokenHash);
+    async redeemPasswordReset(tokenHash, passwordHash) {
+      return writeTransaction(() => {
+        const link = db.prepare("DELETE FROM password_resets WHERE token_hash = ? AND expires_at > ? RETURNING user_id").get(tokenHash, now());
+        if (!isRecord(link) || typeof link.user_id !== "string") return null;
+        // A replacement email can still be in flight when an earlier link is used.
+        db.prepare("DELETE FROM password_resets WHERE user_id = ?").run(link.user_id);
+        db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(passwordHash, link.user_id);
+        db.prepare("DELETE FROM sessions WHERE user_id = ?").run(link.user_id);
+        return toUser(db.prepare("SELECT * FROM users WHERE id = ?").get(link.user_id));
+      });
     },
 
     async createModel(input) {
