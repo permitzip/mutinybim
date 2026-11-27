@@ -272,11 +272,18 @@ export function searchCommands(query: string, limit = 6): readonly CommandEntry[
 
 function score(query: readonly string[], phrase: string, fields: readonly { readonly text: string; readonly weight: number }[]): number {
   let total = 0;
+  const matched = new Set<string>();
   for (const f of fields) {
     const have = new Set(words(f.text));
-    for (const q of query) if (have.has(q)) total += f.weight;
+    for (const q of query) {
+      if (have.has(q)) {
+        total += f.weight;
+        matched.add(q);
+      }
+    }
     if (phrase.length > 3 && f.text.toLowerCase().includes(phrase)) total += f.weight * 2;
   }
+  if (matched.size > 1) total += (matched.size - 1) * 4;
   return total;
 }
 
