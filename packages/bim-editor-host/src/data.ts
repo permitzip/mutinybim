@@ -98,6 +98,11 @@ export interface EditorFirmLibraryPort {
   partTypes(): Promise<EditorDataAnswer>
   /** Publish a drawn part type as its next revision. Body: `{ status: 'saved', summary }`, `{ status: 'up_to_date', revision }` or `{ message }`. */
   publishPartType(input: { readonly definition: unknown }): Promise<EditorDataAnswer>
+  /** Publish from the original edit base (0 for a new family). Every success includes its durable
+   * EditorPartPublishReceipt. Replaying the same request returns its original result even after another
+   * publish. HTTP 409 reports a stale base and 422 a reused ID with different input. These hosts also
+   * serve Place part and Review update from partTypes(). */
+  publishPartTypeAtRevision?(input: EditorPartPublishRequest): Promise<EditorDataAnswer>
   /** Save a part type imported from a Revit parameter export. Body on refusal: `{ error }`. */
   importPartType(input: { readonly definition: unknown }): Promise<EditorDataAnswer>
   /** The firm part library Place part offers. Body: `{ canWrite, parts: [{ definition }] }`; 401/403 when the person has no firm library. The part editor saves to it with `importPartType`. */
@@ -105,6 +110,21 @@ export interface EditorFirmLibraryPort {
   /** The firm's schedule templates. Body: `{ canWrite, firm: [...] }`; 401/403 when the person can't read them. */
   scheduleTemplates(): Promise<EditorDataAnswer>
   saveScheduleTemplate(input: { readonly kind: string; readonly name: string; readonly template: unknown; readonly makeDefault: boolean }): Promise<EditorDataAnswer>
+}
+
+/** One confirmed edit intent. Keep this entire request for retries until the library answers. */
+export interface EditorPartPublishRequest {
+  readonly requestId: string
+  readonly baseRevision: number
+  readonly definition: unknown
+}
+
+/** A successful publish returns this receipt together with the saved or up_to_date result. */
+export interface EditorPartPublishReceipt {
+  readonly requestId: string
+  readonly familyId: string
+  readonly baseRevision: number
+  readonly revision: number
 }
 
 /** The codes a project has adopted, as its code study records them. */
@@ -381,8 +401,17 @@ export interface EditorCopiesPort {
   remove(input: { readonly projectId: string; readonly grantId: string }): Promise<EditorDataAnswer>
 }
 
+export type EditorMemberRole = 'viewer' | 'editor' | 'manager'
+
+export interface EditorModelMembersPort {
+  /** Omit the person ID to read the base model's roster. An exact person ID can also identify a new member. */
+  read(modelId: string, personId?: string, signal?: AbortSignal): Promise<EditorDataAnswer>
+  change(modelId: string, input: { personId: string; expectedRole: EditorMemberRole | null; role: EditorMemberRole | null }): Promise<EditorDataAnswer>
+}
+
 /** Everything the editor asks of a host's server. Every port is optional. */
 export interface EditorDataHost {
+  readonly modelMembers?: EditorModelMembersPort
   readonly blocks?: EditorBlocksPort
   readonly threadBranch?: EditorThreadBranchPort
   readonly codeStudy?: EditorCodeStudyPort

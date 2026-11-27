@@ -146,7 +146,7 @@ All optional; read once at start.
 | `MUTINYBIM_WEB_LINK_KEY_PREVIOUS` | none | The key before the current one, while a new key rolls in: passes kept under it still open, and are written back under the current key when read. |
 | `MUTINYBIM_WEB_SUPABASE_URL` | none | Optional Supabase project URL (`https://<ref>.supabase.co`). Turns on Supabase Auth (email sign-up/login, password-reset emails, and Continue with Google). Leave unset for self-contained local email/SQLite mode. |
 | `MUTINYBIM_WEB_SUPABASE_PUBLISHABLE_KEY` | none | Supabase publishable (or anon) key; required when `MUTINYBIM_WEB_SUPABASE_URL` is set. |
-| `MUTINYBIM_WEB_SUPABASE_SECRET_KEY` | none | Optional Supabase secret (`service_role`) key. When set, stores app records (users, sessions, model metadata, shares, assistant grants) in Supabase Postgres instead of local SQLite. Apply `db/migrations/20261124000000_mutinybim_web_initial.sql` first. |
+| `MUTINYBIM_WEB_SUPABASE_SECRET_KEY` | none | Optional Supabase secret (`service_role`) key. When set, stores app records (users, sessions, model metadata, shares, assistant grants) in Supabase Postgres. Apply the SQL files in `db/migrations/` in filename order before starting the new version. |
 | `MUTINYBIM_WEB_SUPABASE_GOOGLE` | `1` | Set to `0` to hide the **Continue with Google** button when Supabase Auth is enabled. |
 | `MUTINYBIM_WEB_TRUST_PROXY` | auto (`1` when `FLY_APP_NAME` is set) | Trusts `Fly-Client-IP` / `X-Forwarded-For` for sign-in and OAuth registration rate limits behind a reverse proxy. |
 
@@ -154,10 +154,13 @@ All optional; read once at start.
 
 Set `MUTINYBIM_WEB_SUPABASE_URL` and `MUTINYBIM_WEB_SUPABASE_PUBLISHABLE_KEY` to delegate email/password sign-up, password-reset emails, and **Continue with Google** (OAuth 2.0 PKCE) to a Supabase project:
 
-1. Apply `apps/mutinybim-web/db/migrations/20261124000000_mutinybim_web_initial.sql` to the Supabase Postgres database (all 18 tables enable RLS with server-only `service_role` access).
+1. If Postgres stores the app's accounts, apply each unapplied SQL file in `apps/mutinybim-web/db/migrations/` in filename order before updating the app. The sign-in code uses the account lookup and creation functions in `20261126040000_supabase_user_identity.sql`. SQLite handles the update automatically.
 2. In Supabase Auth → URL Configuration, add `<MUTINYBIM_WEB_ORIGIN>/auth/supabase/callback` to **Redirect URLs**.
-3. In Supabase Auth → Providers → Google, enable Google and add your Google OAuth Client ID and Client Secret (with Google's authorized redirect URI set to `https://<project-ref>.supabase.co/auth/v1/callback`).
-4. Optionally set `MUTINYBIM_WEB_SUPABASE_SECRET_KEY` (as a secret on your deployment host) to store all app metadata tables in Supabase Postgres instead of local SQLite. If migrating an existing deployment off SQLite, copy existing rows first with `node --import tsx apps/mutinybim-web/src/migrate-sqlite.ts` (supports `--dry-run`).
+3. Keep **Confirm email** on (Supabase Auth → Sign In / Providers → Email). With it off, Supabase treats every address as confirmed at sign-up.
+4. In Supabase Auth → Providers → Google, enable Google and add your Google OAuth Client ID and Client Secret (with Google's authorized redirect URI set to `https://<project-ref>.supabase.co/auth/v1/callback`).
+5. Optionally set `MUTINYBIM_WEB_SUPABASE_SECRET_KEY` (as a secret on your deployment host) to store all app metadata tables in Supabase Postgres instead of local SQLite. If migrating an existing deployment off SQLite, copy existing rows first with `node --import tsx apps/mutinybim-web/src/migrate-sqlite.ts` (supports `--dry-run`).
+
+A first Google sign-in can link an existing MutinyBIM account when Supabase confirms the address, Google verifies that same address, and Google is the only linked provider. If those details are missing, use the existing account's password. Later sign-ins use the saved account link.
 
 ### Sign-in providers
 
@@ -222,6 +225,13 @@ email: **Can edit** (edit, make branches, save versions) or **View only** (the
 model server refuses their edits). There are no invitations by email; the
 person needs an account first. Changing or removing someone's access
 disconnects them at once. Only the owner shares, renames or deletes.
+
+Under **Transfer ownership**, choose a direct viewer or editor and the access
+you want to keep. The recipient has 14 days to accept in **My models**.
+Acceptance uses one of their model slots. If their account is full, they
+can free a slot and accept the same offer before it expires. The model ID,
+history and other people's shares stay with the model. Removing the
+recipient's share ends the offer.
 
 ## Getting back in
 
