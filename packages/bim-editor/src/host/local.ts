@@ -2,19 +2,20 @@ import { BRANCH_SEPARATOR, branchModelId, isBranchId } from '@permitzip/bim-kern
 import type {
   EditorHost,
   EditorLocation,
+  EditorModelMembersPort,
   EditorPreferenceState,
   EditorPreferences,
   EditorPreferenceValue,
   EditorRouter,
 } from '@permitzip/bim-editor-host'
 import { useCallback, useMemo, useSyncExternalStore } from 'react'
-import { createLocalDataHost } from './local-data'
+import { createLocalDataHost, type LocalFirmPartsPort } from './local-data'
 import { createLocalShellHost } from './local-shell'
 import { sonnerNotifier } from './sonner-notifier'
 
 // The standalone host's whole surface. It imports the kernel, so it is its own entry
 // (`@permitzip/bim-editor/host/local`), never part of `@permitzip/bim-editor/host`.
-export { createLocalDataHost, jsonAnswer } from './local-data'
+export { createLocalDataHost, jsonAnswer, type LocalFirmPartsPort } from './local-data'
 export { CONNECT_AGENT_DOC_HREF, MUTINYBIM_REPOSITORY_URL, createLocalShellHost, type LocalShellHostOptions } from './local-shell'
 export { sonnerNotifier }
 
@@ -24,12 +25,17 @@ export { sonnerNotifier }
  * through the tool server, not through the editor.
  */
 export interface LocalEditorHostOptions {
+  /** The authority issued this tab a native session and serves model memberships. */
+  readonly nativeMembership?: boolean
+  readonly requireWriteGrant?: boolean
   /** The local model server's WebSocket address, e.g. `ws://127.0.0.1:3095/sync`. */
   readonly authorityUrl: string
   readonly userId?: string
   readonly displayName?: string
   /** What the local model server accepts; the in-process dev server accepts anything. */
   readonly token?: string | null
+  /** The local host's versioned parts catalog, when connected. */
+  readonly firmParts?: LocalFirmPartsPort
   /** Where this app tells people to connect storage or an AI, in words; null when it has no such place. */
   readonly connectHint?: string | null
 }
@@ -102,10 +108,30 @@ export function memoryPreferences(): EditorPreferences {
   }
 }
 
+function nativeModelMembers(authorityUrl: string, token: string): EditorModelMembersPort {
+  const origin = new URL(authorityUrl)
+  if (origin.protocol === 'wss:') origin.protocol = 'https:'
+  else if (origin.protocol === 'ws:') origin.protocol = 'http:'
+  const address = (modelId: string) => new URL('/models/' + encodeURIComponent(modelId) + '/members', origin)
+  const auth = { Authorization: 'Bearer ' + token }
+  return {
+    read(modelId, personId, signal) {
+      const url = address(modelId)
+      if (personId !== undefined) url.searchParams.set('personId', personId)
+      return fetch(url, { headers: auth, signal, credentials: 'omit', cache: 'no-store', redirect: 'error' })
+    },
+    change(modelId, input) {
+      return fetch(address(modelId), { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' },
+        body: JSON.stringify(input), credentials: 'omit', cache: 'no-store', redirect: 'error' })
+    },
+  }
+}
+
 export function createLocalEditorHost(options: LocalEditorHostOptions): EditorHost {
   const token = options.token === undefined ? 'local' : options.token
   return {
-    data: createLocalDataHost(),
+    data: { ...createLocalDataHost(options.firmParts), ...(options.nativeMembership && options.token
+      ? { modelMembers: nativeModelMembers(options.authorityUrl, options.token) } : {}) },
     shell: createLocalShellHost(),
     identity: { userId: options.userId ?? 'local-user', displayName: options.displayName ?? 'You' },
     session: {
@@ -123,6 +149,6 @@ export function createLocalEditorHost(options: LocalEditorHostOptions): EditorHo
     links: { hrefFor: () => null },
     notify: sonnerNotifier,
     preferences: memoryPreferences(),
-    capabilities: { hostName: 'this computer', connectHint: options.connectHint ?? null },
+    capabilities: { hostName: 'this computer', connectHint: options.connectHint ?? null, requireWriteGrant: options.requireWriteGrant },
   }
 }
