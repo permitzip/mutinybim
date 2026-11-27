@@ -458,11 +458,14 @@ function legacyPlumbingStarterTypes(version: string): readonly LibraryEntry[] {
       typeValues: { width: 20 * IN, depth: 18 * IN, fixture_units: 1, waste_size: 1.25 * IN, supply_size: 0.5 * IN },
       instanceParams: [{ name: "accessible", label: "Accessible (ADA)", kind: "boolean", default: false }, { ...len("rim_height", "Rim height"), default: 34 * IN, max: 1200 }],
       connectors: [
-        { id: "waste", label: "Waste", domain: "pipe", systemKind: "sanitary", position: [0, neg("depth"), { param: "rim_height", add: -200 }], direction: [0, 0, -1], shape: "round", diameter: p("waste_size"), endType: "plumbing_gas.solvent_weld" },
+        { id: "waste", label: "Waste", domain: "pipe", systemKind: "sanitary", position: [0, 0, { param: "rim_height", add: -250 }], direction: [0, 1, 0], shape: "round", diameter: p("waste_size"), endType: "plumbing_gas.solvent_weld" },
         { id: "cw", label: "Cold water", domain: "pipe", systemKind: "domestic_cold_water", position: [100, 0, { param: "rim_height", add: -150 }], direction: [0, 1, 0], shape: "round", diameter: p("supply_size"), endType: "plumbing_gas.threaded" },
         { id: "hw", label: "Hot water", domain: "pipe", systemKind: "domestic_hot_water", position: [-100, 0, { param: "rim_height", add: -150 }], direction: [0, 1, 0], shape: "round", diameter: p("supply_size"), endType: "plumbing_gas.threaded" },
       ],
-      geometry: [{ kind: "box", center: [0, neg("depth"), { param: "rim_height", add: -100 }], size: [p("width"), p("depth"), 200] }],
+      geometry: [
+        { kind: "box", center: [0, neg("depth"), { param: "rim_height", add: -100 }], size: [p("width"), p("depth"), 200] },
+        { kind: "box", center: [0, -100, { param: "rim_height", add: -240 }], size: [120, 200, 120] },
+      ],
       symbol: [{ kind: "rect", center: [0, neg("depth")], size: [p("width"), p("depth")] }, { kind: "circle", center: [0, { param: "depth", scale: -0.55 }], radius: { param: "width", scale: 0.3 } }],
       tagFields: ["mark"],
       source: src,
