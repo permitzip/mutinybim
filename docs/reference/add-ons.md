@@ -172,7 +172,7 @@ Grids, walls, doors, windows, openings, floors, ceilings, roofs, columns and sta
 | Plan graphics by class | 2 |
 | Starter element types | 7 |
 | Surface faces | 1 |
-| Tag style presets | 2 |
+| Tag style presets | 4 |
 
 ### Structural
 

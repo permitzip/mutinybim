@@ -13,8 +13,18 @@ export const ARCHITECTURE_TAG_PRESETS: readonly TagStylePresetRow[] = [
     preset: { id: "general.room", trade: "general", name: "Room name and number", description: "The room's name over its number in a box.", lines: ["{name}", "{number}"], box: "box", appliesTo: ["room"] },
   },
   {
+    id: "general.room_area",
+    rank: 5,
+    preset: { id: "general.room_area", trade: "general", name: "Room name, number and area", description: "The room's name and number, with its floor area under them.", lines: ["{name}", "{number}", "{area}"], box: "box", appliesTo: ["room"] },
+  },
+  {
     id: "general.space",
     rank: 5,
     preset: { id: "general.space", trade: "general", name: "Space name, number and area", description: "The space's name and number, with its floor area under them.", lines: ["{name}", "{number}", "{area}"], box: "rounded", appliesTo: ["space"] },
+  },
+  {
+    id: "general.space_name",
+    rank: 5,
+    preset: { id: "general.space_name", trade: "general", name: "Space name and number", description: "The space's name over its number in a rounded box.", lines: ["{name}", "{number}"], box: "rounded", appliesTo: ["space"] },
   },
 ];
