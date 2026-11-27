@@ -42,7 +42,10 @@ contract only, with **no kernel edits**. It imports `@permitzip/bim-pack`,
   bending, constant EI, small deflections, no shear deformation, positive
   down. Live deflection uses the modeled live load only; total deflection uses
   dead + live + equipment. Ratios are calculated L/Δ values, not code limits.
-  Missing stiffness omits deflection values. A model with no live-loaded deck is a known zero live load; unknown occupancy is reported as incomplete live loading even when its calculated live response is zero. No deflection limit is checked.
+  Missing stiffness omits deflection values. A beam carrying no live-loaded deck
+  reports zero live deflection; a beam carrying a deck with missing or unknown
+  occupancy omits live deflection and reports incomplete live loading rather
+  than reporting zero. No deflection limit is checked.
 - One-way rectangular decks; beams square to the span; simple spans only.
 - Footing and deck self-weight are not counted.
 - Beam ends are network nodes of their own (`<beamId>@start`), because one

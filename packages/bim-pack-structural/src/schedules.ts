@@ -50,9 +50,9 @@ export const BEAM_SCHEDULE = list(
     field("max_moment", "MAX MOMENT"),
     field("end_reaction", "END REACTION"),
     { id: "max_live_deflection", kind: "field", path: "max_live_deflection", heading: "LIVE DEFL.", unit: "in", precision: { kind: "decimals", digits: 2 } },
-    field("live_deflection_ratio", "LIVE L/Δ"),
+    { id: "live_deflection_ratio", kind: "field", path: "live_deflection_ratio", heading: "LIVE L/Δ", widthMm: 27 },
     { id: "max_deflection", kind: "field", path: "max_deflection", heading: "TOTAL DEFL.", unit: "in", precision: { kind: "decimals", digits: 2 } },
-    field("deflection_ratio", "TOTAL L/Δ"),
+    { id: "deflection_ratio", kind: "field", path: "deflection_ratio", heading: "TOTAL L/Δ", widthMm: 31 },
   ],
   "mark",
 );

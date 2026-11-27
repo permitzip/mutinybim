@@ -140,7 +140,7 @@ describe("structural load-path elastic deflection integration", () => {
     expect(to(a.maxDeflection!, "in")).not.toBeCloseTo(to(b.maxDeflection!, "in"), 3);
   });
 
-  it("reports zero live deflection for a known model with no live-loaded deck", () => {
+  it("reports zero live deflection and em-dash ratio for a known model with no live-loaded deck", () => {
     const m = frameWithBeamValues({ "struct.elastic_modulus": 29_000 }, undefined);
     const { ["DECK-1"]: _removedDeck, ...elements } = m.elements;
     const noLive = { ...m, elements };
@@ -148,34 +148,61 @@ describe("structural load-path elastic deflection integration", () => {
     const b2 = result.beams.find((b) => b.id === "B2")!;
     expect(to(b2.maxLiveDeflection!, "in")).toBe(0);
     expect(to(b2.maxLiveDeflectionAt!, "ft")).toBe(0);
+    expect(readStructuralField(noLive, "B2", "live_deflection_ratio")).toBe("—");
     expect(result.problems.some((p) => p.includes("has no live load in the Structural pack"))).toBe(false);
   });
 
-  it("reports incomplete live loading for unknown occupancy", () => {
+  it("omits live deflection and reports incomplete live loading for unknown or missing occupancy", () => {
     const m = frameWithBeamValues({ "struct.elastic_modulus": 29_000 });
     const deck = m.elements["DECK-1"];
     if (deck?.kind !== "slab") throw new Error("missing deck");
     const unknown = { ...m, elements: { ...m.elements, ["DECK-1"]: { ...deck, values: { ...deck.values, "struct.occupancy": "unknown-use" } } } };
     const result = structuralLoadPath(unknown);
     const b2 = result.beams.find((b) => b.id === "B2")!;
-    expect(to(b2.maxLiveDeflection!, "in")).toBe(0);
+    expect(b2.maxLiveDeflection).toBeUndefined();
+    expect(b2.maxLiveDeflectionAt).toBeUndefined();
+    expect(b2.maxDeflection).toBeDefined();
+    expect(readStructuralField(unknown, "B2", "max_live_deflection")).toBeNull();
+    expect(readStructuralField(unknown, "B2", "live_deflection_ratio")).toBeNull();
     expect(result.problems.some((p) => p.includes("has no live load in the Structural pack"))).toBe(true);
+
+    const { ["struct.occupancy"]: _omittedUse, ...withoutUseValues } = deck.values ?? {};
+    const missingUse = { ...m, elements: { ...m.elements, ["DECK-1"]: { ...deck, values: withoutUseValues } } };
+    const missingResult = structuralLoadPath(missingUse);
+    const b2Missing = missingResult.beams.find((b) => b.id === "B2")!;
+    expect(b2Missing.maxLiveDeflection).toBeUndefined();
+    expect(b2Missing.maxLiveDeflectionAt).toBeUndefined();
+    expect(missingResult.problems.some((p) => p.includes("has no use"))).toBe(true);
   });
 
-  it("preserves statics when stiffness makes deflection nonrepresentable", () => {
+  it("preserves statics when stiffness or v/EI makes deflection nonrepresentable", () => {
     const baseline = structuralLoadPath(frameWithBeamValues({ "struct.elastic_modulus": 29_000 }));
-    const overflowing = structuralLoadPath(frameWithBeamValues({ "struct.elastic_modulus": Number.MAX_VALUE }));
     const before = baseline.beams.find((b) => b.id === "B2")!;
-    const after = overflowing.beams.find((b) => b.id === "B2")!;
-    expect(after).toBeDefined();
-    expect(after.startReaction).toEqual(before.startReaction);
-    expect(after.endReaction).toEqual(before.endReaction);
-    expect(after.maxMoment).toEqual(before.maxMoment);
-    expect(after.maxDeflection).toBeUndefined();
-    expect(after.maxLiveDeflection).toBeUndefined();
-    expect(overflowing.columns.find((c) => c.id === "C2A")!.load.total).toEqual(baseline.columns.find((c) => c.id === "C2A")!.load.total);
-    expect(overflowing.footings.find((f) => f.id === "F2A")!.load.total).toEqual(baseline.footings.find((f) => f.id === "F2A")!.load.total);
-    expect(overflowing.problems.some((p) => p.includes("deflection omitted"))).toBe(true);
+
+    for (const badE of [Number.MAX_VALUE, 1e-307]) {
+      const overflowing = structuralLoadPath(frameWithBeamValues({ "struct.elastic_modulus": badE }));
+      const after = overflowing.beams.find((b) => b.id === "B2")!;
+      expect(after).toBeDefined();
+      expect(after.startReaction).toEqual(before.startReaction);
+      expect(after.endReaction).toEqual(before.endReaction);
+      expect(after.maxMoment).toEqual(before.maxMoment);
+      expect(after.maxDeflection).toBeUndefined();
+      expect(after.maxLiveDeflection).toBeUndefined();
+      expect(overflowing.columns.find((c) => c.id === "C2A")!.load.total).toEqual(baseline.columns.find((c) => c.id === "C2A")!.load.total);
+      expect(overflowing.footings.find((f) => f.id === "F2A")!.load.total).toEqual(baseline.footings.find((f) => f.id === "F2A")!.load.total);
+      expect(overflowing.problems.some((p) => p.includes("deflection omitted"))).toBe(true);
+    }
+
+    // Bad stiffness itself (E overflow) is reported once per beam, not duplicated across live + total.
+    const badStiffness = structuralLoadPath(frameWithBeamValues({ "struct.elastic_modulus": Number.MAX_VALUE }));
+    const b2Problems = badStiffness.problems.filter((p) => p.startsWith("B2:") && p.includes("deflection omitted"));
+    expect(b2Problems).toHaveLength(1);
+  });
+
+  it("caps extremely small deflections at >L/9999", () => {
+    const ultraStiff = frameWithBeamValues({ "struct.elastic_modulus": 29_000_000 });
+    expect(readStructuralField(ultraStiff, "B2", "live_deflection_ratio")).toBe(">L/9999");
+    expect(readStructuralField(ultraStiff, "B2", "deflection_ratio")).toBe(">L/9999");
   });
 
   it("updates live and total responses when the modeled live-use rate changes", () => {

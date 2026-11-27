@@ -6,7 +6,7 @@ import { GRAVITY_LOAD_SERVICE_ID, LOAD_KEYS, LOAD_PATH_ADAPTER_ID } from "./cata
 import { frameOf, type Frame, type FrameBeam, type FrameColumn, type FrameDeck, type FrameFooting, type FrameSupportColumn, type FrameSupports } from "./frame";
 import { liveLoadRate } from "./live-loads";
 import { simpleBeam, SimpleBeamInputError, type PointLoad } from "./simple-beam";
-import { deckPointShares } from "./tributary";
+import { carriesDeck, deckPointShares } from "./tributary";
 import { TRIBUTARY_RULE_ID } from "./tributary-zone";
 
 /**
@@ -228,6 +228,7 @@ interface BeamWork {
   readonly lengthM: number;
   readonly deadNPerM: number;
   liveNPerM: number;
+  liveIncomplete: boolean;
   readonly points: { readonly from: string; readonly newtons: number; readonly atM: number }[];
 }
 
@@ -240,7 +241,7 @@ function readBeams(model: ModelState, frame: Frame, problems: string[]): Map<str
       continue;
     }
     if (!beam.section) problems.push(`${beam.label}'s section "${beam.sectionName}" isn't in the catalogue, so its own weight isn't counted`);
-    work.set(beam.id, { beam, lengthM, deadNPerM: beam.section?.weight ?? 0, liveNPerM: 0, points: [] });
+    work.set(beam.id, { beam, lengthM, deadNPerM: beam.section?.weight ?? 0, liveNPerM: 0, liveIncomplete: false, points: [] });
   }
 
   const tributaryOn = derivedZoneRule(TRIBUTARY_RULE_ID) !== null;
@@ -257,13 +258,22 @@ function readBeams(model: ModelState, frame: Frame, problems: string[]): Map<str
       for (const region of derivedZonesOfHost(model, el, TRIBUTARY_RULE_ID)) {
         const deck = decks.get(region.clearanceId);
         const rate = deck?.useId ? liveLoadRate(deck.useId) : null;
+        if (!rate) {
+          w.liveIncomplete = true;
+          continue;
+        }
         const [o0, o1, o2] = region.outline;
-        if (!rate || !o0 || !o1 || !o2) continue;
+        if (!o0 || !o1 || !o2) continue;
         // The strip is width (across the beam) by length (along it); spread over the span.
         const widthM = dist(o0, o1) / 1000;
         const coveredM = dist(o1, o2) / 1000;
         w.liveNPerM += (rate.value * widthM * coveredM) / w.lengthM;
       }
+    }
+  } else if (frame.decks.length > 0) {
+    for (const w of work.values()) {
+      const levelDecks = frame.decksByLevel.get(w.beam.levelId) ?? [];
+      if (levelDecks.some((d) => carriesDeck(d, w.beam))) w.liveIncomplete = true;
     }
   }
 
@@ -368,20 +378,35 @@ function build(model: ModelState): Built {
     let live: ReturnType<typeof simpleBeam> | undefined;
     let all: ReturnType<typeof simpleBeam>;
     try {
-      const stiffness = w.beam.elasticModulus !== null && w.beam.section !== null ? { elasticModulus: w.beam.elasticModulus, momentOfInertia: w.beam.section.ix } : undefined;
+      let stiffness: { readonly elasticModulus: Quantity<"stress">; readonly momentOfInertia: Quantity<"second_moment_of_area"> } | undefined;
+      if (w.beam.elasticModulus !== null && w.beam.section !== null) {
+        const E = w.beam.elasticModulus;
+        const I = w.beam.section.ix;
+        if (!(Number.isFinite(E) && E > 0)) {
+          const message = "The modulus of elasticity (E) must be a finite number greater than zero";
+          console.error("[struct.load_path] deflection omitted", { beamId: w.beam.id, message });
+          problems.push(`${w.beam.label}: deflection omitted: ${message}`);
+        } else if (!(Number.isFinite(E * I) && E * I > 0)) {
+          const message = "The flexural rigidity (E·I) must be finite and greater than zero";
+          console.error("[struct.load_path] deflection omitted", { beamId: w.beam.id, message });
+          problems.push(`${w.beam.label}: deflection omitted: ${message}`);
+        } else {
+          stiffness = { elasticModulus: E, momentOfInertia: I };
+        }
+      }
       for (const c of LOAD_CASES) {
         let r: ReturnType<typeof simpleBeam>;
         const base = { span, uniform: uniform(c), pointLoads: point(c) };
-        if (c === "live" && stiffness) {
+        if (c === "live" && stiffness && !w.liveIncomplete) {
           try {
             r = simpleBeam({ ...base, ...stiffness });
             live = r;
           } catch (err) {
             if (!(err instanceof SimpleBeamInputError)) throw err;
-            console.error("[struct.load_path] live deflection omitted", { beamId: w.beam.id, message: err.message });
-            problems.push(`${w.beam.label}: live-load deflection omitted: ${err.message}`);
             r = simpleBeam(base);
             live = r;
+            console.error("[struct.load_path] live deflection omitted", { beamId: w.beam.id, message: err.message });
+            problems.push(`${w.beam.label}: live-load deflection omitted: ${err.message}`);
           }
         } else {
           r = simpleBeam(base);
@@ -391,15 +416,16 @@ function build(model: ModelState): Built {
         end = addVectors(end, vectorOf(c, r.endReaction));
       }
       const totalInput = { span, uniform: fromCanonical("line_load", w.deadNPerM + w.liveNPerM), pointLoads: point("equipment") };
-      try {
-        all = simpleBeam({
-          ...totalInput,
-          ...(stiffness ?? {}),
-        });
-      } catch (err) {
-        if (!(err instanceof SimpleBeamInputError)) throw err;
-        console.error("[struct.load_path] total deflection omitted", { beamId: w.beam.id, message: err.message });
-        problems.push(`${w.beam.label}: total-load deflection omitted: ${err.message}`);
+      if (stiffness) {
+        try {
+          all = simpleBeam({ ...totalInput, ...stiffness });
+        } catch (err) {
+          if (!(err instanceof SimpleBeamInputError)) throw err;
+          all = simpleBeam(totalInput);
+          console.error("[struct.load_path] total deflection omitted", { beamId: w.beam.id, message: err.message });
+          problems.push(`${w.beam.label}: total-load deflection omitted: ${err.message}`);
+        }
+      } else {
         all = simpleBeam(totalInput);
       }
     } catch (err) {
