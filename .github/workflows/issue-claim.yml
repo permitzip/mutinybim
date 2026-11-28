@@ -1,0 +1,232 @@
+# Claim and release issues from comments, and recycle stale claims.
+# Policy: CONTRIBUTING.md "Claiming an issue".
+name: Issue claim
+
+on:
+  issue_comment:
+    types: [created]
+  schedule:
+    # 09:30 America/New_York during Eastern Standard Time.
+    - cron: "30 14 * * *"
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: issue-claim
+  cancel-in-progress: false
+
+jobs:
+  comment:
+    if: github.event_name == 'issue_comment' && !github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const comment = context.payload.comment;
+            const body = (comment.body || "").trim();
+            const login = comment.user.login;
+            const issue_number = issue.number;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            // Ignore bots (Dependabot, github-actions, etc.).
+            if (comment.user.type === "Bot" || login.endsWith("[bot]")) return;
+
+            const CLAIM = /^(?:\/claim|\/take|take)$/i;
+            const RELEASE = /^(?:\/unclaim|\/release)$/i;
+
+            const isClaim = CLAIM.test(body);
+            const isRelease = RELEASE.test(body);
+            if (!isClaim && !isRelease) return;
+
+            const assignees = (issue.assignees || []).map((u) => u.login);
+            const labels = (issue.labels || []).map((l) => l.name);
+
+            async function addLabel(name) {
+              if (!labels.includes(name)) {
+                await github.rest.issues.addLabels({ owner, repo, issue_number, labels: [name] });
+              }
+            }
+            async function removeLabel(name) {
+              if (labels.includes(name)) {
+                try {
+                  await github.rest.issues.removeLabel({ owner, repo, issue_number, name });
+                } catch (err) {
+                  if (err.status !== 404) throw err;
+                }
+              }
+            }
+
+            if (isRelease) {
+              if (!assignees.includes(login)) {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number,
+                  body: `@${login} you are not the assignee, so I left this as it is. A maintainer can reassign it.`
+                });
+                return;
+              }
+              await github.rest.issues.removeAssignees({ owner, repo, issue_number, assignees: [login] });
+              await removeLabel("claimed");
+              await removeLabel("needs check-in");
+              await github.rest.issues.createComment({
+                owner, repo, issue_number,
+                body: `@${login} released this issue. It is open for someone else to \`/claim\`.`
+              });
+              return;
+            }
+
+            if (issue.state !== "open") {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number,
+                body: `@${login} this issue is not open, so I did not assign it.`
+              });
+              return;
+            }
+            if (assignees.length && !assignees.includes(login)) {
+              const who = assignees.map((a) => `@${a}`).join(", ");
+              await github.rest.issues.createComment({
+                owner, repo, issue_number,
+                body: `@${login} this is already assigned to ${who}. They can \`/unclaim\` it, or a maintainer can reassign it.`
+              });
+              return;
+            }
+            if (assignees.includes(login)) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number,
+                body: `@${login} you already have this issue. Open a draft PR within a week, or comment with a check-in.`
+              });
+              return;
+            }
+
+            const owned = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: "open", assignee: login, per_page: 100
+            });
+            const claimedCount = owned.filter((i) => !i.pull_request).length;
+            if (claimedCount >= 2) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number,
+                body: `@${login} you already have ${claimedCount} open issues assigned. Please finish one or \`/unclaim\` it before claiming another.`
+              });
+              return;
+            }
+
+            await github.rest.issues.addAssignees({ owner, repo, issue_number, assignees: [login] });
+            await addLabel("claimed");
+            await removeLabel("needs check-in");
+            await github.rest.issues.createComment({
+              owner, repo, issue_number,
+              body: `@${login} you have this issue for **7 days**. Please open a draft pull request or comment with a short check-in in that time. Comment \`/unclaim\` if you need to drop it.`
+            });
+
+  stale:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const CHECKIN_MS = 7 * 24 * 60 * 60 * 1000;
+            const RELEASE_GRACE_MS = 3 * 24 * 60 * 60 * 1000;
+            const now = Date.now();
+
+            // Only issues with the `claimed` label (from /claim). Maintainer
+            // assignments without that label are left alone.
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: "open", labels: "claimed", assignee: "*", per_page: 100
+            });
+
+            async function hasOpenLinkedPr(issueNumber) {
+              const timeline = await github.paginate(
+                github.rest.issues.listEventsForTimeline,
+                { owner, repo, issue_number: issueNumber, per_page: 100 }
+              );
+              for (const ev of timeline) {
+                const src = ev.source && ev.source.issue;
+                if (src && src.pull_request && src.state === "open") return true;
+              }
+              return false;
+            }
+
+            function lastAssigneeActivity(timeline, assignees) {
+              let latest = 0;
+              for (const ev of timeline) {
+                const login = ev.actor && ev.actor.login;
+                if (!login || !assignees.includes(login)) continue;
+                if (ev.event === "assigned" || ev.event === "commented" || ev.event === "cross-referenced" || ev.event === "connected") {
+                  const t = Date.parse(ev.created_at || ev.updated_at || 0);
+                  if (t > latest) latest = t;
+                }
+              }
+              return latest;
+            }
+
+            function lastBotCheckin(timeline) {
+              let latest = 0;
+              for (const ev of timeline) {
+                if (ev.event !== "commented" || !ev.body) continue;
+                if (ev.actor && ev.actor.type === "Bot" && ev.body.includes("needs a check-in")) {
+                  const t = Date.parse(ev.created_at || 0);
+                  if (t > latest) latest = t;
+                }
+              }
+              return latest;
+            }
+
+            for (const issue of issues) {
+              if (issue.pull_request) continue;
+              const issue_number = issue.number;
+              const assignees = (issue.assignees || []).map((u) => u.login);
+              if (!assignees.length) continue;
+              if (await hasOpenLinkedPr(issue_number)) continue;
+
+              const timeline = await github.paginate(
+                github.rest.issues.listEventsForTimeline,
+                { owner, repo, issue_number, per_page: 100 }
+              );
+              const lastAct = lastAssigneeActivity(timeline, assignees);
+              if (!lastAct) continue;
+              const idle = now - lastAct;
+              const labels = (issue.labels || []).map((l) => l.name);
+              const pinged = lastBotCheckin(timeline);
+
+              if (idle < CHECKIN_MS) continue;
+
+              if (!pinged || pinged < lastAct) {
+                await github.rest.issues.addLabels({
+                  owner, repo, issue_number, labels: ["needs check-in"]
+                });
+                const who = assignees.map((a) => `@${a}`).join(", ");
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number,
+                  body: `${who} this issue has had no check-in or linked pull request for 7 days, so it needs a check-in. Please comment with progress or \`/unclaim\` it. If I do not hear from you in 3 more days I will unassign it so someone else can take it.`
+                });
+                continue;
+              }
+
+              if (now - pinged >= RELEASE_GRACE_MS) {
+                await github.rest.issues.removeAssignees({
+                  owner, repo, issue_number, assignees
+                });
+                for (const name of ["claimed", "needs check-in"]) {
+                  if (labels.includes(name)) {
+                    try {
+                      await github.rest.issues.removeLabel({ owner, repo, issue_number, name });
+                    } catch (err) {
+                      if (err.status !== 404) throw err;
+                    }
+                  }
+                }
+                const who = assignees.map((a) => `@${a}`).join(", ");
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number,
+                  body: `${who} I unassigned this after the check-in window closed with no reply and no open linked pull request. Anyone can \`/claim\` it again.`
+                });
+              }
+            }
