@@ -62,7 +62,7 @@ export function planAutoSize(registry: CalcRegistry, model: ModelState, request:
     if (system.domain !== "pipe" || (only && !only.has(system.id))) continue;
     if (systemSizingMode(model, system).mode !== "auto") continue;
     const gas = serviceOf(system.systemKind) === "gas";
-    // A system nothing sizes yet (vent, storm, hydronic) or with no pipe drawn is not an auto-sizing failure.
+    // A system nothing sizes yet (hydronic, condensate) or with no pipe drawn is not an auto-sizing failure.
     if (!gas && typeof pipeSizingService(system.systemKind) !== "string") continue;
     if (!elementsOfKind(model.elements, "run_segment").some((s) => s.systemId === system.id)) continue;
     const calc = gas ? "plumbing.gas_system" : "plumbing.size_system";

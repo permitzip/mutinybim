@@ -57,8 +57,8 @@ export const CLEANOUT_PROPOSAL_WORDS = {
 /** Plumbing › Connect (round 15): join the selected fixtures to the nearest drain, vent, cold or hot water run; the button, its menu, the preview panel and the undo label. */
 export const FIXTURE_CONNECT_WORDS = {
   label: "Connect",
-  description: "Join the selected fixtures and equipment to the nearest drain, vent, cold or hot water pipe: trap arms, the system's fittings and slope, in one undo",
-  keywords: ["connect", "connect fixtures", "auto connect", "drain", "vent", "cold water", "hot water", "trap arm", "wye", "sanitary tee", "tie in"],
+  description: "Join the selected fixtures and equipment to the nearest drain, vent, water, recirculation, gas, flue or combustion-air run: fittings and slope in one undo",
+  keywords: ["connect", "connect fixtures", "auto connect", "drain", "vent", "cold water", "hot water", "dhwr", "recirculation", "gas", "flue", "combustion air", "trap arm", "wye", "sanitary tee", "tie in"],
   title: "Connect fixtures",
   connectAll: (n: number) => `Connect ${n}`,
   close: "Cancel",
@@ -75,5 +75,9 @@ export const FIXTURE_CONNECT_WORDS = {
     vent: { label: "To vent", description: "Each fixture's vent up into the nearest vent pipe of its system (a vent main or the stack that goes through the roof)", undo: "connect the fixtures to the vent", noneHave: "None of the selected items has a vent connection. Fixtures placed before round 15 have none: place them again to get one.", allConnected: "Every selected vent connection is already connected." },
     cold_water: { label: "To cold water", description: "Each fixture's cold water into the nearest cold water pipe", undo: "connect the fixtures to cold water", noneHave: "None of the selected items has a cold water connection.", allConnected: "Every selected cold water connection is already connected." },
     hot_water: { label: "To hot water", description: "Each fixture's hot water into the nearest hot water pipe", undo: "connect the fixtures to hot water", noneHave: "None of the selected items has a hot water connection.", allConnected: "Every selected hot water connection is already connected." },
+    dhwr: { label: "To hot water return", description: "Each item's domestic hot water return (DHWR) into the nearest recirculation return pipe", undo: "connect the equipment to hot water return", noneHave: "None of the selected items has a domestic hot water return connection.", allConnected: "Every selected hot water return connection is already connected." },
+    gas: { label: "To gas", description: "Each appliance's fuel gas inlet into the nearest gas pipe", undo: "connect the appliances to gas", noneHave: "None of the selected items has a fuel gas connection.", allConnected: "Every selected gas connection is already connected." },
+    flue: { label: "To flue / exhaust", description: "Each gas-fired appliance's flue or combustion exhaust into the nearest exhaust run", undo: "connect the appliances to the flue", noneHave: "None of the selected items has a flue or combustion exhaust connection.", allConnected: "Every selected flue connection is already connected." },
+    combustion_air: { label: "To combustion air", description: "Each gas-fired appliance's combustion-air intake into the nearest outside-air or combustion-air run", undo: "connect the appliances to combustion air", noneHave: "None of the selected items has a combustion-air intake connection.", allConnected: "Every selected combustion-air connection is already connected." },
   },
 } as const;

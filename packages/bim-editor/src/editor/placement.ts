@@ -1,4 +1,5 @@
 import { MODEL_FRAME, elementsOfKind, fromWorkFrame, isWallFaceMountable, mountingPlaneUnder, nearestWallFace, paperToModelPoint, toWorkFrame, viewModelLevel, type BimElement, type Command, type Level, type ModelState, type PartCategory, type PartHost, type PartInstance, type PartTypeDefinition, type ReferenceSnapCandidates, type Vec2, type ViewOnPaper, type WorkFrame } from '@permitzip/bim-kernel'
+import { DEFAULT_SNAP_GRID_MM, snapGridLabel, snapToIncrement } from './snap-grid'
 
 /**
  * Placement helpers for the Building Model tools: where a part lands under
@@ -11,8 +12,8 @@ export { isWallFaceMountable }
 export const MM_PER_FT = 304.8
 export const MM_PER_IN = 25.4
 
-/** Plan grid the pointer snaps to when nothing closer applies. */
-export const GRID_MM = 6 * MM_PER_IN
+/** Default plan grid the pointer snaps to when nothing closer applies (6"). */
+export const GRID_MM = DEFAULT_SNAP_GRID_MM
 /** How close (plan mm) the pointer must be to another part's insertion point to land on it. */
 export const POINT_SNAP_MM = 300
 /** How close (plan mm) to another part's x or y to line up with it. */
@@ -46,10 +47,6 @@ export function snapTargets(model: ModelState, levelId: string, exclude: Readonl
   return out
 }
 
-function round(n: number, step: number): number {
-  return Math.round(n / step) * step
-}
-
 /**
  * Where a part lands for a raw pointer point. Order: onto another part's
  * insertion point, onto a linked model's wall end or corner, then its face or
@@ -58,7 +55,14 @@ function round(n: number, step: number): number {
  * the grid work in the work frame (`work-frame.ts`): on a building with a
  * working angle the grid and the "lined up" axes run along its walls.
  */
-export function snapPoint(raw: Vec2, targets: readonly SnapTarget[], reference: Vec2 | null = null, frame: WorkFrame = MODEL_FRAME, linked: ReferenceSnapCandidates | null = null): Snapped {
+export function snapPoint(
+  raw: Vec2,
+  targets: readonly SnapTarget[],
+  reference: Vec2 | null = null,
+  frame: WorkFrame = MODEL_FRAME,
+  linked: ReferenceSnapCandidates | null = null,
+  gridMm: number = GRID_MM,
+): Snapped {
   let nearest: SnapTarget | null = null
   let best = POINT_SNAP_MM
   for (const t of targets) {
@@ -73,8 +77,8 @@ export function snapPoint(raw: Vec2, targets: readonly SnapTarget[], reference: 
   if (onLinked) return onLinked
   if (reference) return { point: { x: Math.round(reference.x), y: Math.round(reference.y) }, kind: 'reference', label: "the architect's model" }
   const q = toWorkFrame(frame, raw)
-  let x = round(q.x, GRID_MM)
-  let y = round(q.y, GRID_MM)
+  let x = snapToIncrement(q.x, gridMm)
+  let y = snapToIncrement(q.y, gridMm)
   const labels: string[] = []
   let bx = ALIGN_SNAP_MM
   let by = ALIGN_SNAP_MM
@@ -103,7 +107,11 @@ export function snapPoint(raw: Vec2, targets: readonly SnapTarget[], reference: 
   }
   const point = fromWorkFrame(frame, { x, y })
   if (labels.length > 0) return { point, kind: 'align', label: labels.join(' and ') }
-  return { point, kind: 'grid', label: frame.angleDeg === 0 ? '6" grid' : '6" grid along the working angle' }
+  if (gridMm <= 0) {
+    return { point, kind: 'grid', label: frame.angleDeg === 0 ? 'free (1 mm)' : 'free along the working angle' }
+  }
+  const stepLabel = snapGridLabel(gridMm)
+  return { point, kind: 'grid', label: frame.angleDeg === 0 ? `${stepLabel} grid` : `${stepLabel} grid along the working angle` }
 }
 
 /** A linked model's wall finish face within `maxDistanceMm`, with outward room-facing `rotationDeg` so wall-hosted parts auto-orient onto IFC walls just like native walls. */
@@ -187,7 +195,7 @@ export function snapHint(s: Snapped): string {
     case 'reference':
       return `On ${s.label}`
     case 'grid':
-      return `On the ${s.label}`
+      return s.label.startsWith('free') ? `Free (${s.label})` : `On the ${s.label}`
   }
 }
 
@@ -309,7 +317,22 @@ export type DrawingPlacement = { readonly ok: true; readonly target: DrawingPlac
  * the level (the highest one at or below it) and the height above it; the plan
  * point is on the cut line. Never switches view.
  */
-export function drawingPlacementTarget(model: ModelState, vop: ViewOnPaper, paper: Vec2, heightMm: number, frame: WorkFrame = MODEL_FRAME, opts: { readonly ignorePlanes?: boolean; /** Snap flush onto a nearby wall's finish face (with `wall_face` host + outward room rotation). */ readonly wallSnap?: boolean; /** A linked model's snap candidates near a plan point on a level. */ readonly linked?: (levelId: string, at: Vec2) => ReferenceSnapCandidates | null } = {}): DrawingPlacement {
+export function drawingPlacementTarget(
+  model: ModelState,
+  vop: ViewOnPaper,
+  paper: Vec2,
+  heightMm: number,
+  frame: WorkFrame = MODEL_FRAME,
+  opts: {
+    readonly ignorePlanes?: boolean
+    /** Snap flush onto a nearby wall's finish face (with `wall_face` host + outward room rotation). */
+    readonly wallSnap?: boolean
+    /** A linked model's snap candidates near a plan point on a level. */
+    readonly linked?: (levelId: string, at: Vec2) => ReferenceSnapCandidates | null
+    /** Active snap grid increment in mm (`0` = Free 1 mm; absent: default 6"). */
+    readonly gridMm?: number
+  } = {},
+): DrawingPlacement {
   const mapping = vop.mapping
   if (mapping.modelReason) return { ok: false, reason: mapping.modelReason }
   const levels = levelsOf(model)
@@ -349,15 +372,16 @@ export function drawingPlacementTarget(model: ModelState, vop: ViewOnPaper, pape
       }
     }
     // A mounting plane on this level under the pointer is where the part goes (Shift: the level instead).
+    const stepMm = opts.gridMm ?? GRID_MM
     const under = opts.ignorePlanes ? null : mountingPlaneUnder(model, (mm) => paperToModelPoint(vop, paper, { elevationMm: mm }), new Set([level.id]))
     if (under) {
-      const onPlane = snapPoint(under.point, snapTargets(model, level.id), null, frame)
+      const onPlane = snapPoint(under.point, snapTargets(model, level.id), null, frame, null, stepMm)
       return {
         ok: true,
         target: { levelId: level.id, position: onPlane.point, offsetMm: Math.round(under.plane.heightMm), planeId: under.plane.id, where: `On mounting plane ${under.plane.name}, ${feetInches(under.plane.heightMm)} up, ${snapHint(onPlane).toLowerCase()} (Shift: on ${level.name} instead)` },
       }
     }
-    const snapped = snapPoint({ x: at.x, y: at.y }, snapTargets(model, level.id), null, frame, opts.linked?.(level.id, { x: at.x, y: at.y }) ?? null)
+    const snapped = snapPoint({ x: at.x, y: at.y }, snapTargets(model, level.id), null, frame, opts.linked?.(level.id, { x: at.x, y: at.y }) ?? null, stepMm)
     return { ok: true, target: { levelId: level.id, position: snapped.point, offsetMm: Math.round(heightMm), where: `On ${level.name}, ${feetInches(heightMm)} up, ${snapHint(snapped).toLowerCase()}` } }
   }
   if (mapping.kind === 'section') {

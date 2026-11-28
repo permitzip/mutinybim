@@ -1,7 +1,7 @@
 import { riserLevels } from "@permitzip/bim-kernel";
 import type { DiagramGraphLayoutInput, DiagramGraphLayoutResult, DiagramLayoutRow } from "@permitzip/bim-kernel";
 import type { PackRefusal } from "@permitzip/bim-kernel/packs";
-import { layoutPipingIsometric } from "./isometric-layout";
+import { ISOMETRIC_AZIMUTHS, layoutPipingIsometric, type IsometricAzimuth, type IsometricOptions } from "./isometric-layout";
 import { layoutPipingRiser, type PipingLayout } from "./piping-layout";
 
 /**
@@ -24,6 +24,22 @@ function labelsOf(input: DiagramGraphLayoutInput) {
   return input.hints.pipeLabels ? { labels: input.hints.pipeLabels } : {};
 }
 
+type IsometricDiagramHints = DiagramGraphLayoutInput["hints"] & {
+  readonly azimuth?: IsometricAzimuth;
+  readonly showFloorDatums?: boolean;
+};
+
+function isometricOptionsOf(input: DiagramGraphLayoutInput): IsometricOptions {
+  const hints = input.hints as IsometricDiagramHints;
+  const az = hints.azimuth && (ISOMETRIC_AZIMUTHS as readonly string[]).includes(hints.azimuth) ? hints.azimuth : undefined;
+  const showFloorDatums = hints.showFloorDatums === true;
+  return {
+    ...labelsOf(input),
+    ...(az ? { azimuth: az } : {}),
+    ...(showFloorDatums ? { levels: riserLevels(input.elements), showFloorDatums: true } : {}),
+  };
+}
+
 const RISER_LABEL = "Plumbing riser diagram";
 const ISOMETRIC_LABEL = "Plumbing isometric";
 
@@ -42,6 +58,6 @@ export const PLUMBING_DIAGRAM_LAYOUT_ROWS: readonly DiagramLayoutRow[] = [
     serviceSections: false,
     check: () => null,
     layout: () => NO_STORED_SPEC(ISOMETRIC_LABEL),
-    layoutGraph: (input) => asGraphLayout(layoutPipingIsometric(input.roots, input.graph.pipes ?? [], labelsOf(input))),
+    layoutGraph: (input) => asGraphLayout(layoutPipingIsometric(input.roots, input.graph.pipes ?? [], isometricOptionsOf(input))),
   },
 ];

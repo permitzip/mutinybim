@@ -1,5 +1,5 @@
 import { IncrementalTotals, type NetworkAdapter, formatQuantity, type QuantityKey, mergePipeDesign, serviceOf, type PipeDesign, elementValues, loadPointLoad, primaryQuantity, runEndOf, typicalEdgeFactor } from "@permitzip/bim-kernel";
-import { waterHeaterKind } from "./water-heater";
+import { isHotWaterCoupler } from "./water-heater";
 import { elementHydraulics, PipeHydraulicsEngine, pipeLoadWalk, type PipeWarning } from "../routing/pipe/hydraulics";
 import type { MepSystem, BimElement, ElementId, ModelState } from "@permitzip/bim-kernel";
 
@@ -164,7 +164,7 @@ export class PlumbingNetworkEngine {
       const id = n.includes("#") ? n.slice(0, n.indexOf("#")) : n;
       const el = elements[id];
       members.set(id, el);
-      if (el?.kind === "part" && waterHeaterKind(elements, el)) coupled = true;
+      if (el?.kind === "part" && isHotWaterCoupler(elements, el)) coupled = true;
     }
     for (const id of lw.points.alsoRead) members.set(id, elements[id]);
     const cached: CachedSystem = { system, totals, members, coupled, groupIds: lw.groupIds };

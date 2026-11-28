@@ -369,10 +369,56 @@ const SNAP_WORDS: Record<SnapKind, string> = {
 }
 
 /**
+ * Collect endpoints and midpoints of existing 2D drafted items in paper
+ * coordinates so drafting tools get strong endpoint/midpoint snapping and
+ * Revit-style orthogonal alignment tracking against every existing line.
+ */
+export function draftItemKeyPoints(
+  items: readonly DrawingItem[],
+  toPaper: (p: Vec2) => Vec2,
+): { readonly endpoints: Array<{ readonly at: Vec2; readonly itemId: string }>; readonly midpoints: Array<{ readonly at: Vec2; readonly itemId: string }> } {
+  const endpoints: Array<{ readonly at: Vec2; readonly itemId: string }> = []
+  const midpoints: Array<{ readonly at: Vec2; readonly itemId: string }> = []
+  for (const item of items) {
+    if (item.deleted || item.tag || item.dim || item.shape === 'text' || item.points.length === 0) continue
+    const pts = item.points.map(toPaper)
+    if (item.shape === 'line' || item.shape === 'batt' || item.shape === 'repeat') {
+      const [a, b] = pts
+      if (a && b) {
+        endpoints.push({ at: a, itemId: item.id }, { at: b, itemId: item.id })
+        midpoints.push({ at: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, itemId: item.id })
+      }
+    } else if (item.shape === 'polyline' || item.shape === 'region' || item.shape === 'spline') {
+      for (let i = 0; i < pts.length; i++) {
+        const a = pts[i]!
+        endpoints.push({ at: a, itemId: item.id })
+        const b = pts[i + 1] ?? (item.shape === 'region' && pts.length >= 3 ? pts[0] : undefined)
+        if (b) midpoints.push({ at: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, itemId: item.id })
+      }
+    } else if (item.shape === 'rect') {
+      const [a, b] = pts
+      if (a && b) {
+        const corners: Vec2[] = [a, { x: b.x, y: a.y }, b, { x: a.x, y: b.y }]
+        for (let i = 0; i < 4; i++) {
+          const c0 = corners[i]!
+          const c1 = corners[(i + 1) % 4]!
+          endpoints.push({ at: c0, itemId: item.id })
+          midpoints.push({ at: { x: (c0.x + c1.x) / 2, y: (c0.y + c1.y) / 2 }, itemId: item.id })
+        }
+      }
+    } else if (item.shape === 'arc' && pts.length >= 3) {
+      const [, s, e] = pts
+      if (s && e) endpoints.push({ at: s, itemId: item.id }, { at: e, itemId: item.id })
+    }
+  }
+  return { endpoints, midpoints }
+}
+
+/**
  * Where a click lands: active chain start/vertices (close loop), then model /
- * dimension anchors, then detail-linework snaps, then real model graphics
- * (walls, wall corners, grid lines & intersections, orthogonal alignment guides),
- * then ortho or polar tracking from the last point, else the pointer.
+ * dimension anchors, then strong endpoint/midpoint & detail-linework snaps,
+ * then real model graphics + drafting endpoint/midpoint alignment tracking
+ * guides, then ortho or polar tracking from the last point, else the pointer.
  */
 export function constrainPoint(input: {
   readonly at: Vec2
@@ -434,9 +480,32 @@ export function constrainPoint(input: {
     return { at: bestAnchor.at, snapLabel: bestAnchor.label, snapKind: 'endpoint', snapRef: bestAnchor.ref, tracking: null, itemId: anchorIsDetailItem ? bestAnchor.ref.elementId : null }
   }
 
-  // 3. Existing detail linework snaps (endpoint, midpoint, intersection, perpendicular, etc.).
+  // 3. Existing detail linework snaps: strong magnetic priority for endpoints & midpoints, then full CAD snap set.
   const kinds = new Set<SnapKind>(settings.snaps)
   if (input.nearest) kinds.add('nearest')
+  const keyPoints = input.items.length > 0 ? draftItemKeyPoints(input.items, input.toPaper) : { endpoints: [], midpoints: [] }
+  if (kinds.has('endpoint') && keyPoints.endpoints.length > 0) {
+    let bestEp: { readonly at: Vec2; readonly itemId: string; readonly d: number } | null = null
+    const epReach = reachMm * 1.25
+    for (const ep of keyPoints.endpoints) {
+      const d = Math.hypot(ep.at.x - at.x, ep.at.y - at.y)
+      if (d <= epReach && (!bestEp || d < bestEp.d)) bestEp = { ...ep, d }
+    }
+    if (bestEp) {
+      return { at: bestEp.at, snapLabel: SNAP_WORDS.endpoint, snapKind: 'endpoint', snapRef: null, tracking: null, itemId: bestEp.itemId }
+    }
+  }
+  if (kinds.has('midpoint') && keyPoints.midpoints.length > 0) {
+    let bestMid: { readonly at: Vec2; readonly itemId: string; readonly d: number } | null = null
+    const midReach = reachMm * 1.15
+    for (const mp of keyPoints.midpoints) {
+      const d = Math.hypot(mp.at.x - at.x, mp.at.y - at.y)
+      if (d <= midReach && (!bestMid || d < bestMid.d)) bestMid = { ...mp, d }
+    }
+    if (bestMid) {
+      return { at: bestMid.at, snapLabel: SNAP_WORDS.midpoint, snapKind: 'midpoint', snapRef: null, tracking: null, itemId: bestMid.itemId }
+    }
+  }
   if (kinds.size > 0) {
     const snap = detailSnap(input.items, input.toPaper, at, { kinds, reachMm, ...(from ? { from } : {}) })
     if (snap) return { at: snap.at, snapLabel: SNAP_WORDS[snap.kind], snapKind: snap.kind, snapRef: null, tracking: null, itemId: snap.itemId }
@@ -445,10 +514,15 @@ export function constrainPoint(input: {
     return { at: bestAnchor.at, snapLabel: bestAnchor.label, snapKind: 'endpoint', snapRef: bestAnchor.ref, tracking: null, itemId: anchorIsDetailItem ? bestAnchor.ref.elementId : null }
   }
 
-  // 4. Real model graphics snaps (wall corners, wall faces, grids, intersections, and chain corner alignment guides).
-  if (input.graphicsIndex || chain.length > 0) {
+  // 4. Real model graphics snaps + orthogonal alignment guides against active chain AND existing drafting endpoints/midpoints.
+  const alignRefs: Vec2[] = [
+    ...chain,
+    ...(kinds.has('endpoint') ? keyPoints.endpoints.map((e) => e.at) : []),
+    ...(kinds.has('midpoint') ? keyPoints.midpoints.map((m) => m.at) : []),
+  ]
+  if (input.graphicsIndex || alignRefs.length > 0) {
     const gHit = snapToGraphics(input.graphicsIndex ?? null, at, reachMm, {
-      alignRefs: chain,
+      alignRefs,
       orthoFrom: settings.ortho ? from : null,
     })
     if (gHit) {

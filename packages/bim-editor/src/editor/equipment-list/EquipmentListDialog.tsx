@@ -29,9 +29,9 @@ import { useWindowedRows, windowSlice } from '../use-windowed-rows'
 export type EquipmentListTrade = 'electrical' | 'mechanical' | 'plumbing'
 
 const TRADE_WORDS: Readonly<Record<EquipmentListTrade, string>> = {
-  electrical: 'Paste the kitchen vendor’s or mechanical schedule: each row becomes planned equipment with its load, ready to circuit before anyone draws it.',
-  mechanical: 'Paste the rooftop unit and equipment schedule: each row becomes planned equipment with its electrical and gas values.',
-  plumbing: 'Paste the fixture or kitchen schedule: each row becomes a planned fixture or item with its water, waste and gas connections.',
+  electrical: 'Paste any multi-discipline equipment schedule (kitchen, lab, manufacturing, AV/assembly, office, mechanical): each row becomes planned equipment with its electrical, gas, plumbing, structural, and airflow requirements.',
+  mechanical: 'Paste any equipment schedule (RTUs, fume hoods, process tools, kitchen hoods): each row becomes planned equipment with airflow, heat gain, weight, flue, electrical, and gas requirements.',
+  plumbing: 'Paste any fixture or owner equipment schedule: each row becomes a planned item with water, sanitary, grease/indirect waste, condensate, vent, and fuel gas connections.',
 }
 
 const EXAMPLE = 'Mark\tDescription\tQty\tVolts\tPhase\tkW\tGas MBH\tCW\tHW\tW\nK-14\tFryer, gas\t2\t120\t1\t0.5\t80\t\t\t\nK-18\tDishwasher, door type\t1\t208\t3\t15\t\t1/2\t3/4\t2'

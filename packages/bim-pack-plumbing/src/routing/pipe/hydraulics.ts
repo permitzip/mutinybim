@@ -1,6 +1,65 @@
-import { paramValue, resolveConnectors, resolveCoefficient, tableSource, type CoefficientQuery, type CoefficientSource, type CoefficientValue, resolveFitting, type ResolvedFitting, len3, segmentAxis, sub3, isSource, isSourceNode, runNeighbours, type RunGraphNode, endHasLoadPoint, loadPointLoads, loadPointLabel, loadPointQuantities, partConnectionTypeLoad, primaryQuantity, QUANTITIES, frictionFactor, partLabelOf, runLabel, PIPE_DESIGN_DEFAULTS, gasProperties, mergePipeDesign, serviceOf, type PipeDesign, isVerticalLeg, nominalInOf, slopeInPerFt, pipeDims, pipeSizeIssue, specOfSize, accumulateBelow, sumMonoid, typicalEdgeFactor, elementsOfKind, pipeComponent as component, pipeNodeId as idOf, pipePositionOn as positionOn, pipeWalkTree as tree, type PipeWalk as Walk } from "@permitzip/bim-kernel";
+import { paramValue, resolveConnectors, resolveCoefficient, tableSource, type CoefficientQuery, type CoefficientSource, type CoefficientValue, resolveFitting, type ResolvedFitting, len3, segmentAxis, sub3, isSource, isSourceNode, isCouplingOutlet, runHeightMm, runNeighbours, type RunGraphNode, endHasLoadPoint, loadPointLoads, loadPointLabel, loadPointQuantities, partConnectionTypeLoad, primaryQuantity, QUANTITIES, frictionFactor, partLabelOf, runLabel, PIPE_DESIGN_DEFAULTS, gasProperties, mergePipeDesign, serviceOf, type PipeDesign, isVerticalLeg, nominalInOf, slopeInPerFt, pipeDims, pipeSizeIssue, specOfSize, accumulateBelow, sumMonoid, typicalEdgeFactor, elementsOfKind, pipeComponent as component, pipeNodeId as idOf, pipePositionOn as positionOn, pipeWalkTree as tree, type PipeWalk as Walk } from "@permitzip/bim-kernel";
 import type { BimElement, ElementId, ModelState, PartInstance, MepSystem, RunFitting, RunSegment, RunSize } from "@permitzip/bim-kernel";
-import { gasInputOf, gasNetwork, gasSourceNode, regulatorSettings, type GasNetwork } from "./gas-zones";
+import { isHeaterInlet } from "../../load-points/water-heater";
+import { gasInputOf, gasNetwork, gasSourceNode, HIGH_PRESSURE_IN_WC, IN_WC_PER_PSI, regulatorSettings, segmentBranchLengthFt, type GasNetwork } from "./gas-zones";
+import {
+  buildDhwrPumpMetadata,
+  DHWR_DEFAULT_AMBIENT_TEMP_F,
+  DHWR_DEFAULT_DELTA_T_F,
+  DHWR_DEFAULT_FITTING_ALLOWANCE_PCT,
+  DHWR_DEFAULT_MAX_VELOCITY_FPS,
+  dhwrPartFlowGpm,
+  evaluateDevicePressureDrop,
+  evaluatePerformanceCurve,
+  evaluatePumpCurve,
+  extractBufferTankMetadata,
+  extractRecircPumpPart,
+  flowTestSupplyPsi,
+  isRecircPumpPart,
+  parsePerformanceCurve,
+  pipeSegmentHeatLossBtuh,
+  resolveDhwrDesign,
+  resolveWaterFlowTest,
+  WATER_STATIC_PSI_PER_FT,
+  type DeviceLossResult,
+  type DhwrBufferTankMetadata,
+  type DhwrLoopSummary,
+  type DhwrPumpMetadata,
+  type FlowTestSupplyResult,
+  type LookupPerformanceCurve,
+  type PerformanceCurve,
+  type PolynomialPerformanceCurve,
+  type PumpCurveEvaluation,
+} from "./hydraulics-extras";
+
+export {
+  DHWR_DEFAULT_AMBIENT_TEMP_F,
+  DHWR_DEFAULT_DELTA_T_F,
+  DHWR_DEFAULT_FITTING_ALLOWANCE_PCT,
+  DHWR_DEFAULT_MAX_VELOCITY_FPS,
+  dhwrPartFlowGpm,
+  evaluateDevicePressureDrop,
+  evaluatePerformanceCurve,
+  evaluatePumpCurve,
+  extractBufferTankMetadata,
+  extractRecircPumpPart,
+  flowTestSupplyPsi,
+  isRecircPumpPart,
+  parsePerformanceCurve,
+  pipeSegmentHeatLossBtuh,
+  resolveDhwrDesign,
+  resolveWaterFlowTest,
+  WATER_STATIC_PSI_PER_FT,
+  type DeviceLossResult,
+  type DhwrBufferTankMetadata,
+  type DhwrLoopSummary,
+  type DhwrPumpMetadata,
+  type FlowTestSupplyResult,
+  type LookupPerformanceCurve,
+  type PerformanceCurve,
+  type PolynomialPerformanceCurve,
+  type PumpCurveEvaluation,
+};
 
 /**
  * Hydraulics for pipe systems, from published equations. No plumbing or
@@ -145,6 +204,32 @@ export function muellerDropInWc(cfh: number, lengthFt: number, idIn: number, spe
   return lengthFt * ((cfh * specificGravity ** 0.425) / (2971 * idIn ** 2.725)) ** (1 / 0.575);
 }
 
+const IFGC_CR_Y = {
+  natural: { cr: 0.6094, y: 0.9992 },
+  propane: { cr: 1.2462, y: 0.991 },
+} as const;
+const ATM_PSIA = 14.7;
+
+/**
+ * IFGC 402.4 Equation 4-2 (high-pressure gas, >= 1.5 psi) solved for pressure
+ * drop in in. w.c.:
+ *   P1^2 - P2^2 = (Cr * L / Y) * (Q^0.381 / (18.93 * d))^(1 / 0.206)
+ * where P1 = inletPsi + 14.7 psia, Q in cfh, L in ft, d inside diameter in inches.
+ */
+export function ifgcHighPressureDropInWc(cfh: number, lengthFt: number, idIn: number, inletPsi: number, gas: "natural" | "propane"): number {
+  if (cfh <= 0 || lengthFt <= 0 || idIn <= 0) return 0;
+  const { cr, y } = IFGC_CR_Y[gas];
+  const p1 = Math.max(0, inletPsi) + ATM_PSIA;
+  const term = cfh ** 0.381 / (18.93 * idIn);
+  const deltaP2 = ((cr * lengthFt) / y) * term ** (1 / 0.206);
+  if (deltaP2 >= p1 * p1) {
+    // Exceeds full absolute inlet pressure: keep finite and strictly increasing.
+    return (p1 + (deltaP2 - p1 * p1) / (2 * p1)) * IN_WC_PER_PSI;
+  }
+  const p2 = Math.sqrt(p1 * p1 - deltaP2);
+  return (p1 - p2) * IN_WC_PER_PSI;
+}
+
 // ------------------------------------------------------------------ reports
 
 export interface PipeWarning {
@@ -198,8 +283,14 @@ export interface WaterReport extends ReportBase {
   readonly unit: "psi";
   readonly method: { readonly friction: "hazen_williams" | "darcy"; readonly fittings: "k" | "equivalent_length"; readonly demand: string; readonly waterTempF: number };
   readonly supplyPsi: number | null;
+  /** World elevation of the system root (source / entry), ft above project zero. */
+  readonly rootElevationFt: number;
   readonly segments: readonly WaterSegmentResult[];
   readonly fittings: readonly FittingLossResult[];
+  /** Inline part device pressure drops (RPZ, water meter, PRV, softener, strainer). */
+  readonly deviceLosses: readonly DeviceLossResult[];
+  /** Inline device losses along the path to the critical fixture (psi). */
+  readonly criticalDeviceLossPsi: number;
   readonly ends: readonly FixtureEnd[];
   readonly critical: FixtureEnd | null;
   readonly minFixturePsi: number | null;
@@ -207,6 +298,10 @@ export interface WaterReport extends ReportBase {
   readonly pass: boolean | null;
   readonly totalFixtureUnits: number;
   readonly peakGpm: number;
+  /** Populated when supply pressure was derived from municipal hydrant / service flow-test data. */
+  readonly flowTest?: FlowTestSupplyResult;
+  /** Populated for `domestic_hot_water_return` systems (loop flow, head loss, recirc pump & buffer tank duty). */
+  readonly dhwr?: DhwrLoopSummary;
 }
 
 export interface DrainSegmentResult {
@@ -249,7 +344,7 @@ export interface GasSegmentResult {
 export interface GasReport extends ReportBase {
   readonly kind: "gas";
   readonly unit: "in_wc";
-  readonly equation: "spitzglass" | "mueller";
+  readonly equation: "spitzglass" | "mueller" | "ifgc_high_pressure";
   readonly specificGravity: number;
   readonly heatingValueBtuPerCf: number;
   readonly inletInWc: number;
@@ -436,6 +531,65 @@ export interface PipeLoadWalk {
   readonly groupIds: readonly string[];
 }
 
+/** Pick the root source node of a domestic water or DHWR walk without mistaking a coupler's cold inlet or inline accessory for the source. */
+function waterSourceNode(elements: Elements, nodes: readonly RunGraphNode[], system: MepSystem): RunGraphNode | undefined {
+  const partNodes = nodes.filter((n) => n.includes("#"));
+  if (system.systemKind === "domestic_hot_water_return") {
+    const pumpOut = partNodes.find((n) => {
+      const hash = n.indexOf("#");
+      const p = elements[n.slice(0, hash)];
+      if (p?.kind !== "part" || !isRecircPumpPart(elements, p)) return false;
+      const type = elements[p.typeId];
+      if (type?.kind !== "part_type") return false;
+      const c = type.definition.connectors.find((x) => x.id === n.slice(hash + 1));
+      return c?.flowDirection === "out";
+    });
+    if (pumpOut) return pumpOut;
+    const hwrPort = partNodes.find((n) => {
+      const hash = n.indexOf("#");
+      const p = elements[n.slice(0, hash)];
+      if (p?.kind !== "part") return false;
+      const type = elements[p.typeId];
+      if (type?.kind !== "part_type") return false;
+      const c = type.definition.connectors.find((x) => x.id === n.slice(hash + 1));
+      return c?.systemKind === "domestic_hot_water_return" && (isSource(elements, p) || isHeaterInlet(elements, p, "cw"));
+    });
+    if (hwrPort) return hwrPort;
+  }
+  // Priority 1: coupling outlet (e.g., water heater / boiler / heat exchanger hot outlet on DHW).
+  const couplingOut = partNodes.find((n) => {
+    const hash = n.indexOf("#");
+    const p = elements[n.slice(0, hash)];
+    return p?.kind === "part" && isCouplingOutlet(elements, p, n.slice(hash + 1));
+  });
+  if (couplingOut) return couplingOut;
+  // Priority 2: terminal supply part connector (flowDirection "out" whose other ports on this system are not in `nodes`, e.g., a service meter).
+  const partNodesByPart = new Map<string, number>();
+  for (const n of partNodes) {
+    const pId = idOf(n);
+    partNodesByPart.set(pId, (partNodesByPart.get(pId) ?? 0) + 1);
+  }
+  const terminalOut = partNodes.find((n) => {
+    const hash = n.indexOf("#");
+    const pId = n.slice(0, hash);
+    if ((partNodesByPart.get(pId) ?? 0) > 1) return false;
+    const p = elements[pId];
+    if (p?.kind !== "part" || isHeaterInlet(elements, p, n.slice(hash + 1))) return false;
+    const type = elements[p.typeId];
+    if (type?.kind !== "part_type") return false;
+    const c = type.definition.connectors.find((x) => x.id === n.slice(hash + 1));
+    return c?.flowDirection === "out";
+  });
+  if (terminalOut) return terminalOut;
+  // Priority 3: general source node, excluding any coupler's cold inlet (e.g. a mechanical_equipment boiler on cold water).
+  return partNodes.find((n) => {
+    const hash = n.indexOf("#");
+    const p = elements[n.slice(0, hash)];
+    if (p?.kind === "part" && isHeaterInlet(elements, p, n.slice(hash + 1))) return false;
+    return isSourceNode(elements, n);
+  });
+}
+
 /**
  * The walk the pipe report, the "Carries…" line and the network engine
  * (load-points/engine.ts) all share, so they never disagree.
@@ -446,7 +600,7 @@ export function pipeLoadWalk(elements: Elements, system: MepSystem, anchor: Elem
   const nodes = component(elements, anchor);
   const memberIds = [...new Set(nodes.map(idOf))].filter((id) => elements[id] !== undefined) as ElementId[];
   // Root: the source (meter, heater) for water and gas; the lowest open end or outfall for drainage.
-  const sourceNode = service === "gas" ? gasSourceNode(elements, nodes, design) : nodes.find((n) => isSourceNode(elements, n));
+  const sourceNode = service === "gas" ? gasSourceNode(elements, nodes, design) : service === "water" ? waterSourceNode(elements, nodes, system) : nodes.find((n) => isSourceNode(elements, n));
   let root: RunGraphNode | undefined = sourceNode;
   if (!root && service === "drainage") root = outfallOf(elements, nodes);
   if (!root) {
@@ -457,19 +611,33 @@ export function pipeLoadWalk(elements: Elements, system: MepSystem, anchor: Elem
   // Loads below every node: load points first (their attached fixtures don't count twice), then fixtures.
   const points = loadPointLoads(elements, walk, system.systemKind, (n) => runNeighbours(elements, n));
   const own = new Map<RunGraphNode, number>(points.own);
+  const isDhwr = system.systemKind === "domestic_hot_water_return";
   const quantity = primaryQuantity(system.systemKind);
   for (const id of points.loadPointIds) {
     const lp = elements[id];
+    if (lp?.kind !== "load_point") continue;
+    if (isDhwr) {
+      const q = loadPointQuantities(elements, lp);
+      if (typeof q.gpm_fixed === "number") {
+        own.set(id, q.gpm_fixed);
+        continue;
+      }
+    }
     // Warn only when nothing says the value: a connection type that sets 0 means "none here".
-    if (lp?.kind === "load_point" && quantity && loadPointQuantities(elements, lp)[quantity] === undefined) warnings.push({ elementId: lp.id, message: `${loadPointLabel(elements, lp)} has no ${quantity ? QUANTITIES[quantity].label.toLowerCase() : "load"}; set it on the point or its connection type` });
+    if (quantity && loadPointQuantities(elements, lp)[quantity] === undefined) warnings.push({ elementId: lp.id, message: `${loadPointLabel(elements, lp)} has no ${quantity ? QUANTITIES[quantity].label.toLowerCase() : "load"}; set it on the point or its connection type` });
   }
   for (const n of walk.order) {
     if (!n.includes("#") || n === root) continue;
     const p = elements[idOf(n)];
     // Attached to a load point (the point counts), or a water heater's inlet (it carries its hot side).
     if (p?.kind !== "part" || points.attachedParts.has(p.id) || points.own.has(n)) continue;
-    // A regulator passes gas through; only appliances downstream of it carry load.
-    if (service === "gas" && (walk.children.get(n) ?? []).some((k) => k.includes("#") && idOf(k) === p.id)) continue;
+    // Inline pass-through parts (regulators, RPZs, meters, PRVs, strainers, pumps) carry downstream flow rather than acting as fixtures.
+    if ((walk.children.get(n) ?? []).length > 0) continue;
+    if (isDhwr) {
+      const dhwrGpm = dhwrPartFlowGpm(elements, p, n.slice(n.indexOf("#") + 1));
+      if (dhwrGpm !== null) own.set(n, (own.get(n) ?? 0) + dhwrGpm);
+      continue;
+    }
     const gasIn = service === "gas" ? gasInputOf(elements, p, n.slice(n.indexOf("#") + 1), design) : null;
     const l = gasIn ? { value: gasIn.mbh, found: gasIn.found } : fixtureLoad(elements, p, n.slice(n.indexOf("#") + 1), service, system.systemKind, design);
     if (!l.found) warnings.push({ elementId: p.id, message: `${partLabelOf(elements, p)} has no ${service === "water" ? "water supply fixture units" : service === "drainage" ? "drainage fixture units" : "gas input"}; add it to the fixture table or the part type` });
@@ -501,7 +669,7 @@ function outfallOf(elements: Elements, nodes: readonly RunGraphNode[]): RunGraph
     for (const end of ["start", "end"] as const) {
       // An end with a load point is a fixture, not where the drain leaves.
       const open = !el.links[end] && !endHasLoadPoint(elements, el.id, end);
-      const z = el[end].z;
+      const z = runHeightMm(elements, el.levelId, el[end].z);
       if (!best || (open && !best.open) || (open === best.open && z < best.z - 0.5)) best = { n, z, open };
     }
   }
@@ -587,6 +755,7 @@ interface Context {
   readonly friction: "hazen_williams" | "darcy";
   readonly fittings: "k" | "equivalent_length";
   readonly toFlow: (load: number) => number;
+  readonly gas: "natural" | "propane";
   readonly gasS: number;
   readonly gasHv: number;
   readonly gasEq: "spitzglass" | "mueller";
@@ -598,14 +767,24 @@ function boreOf(size: RunSize): { idMm: number; roughnessMm: number; c: number }
   return { idMm: pipeDims(size).idMm, roughnessMm: spec?.roughnessMm ?? 0.05, c: spec?.hazenWilliamsC ?? 130 };
 }
 
-/** Loss along a length of pipe at a flow: psi (water) or in. w.c. (gas). */
-function pipeLoss(ctx: Context, size: RunSize, flow: number, lengthFt: number): { loss: number; ratePer100: number; velocityFps: number } {
+/** Loss along a length of pipe at a flow: psi (water) or in. w.c. (gas). Uses IFGC Equation 4-2 for gas zones >= 1.5 psi. */
+function pipeLoss(ctx: Context, size: RunSize, flow: number, lengthFt: number, zoneInletInWc?: number): { loss: number; ratePer100: number; velocityFps: number } {
   const bore = boreOf(size);
   const idIn = bore.idMm / IN;
   const area = (Math.PI * (bore.idMm / 1000) ** 2) / 4;
   if (ctx.service === "gas") {
-    const drop = ctx.gasEq === "mueller" ? muellerDropInWc(flow, Math.max(lengthFt, 0), idIn, ctx.gasS) : spitzglassDropInWc(flow, Math.max(lengthFt, 0), idIn, ctx.gasS);
-    const per100 = ctx.gasEq === "mueller" ? muellerDropInWc(flow, 100, idIn, ctx.gasS) : spitzglassDropInWc(flow, 100, idIn, ctx.gasS);
+    const highPressure = zoneInletInWc !== undefined && zoneInletInWc >= HIGH_PRESSURE_IN_WC - 1e-6;
+    const inletPsi = highPressure ? zoneInletInWc / IN_WC_PER_PSI : 0;
+    const drop = highPressure
+      ? ifgcHighPressureDropInWc(flow, Math.max(lengthFt, 0), idIn, inletPsi, ctx.gas)
+      : ctx.gasEq === "mueller"
+        ? muellerDropInWc(flow, Math.max(lengthFt, 0), idIn, ctx.gasS)
+        : spitzglassDropInWc(flow, Math.max(lengthFt, 0), idIn, ctx.gasS);
+    const per100 = highPressure
+      ? ifgcHighPressureDropInWc(flow, 100, idIn, inletPsi, ctx.gas)
+      : ctx.gasEq === "mueller"
+        ? muellerDropInWc(flow, 100, idIn, ctx.gasS)
+        : spitzglassDropInWc(flow, 100, idIn, ctx.gasS);
     const v = area > 0 ? (flow * 0.0283168) / 3600 / area / 0.3048 : 0;
     return { loss: drop, ratePer100: per100, velocityFps: v };
   }
@@ -615,11 +794,11 @@ function pipeLoss(ctx: Context, size: RunSize, flow: number, lengthFt: number): 
 }
 
 /** K x velocity head (water, psi) or the K's equivalent length at the pipe's rate (gas, in. w.c.; water with the equivalent-length method). */
-function fittingLoss(ctx: Context, k: number, size: RunSize, flow: number): { loss: number; equivalentLengthFt: number } {
+function fittingLoss(ctx: Context, k: number, size: RunSize, flow: number, zoneInletInWc?: number): { loss: number; equivalentLengthFt: number } {
   const bore = boreOf(size);
   const fT = turbulentFrictionFactor(bore.roughnessMm, bore.idMm);
   const leFt = fT > 0 ? ((k / fT) * bore.idMm) / MM_PER_FT : 0;
-  if (ctx.service === "gas" || ctx.fittings === "equivalent_length") return { loss: pipeLoss(ctx, size, flow, leFt).loss, equivalentLengthFt: leFt };
+  if (ctx.service === "gas" || ctx.fittings === "equivalent_length") return { loss: pipeLoss(ctx, size, flow, leFt, zoneInletInWc).loss, equivalentLengthFt: leFt };
   const area = (Math.PI * (bore.idMm / 1000) ** 2) / 4;
   const v = area > 0 ? flow / GPM_PER_M3S / area : 0;
   return { loss: (k * ctx.rho * v * v) / 2 / PA_PER_PSI, equivalentLengthFt: leFt };
@@ -656,9 +835,10 @@ function pressureWalk(
   warnings: PipeWarning[],
   b: (basis: string[]) => ReportBase,
 ): WaterReport | GasReport {
-  const hot = system.systemKind === "domestic_hot_water" || system.systemKind === "domestic_hot_water_return";
+  const isDhwr = system.systemKind === "domestic_hot_water_return";
+  const hot = system.systemKind === "domestic_hot_water" || isDhwr;
   const tempF = design.waterTempF ?? (hot ? PIPE_DESIGN_DEFAULTS.hotWaterTempF : PIPE_DESIGN_DEFAULTS.waterTempF);
-  const gpmLoads = design.demandMethod === "flow_is_gpm" || system.systemKind === "domestic_hot_water_return" || system.systemKind === "hydronic_supply" || system.systemKind === "hydronic_return";
+  const gpmLoads = design.demandMethod === "flow_is_gpm" || isDhwr || system.systemKind === "hydronic_supply" || system.systemKind === "hydronic_return";
   const table = design.demandTable?.map((p) => ({ x: p.fu, y: p.gpm })) ?? [];
   const demandMethod = gpmLoads ? "flow_is_gpm" : design.demandMethod ?? PIPE_DESIGN_DEFAULTS.demandMethod;
   if (demandMethod === "table" && table.length === 0) warnings.push({ elementId: null, message: `${system.name} is set to use the demand table, but it is empty; the Hunter-curve-style fit is used instead (${VERIFY})` });
@@ -674,10 +854,105 @@ function pressureWalk(
     friction: design.frictionMethod ?? PIPE_DESIGN_DEFAULTS.frictionMethod,
     fittings: design.fittingMethod ?? PIPE_DESIGN_DEFAULTS.fittingMethod,
     toFlow: (l: number) => (service === "gas" ? (l * 1000) / gasHv : demandMethod === "flow_is_gpm" ? l : demandMethod === "table" && table.length > 0 ? (interpolateTable(table, l) ?? 0) : hunterStyleGpm(l)),
+    gas: gasProps.gas,
     gasS: gasProps.specificGravity,
     gasHv,
     gasEq: design.gasEquation ?? PIPE_DESIGN_DEFAULTS.gasEquation,
   };
+  const rootZ = (() => {
+    const el = elements[idOf(walk.root)];
+    if (el?.kind === "run_segment") return runHeightMm(elements, el.levelId, el.start.z);
+    if (el?.kind === "run_fitting") return runHeightMm(elements, el.levelId, el.position.z);
+    const first = walk.children.get(walk.root)?.[0];
+    const firstEl = first ? elements[idOf(first)] : undefined;
+    if (firstEl?.kind === "run_segment") {
+      const link = idOf(walk.root);
+      const localZ = firstEl.links.start?.elementId === link ? firstEl.start.z : firstEl.end.z;
+      return runHeightMm(elements, firstEl.levelId, localZ);
+    }
+    if (firstEl?.kind === "run_fitting") return runHeightMm(elements, firstEl.levelId, firstEl.position.z);
+    if (el?.kind === "part") return runHeightMm(elements, el.levelId, el.offsetMm);
+    return 0;
+  })();
+  const rootElevationFt = rootZ / MM_PER_FT;
+
+  const nodePositionOn = (els: Elements, seg: RunSegment, n: RunGraphNode | null, total: number): number => {
+    if (n === null) return 0;
+    const el = els[idOf(n)];
+    if (el?.kind === "load_point" && el.host?.elementId === seg.id) {
+      return el.host.port === "end" ? total : 0;
+    }
+    return positionOn(els, seg, n, total);
+  };
+
+  // DHWR loop flow setup: explicit GPM (design, load point, or recirc pump) or steady-state heat loss / ΔT.
+  const dhwrDesign = isDhwr ? resolveDhwrDesign(elements, system, design) : null;
+  let dhwrLoopGpm = 0;
+  let dhwrFlowBasis: "explicit_gpm" | "heat_loss_delta_t" = "explicit_gpm";
+  let dhwrPipeLossBtuh = 0;
+  let dhwrBufferTank = null as DhwrBufferTankMetadata | null;
+  let dhwrPumpPart: PartInstance | null = null;
+  let dhwrLoopLengthFt = 0;
+  let dhwrSupplyIncludedFt = 0;
+  const dhwrDeltaTF = dhwrDesign?.deltaTF ?? DHWR_DEFAULT_DELTA_T_F;
+  const dhwrAmbientF = dhwrDesign?.ambientTempF ?? DHWR_DEFAULT_AMBIENT_TEMP_F;
+  if (isDhwr && dhwrDesign) {
+    const walkParts: PartInstance[] = [];
+    const seenParts = new Set<string>();
+    const walkSegs: RunSegment[] = [];
+    for (const n of walk.order) {
+      const el = elements[idOf(n)];
+      if (el?.kind === "run_segment" && el.size.shape === "pipe") walkSegs.push(el);
+      else if (el?.kind === "part" && !seenParts.has(el.id)) {
+        seenParts.add(el.id);
+        walkParts.push(el);
+      }
+    }
+    dhwrPumpPart = extractRecircPumpPart(elements, walkParts);
+    dhwrBufferTank = extractBufferTankMetadata(elements, walkParts, dhwrDesign);
+    dhwrLoopLengthFt = walkSegs.reduce((sum, s) => sum + len3(sub3(s.end, s.start)) / MM_PER_FT, 0);
+    const returnPipeLossBtuh = walkSegs.reduce((sum, s) => sum + pipeSegmentHeatLossBtuh(s, tempF, dhwrAmbientF, dhwrDesign.heatLossBtuhPerFt), 0);
+    if (dhwrDesign.heatLossBtuh !== undefined) {
+      dhwrPipeLossBtuh = dhwrDesign.heatLossBtuh;
+      dhwrSupplyIncludedFt = dhwrDesign.supplyLoopLengthFt ?? 0;
+    } else if (dhwrDesign.supplyLoopLengthFt !== undefined && dhwrLoopLengthFt > 0) {
+      dhwrSupplyIncludedFt = dhwrDesign.supplyLoopLengthFt;
+      const avgPerFt = returnPipeLossBtuh / dhwrLoopLengthFt;
+      dhwrPipeLossBtuh = returnPipeLossBtuh + dhwrSupplyIncludedFt * avgPerFt;
+    } else {
+      dhwrPipeLossBtuh = returnPipeLossBtuh;
+    }
+    const totalHeatLossBtuh = dhwrPipeLossBtuh + (dhwrBufferTank?.standbyLossBtuh ?? 0);
+    const walkedRoot = load.get(walk.root) ?? 0;
+    const pumpExplicit = dhwrPumpPart ? dhwrPartFlowGpm(elements, dhwrPumpPart) : null;
+    if (dhwrDesign.designFlowGpm !== undefined && dhwrDesign.designFlowGpm > 0) {
+      dhwrLoopGpm = dhwrDesign.designFlowGpm;
+      dhwrFlowBasis = "explicit_gpm";
+    } else if (walkedRoot > 0) {
+      dhwrLoopGpm = walkedRoot;
+      dhwrFlowBasis = "explicit_gpm";
+    } else if (pumpExplicit !== null && pumpExplicit > 0 && dhwrDesign.heatLossBtuh === undefined && dhwrDesign.heatLossBtuhPerFt === undefined && dhwrDesign.deltaTF === undefined) {
+      dhwrLoopGpm = pumpExplicit;
+      dhwrFlowBasis = "explicit_gpm";
+    } else if (totalHeatLossBtuh > 0) {
+      dhwrLoopGpm = totalHeatLossBtuh / (500 * dhwrDeltaTF);
+      dhwrFlowBasis = "heat_loss_delta_t";
+    }
+  }
+  const effectiveLoad = (n: RunGraphNode): number => {
+    const raw = load.get(n) ?? 0;
+    return isDhwr && dhwrLoopGpm > 0 ? Math.max(raw, dhwrLoopGpm) : raw;
+  };
+
+  // Water supply pressure: hydrant/service flow test curve at peak GPM when provided, else system supplyPressurePsi.
+  const peakAtRoot = ctx.toFlow(effectiveLoad(walk.root));
+  const waterFlowTest = service === "water" && !isDhwr ? resolveWaterFlowTest(elements, system, design) : null;
+  const flowTestResult = waterFlowTest ? flowTestSupplyPsi(waterFlowTest, peakAtRoot, rootElevationFt) : undefined;
+  if (flowTestResult?.extrapolated) {
+    warnings.push({ elementId: null, message: `Design flow (${r(peakAtRoot, 1)} gpm) exceeds flow-test rate (${flowTestResult.testGpm} gpm); supply pressure is extrapolated on the N^1.85 curve` });
+  }
+  const resolvedSupplyPsi = flowTestResult ? flowTestResult.availableAtDesignPsi : design.supplyPressurePsi;
+
   // Pressure (psi for water, in. w.c. for gas) at the outlet of each node; where a hosted child starts.
   const at = new Map<RunGraphNode, number>();
   const childStart = new Map<RunGraphNode, number>();
@@ -685,71 +960,118 @@ function pressureWalk(
   const childLength = new Map<RunGraphNode, number>();
   const zAt = new Map<RunGraphNode, number>();
   const childZ = new Map<RunGraphNode, number>();
+  const zoneInletAt = new Map<RunGraphNode, number>();
+  const childZoneInlet = new Map<RunGraphNode, number>();
+  const deviceLossTo = new Map<RunGraphNode, number>();
+  const childDeviceLoss = new Map<RunGraphNode, number>();
   const segs: WaterSegmentResult[] = [];
   const gasSegs: Array<Omit<GasSegmentResult, "designDropInWc" | "ok">> = [];
   const fits: FittingLossResult[] = [];
+  const deviceLosses: DeviceLossResult[] = [];
+  const endDeviceLoss = new Map<string, number>();
   const ends: FixtureEnd[] = [];
   const mainPaths = new Map<ElementId, { k: number; loss: number; le: number; source: string; verify: boolean }>();
-  const supply = service === "gas" ? (design.inletPressureInWc ?? PIPE_DESIGN_DEFAULTS.inletPressureInWc) : design.supplyPressurePsi !== undefined ? design.supplyPressurePsi - (design.fixedLossesPsi ?? 0) : 0;
+  const rootInletInWc = design.inletPressureInWc ?? PIPE_DESIGN_DEFAULTS.inletPressureInWc;
+  const supply = service === "gas" ? rootInletInWc : resolvedSupplyPsi !== undefined ? resolvedSupplyPsi - (design.fixedLossesPsi ?? 0) : 0;
   // Static head per mm of rise: psi for water; gas is too light to count at these heights.
   const headPerMm = service === "gas" ? 0 : (ctx.rho * G) / 1000 / PA_PER_PSI;
-  const rootZ = (() => {
-    const el = elements[idOf(walk.root)];
-    if (el?.kind === "run_segment") return el.start.z;
-    if (el?.kind === "run_fitting") return el.position.z;
-    const first = walk.children.get(walk.root)?.[0];
-    const seg = first ? elements[first] : undefined;
-    if (seg?.kind === "run_segment") {
-      const link = idOf(walk.root);
-      return seg.links.start?.elementId === link ? seg.start.z : seg.end.z;
-    }
-    return 0;
-  })();
 
   for (const n of walk.order) {
     const parentNode = walk.parent.get(n) ?? null;
     const start = n === walk.root ? supply : (childStart.get(n) ?? at.get(parentNode ?? "") ?? supply);
     const len0 = n === walk.root ? 0 : (childLength.get(n) ?? lengthTo.get(parentNode ?? "") ?? 0);
     const z0 = n === walk.root ? rootZ : (childZ.get(n) ?? zAt.get(parentNode ?? "") ?? rootZ);
+    const zoneIn0 = n === walk.root ? rootInletInWc : (childZoneInlet.get(n) ?? zoneInletAt.get(parentNode ?? "") ?? rootInletInWc);
+    const devLoss0 = n === walk.root ? 0 : (childDeviceLoss.get(n) ?? deviceLossTo.get(parentNode ?? "") ?? 0);
     const el = elements[idOf(n)];
     const kids = walk.children.get(n) ?? [];
     if (!el) continue;
+    if (el.kind === "load_point") {
+      at.set(n, start);
+      lengthTo.set(n, len0);
+      zAt.set(n, z0);
+      zoneInletAt.set(n, zoneIn0);
+      deviceLossTo.set(n, devLoss0);
+      ends.push({ elementId: el.id, label: loadPointLabel(elements, el), isFixture: true, pressure: start, elevationFt: z0 / MM_PER_FT });
+      endDeviceLoss.set(el.id, devLoss0);
+      continue;
+    }
     if (el.kind === "part") {
-      const reg = service === "gas" && kids.some((k) => k.includes("#") && idOf(k) === el.id) ? regulatorSettings(elements, el) : null;
+      const throughPart = kids.some((k) => k.includes("#") && idOf(k) === el.id);
+      const reg = service === "gas" && throughPart ? regulatorSettings(elements, el) : null;
       if (reg) {
         at.set(n, Math.min(start, reg.outletInWc));
         lengthTo.set(n, len0);
         zAt.set(n, z0);
+        zoneInletAt.set(n, reg.outletInWc);
+        deviceLossTo.set(n, devLoss0);
         continue;
       }
-      at.set(n, start);
+      let p = start;
+      let devLoss = devLoss0;
+      if (service === "water" && (throughPart || n === walk.root)) {
+        const flow = ctx.toFlow(effectiveLoad(n));
+        const drop = evaluateDevicePressureDrop(elements, el, flow);
+        if (drop) {
+          p -= drop.lossPsi;
+          devLoss += drop.lossPsi;
+          deviceLosses.push({ elementId: el.id, label: partLabelOf(elements, el), flowGpm: r(flow, 3), lossPsi: r(drop.lossPsi, 4), basis: drop.basis, extrapolated: drop.extrapolated });
+          if (drop.extrapolated) warnings.push({ elementId: el.id, message: `${partLabelOf(elements, el)}: flow (${r(flow, 1)} gpm) is outside its pressure-drop curve; drop held at curve end` });
+        }
+      }
+      at.set(n, p);
       lengthTo.set(n, len0);
       zAt.set(n, z0);
-      if (n !== walk.root) ends.push({ elementId: el.id, label: partLabelOf(elements, el), isFixture: true, pressure: start, elevationFt: z0 / MM_PER_FT });
+      zoneInletAt.set(n, zoneIn0);
+      deviceLossTo.set(n, devLoss);
+      if (n !== walk.root && kids.length === 0) {
+        ends.push({ elementId: el.id, label: partLabelOf(elements, el), isFixture: true, pressure: p, elevationFt: z0 / MM_PER_FT });
+        endDeviceLoss.set(el.id, devLoss);
+      }
       continue;
     }
     if (el.kind === "run_segment") {
       const seg = el;
       const total = len3(sub3(seg.end, seg.start));
       const axis = segmentAxis(seg);
-      const entry = positionOn(elements, seg, parentNode, total);
-      const exits = kids.map((k) => ({ k, s: positionOn(elements, seg, k, total), q: load.get(k) ?? 0 }));
+      const entry = nodePositionOn(elements, seg, parentNode, total);
+      const segStartZ = runHeightMm(elements, seg.levelId, seg.start.z);
+      const entryWorldZ = total > 0 ? segStartZ + entry * axis.z : segStartZ;
+      const stepDz = n === walk.root ? 0 : entryWorldZ - z0;
+      const segEntryStart = start - stepDz * headPerMm;
+      const exits = kids.map((k) => ({ k, s: nodePositionOn(elements, seg, k, total), q: effectiveLoad(k) }));
       let friction = 0;
       let firstFlow = 0;
       let firstRate = 0;
       let firstV = 0;
-      let elevation = 0;
+      let elevation = stepDz * headPerMm;
+      let lastZoneIn = zoneIn0;
+      if (exits.length === 0) {
+        const flow = ctx.toFlow(effectiveLoad(n));
+        const lenFt = total / MM_PER_FT;
+        if (flow > 0 && lenFt > 0) {
+          const run = pipeLoss(ctx, seg.size, flow, lenFt, zoneIn0);
+          friction += run.loss;
+          firstFlow = flow;
+          firstRate = run.ratePer100;
+          firstV = run.velocityFps;
+        }
+        const deadDz = (entry === 0 ? total : -entry) * axis.z;
+        elevation += deadDz * headPerMm;
+      }
       for (const forward of [true, false]) {
         const side = exits.filter((e) => (entry < total && e.s >= entry) === forward).sort((a, c) => (forward ? a.s - c.s : c.s - a.s));
         let remaining = side.reduce((sum, e) => sum + e.q, 0);
+        if (isDhwr && dhwrLoopGpm > 0 && side.length > 0 && remaining === 0) remaining = dhwrLoopGpm;
         let pos = entry;
-        let p = start;
+        let p = segEntryStart;
         let len = len0;
-        let z = z0;
+        let z = entryWorldZ;
+        let zoneIn = zoneIn0;
         for (const e of side) {
           const lenMm = Math.abs(e.s - pos);
-          const flow = ctx.toFlow(remaining);
-          const run = pipeLoss(ctx, seg.size, flow, lenMm / MM_PER_FT);
+          const flow = ctx.toFlow(isDhwr && dhwrLoopGpm > 0 ? Math.max(remaining, dhwrLoopGpm) : remaining);
+          const run = pipeLoss(ctx, seg.size, flow, lenMm / MM_PER_FT, zoneIn);
           const dz = (e.s - pos) * axis.z;
           if (firstFlow === 0 && flow > 0) {
             firstFlow = flow;
@@ -765,14 +1087,16 @@ function pressureWalk(
           childStart.set(e.k, p);
           childLength.set(e.k, len);
           childZ.set(e.k, z);
+          childZoneInlet.set(e.k, zoneIn);
+          childDeviceLoss.set(e.k, devLoss0);
           const hosted = elements[idOf(e.k)];
           if (hosted?.kind !== "run_fitting" || hosted.host?.segmentId !== seg.id) {
-            remaining -= e.q;
+            remaining = Math.max(0, remaining - e.q);
             continue;
           }
           const rf = resolveFitting(system, hosted);
           if (!rf) {
-            remaining -= e.q;
+            remaining = Math.max(0, remaining - e.q);
             continue;
           }
           if (hosted.fittingType === "accessory") {
@@ -780,27 +1104,30 @@ function pressureWalk(
             if (reg) {
               // A regulator holds its outlet setting downstream (it cannot raise a pressure that has already fallen below it).
               p = Math.min(p, reg.outletInWc);
+              zoneIn = reg.outletInWc;
+              lastZoneIn = zoneIn;
               childStart.set(e.k, p);
-              remaining -= e.q;
+              childZoneInlet.set(e.k, zoneIn);
+              remaining = Math.max(0, remaining - e.q);
               continue;
             }
             // Inline: everything still beyond pays its loss.
             const v = coefficient(ctx, system, rf, hosted, "body", seg.size);
             if (v) {
-              const fl = fittingLoss(ctx, v.c, seg.size, ctx.toFlow(remaining));
+              const fl = fittingLoss(ctx, v.c, seg.size, ctx.toFlow(remaining), zoneIn);
               p -= fl.loss;
               len += fl.equivalentLengthFt;
               fits.push({ elementId: hosted.id, label: runLabel(elements, hosted), family: rf.family.name, paths: [{ role: "body", k: r(v.c, 4), equivalentLengthFt: r(fl.equivalentLengthFt, 2), loss: r(fl.loss, 5), source: v.sourceLabel, verify: v.verify }] });
             }
-            remaining -= e.q;
+            remaining = Math.max(0, remaining - e.q);
             continue;
           }
-          const beyond = remaining - e.q;
+          const beyond = Math.max(0, remaining - e.q);
           remaining = beyond;
           if (beyond <= 0) continue;
           const v = coefficient(ctx, system, rf, hosted, "main", seg.size);
           if (!v) continue;
-          const fl = fittingLoss(ctx, v.c, seg.size, ctx.toFlow(beyond));
+          const fl = fittingLoss(ctx, v.c, seg.size, ctx.toFlow(beyond), zoneIn);
           mainPaths.set(hosted.id, { k: v.c, loss: fl.loss, le: fl.equivalentLengthFt, source: v.sourceLabel, verify: v.verify });
           p -= fl.loss;
           len += fl.equivalentLengthFt;
@@ -812,14 +1139,16 @@ function pressureWalk(
       if (service === "gas") {
         gasSegs.push({ elementId: seg.id, label, mbh: r(load.get(n) ?? 0, 2), cfh: r(firstFlow || ctx.toFlow(load.get(n) ?? 0), 2), idIn: r(idIn, 4), lengthFt: r(lengthFt, 2), dropInWc: r(friction, 5) });
       } else {
-        const maxV = design.maxVelocityFps ?? (hot ? PIPE_DESIGN_DEFAULTS.hotMaxVelocityFps : PIPE_DESIGN_DEFAULTS.maxVelocityFps);
-        const flow = firstFlow || ctx.toFlow(load.get(n) ?? 0);
+        const maxV = isDhwr
+          ? (dhwrDesign?.maxVelocityFps ?? design.maxVelocityFps ?? DHWR_DEFAULT_MAX_VELOCITY_FPS)
+          : (design.maxVelocityFps ?? (hot ? PIPE_DESIGN_DEFAULTS.hotMaxVelocityFps : PIPE_DESIGN_DEFAULTS.maxVelocityFps));
+        const flow = firstFlow || ctx.toFlow(effectiveLoad(n));
         const run = pipeLoss(ctx, seg.size, flow, 1);
         const v = firstV || run.velocityFps;
         segs.push({
           elementId: seg.id,
           label,
-          fixtureUnits: r(load.get(n) ?? 0, 2),
+          fixtureUnits: r(effectiveLoad(n), 2),
           gpm: r(flow, 3),
           idIn: r(idIn, 4),
           velocityFps: r(v, 3),
@@ -832,10 +1161,16 @@ function pressureWalk(
         if (v > maxV + 1e-9) warnings.push({ elementId: seg.id, message: `The ${label} runs ${r(v, 2)} ft/s, over the ${maxV} ft/s limit${design.maxVelocityFps === undefined ? ` (typical, ${VERIFY})` : ""}; go up a size` });
       }
       const far = exits.find((e) => e.s === (entry === 0 ? total : 0));
+      const farWorldZ = far ? (childZ.get(far.k) ?? (segStartZ + (entry === 0 ? total : 0) * axis.z)) : (segStartZ + (entry === 0 ? total : 0) * axis.z);
       at.set(n, far ? (childStart.get(far.k) ?? start - friction) : start - friction - elevation);
       lengthTo.set(n, far ? (childLength.get(far.k) ?? len0 + lengthFt) : len0 + lengthFt);
-      zAt.set(n, z0 + (entry === 0 ? total : -total) * axis.z);
-      if (kids.length === 0) ends.push({ elementId: seg.id, label: `open end of ${label}`, isFixture: false, pressure: at.get(n) ?? start, elevationFt: (zAt.get(n) ?? z0) / MM_PER_FT });
+      zAt.set(n, farWorldZ);
+      zoneInletAt.set(n, lastZoneIn);
+      deviceLossTo.set(n, devLoss0);
+      if (kids.length === 0) {
+        ends.push({ elementId: seg.id, label: `open end of ${label}`, isFixture: false, pressure: at.get(n) ?? start, elevationFt: farWorldZ / MM_PER_FT });
+        endDeviceLoss.set(seg.id, devLoss0);
+      }
       continue;
     }
     if (el.kind !== "run_fitting") continue;
@@ -843,14 +1178,15 @@ function pressureWalk(
     const rf = resolveFitting(system, f);
     let p = start;
     let len = len0;
+    const fitZ = runHeightMm(elements, f.levelId, f.position.z);
     if (rf && f.fittingType !== "accessory") {
-      const flow = ctx.toFlow(load.get(n) ?? 0);
+      const flow = ctx.toFlow(effectiveLoad(n));
       const paths: Array<FittingLossResult["paths"][number]> = [];
       if (f.host) {
         const port = f.ports[0];
         const v = port ? coefficient(ctx, system, rf, f, "branch", port.size) : null;
         if (v && port) {
-          const fl = fittingLoss(ctx, v.c, port.size, flow);
+          const fl = fittingLoss(ctx, v.c, port.size, flow, zoneIn0);
           paths.push({ role: "branch", k: r(v.c, 4), equivalentLengthFt: r(fl.equivalentLengthFt, 2), loss: r(fl.loss, 5), source: v.sourceLabel, verify: v.verify });
           p -= fl.loss;
           len += fl.equivalentLengthFt;
@@ -868,7 +1204,7 @@ function pressureWalk(
           const expanding = inlet ? inlet.size === small : false;
           const v = coefficient(ctx, system, rf, f, "body", small, ai, expanding);
           if (v) {
-            const fl = fittingLoss(ctx, v.c, small, flow);
+            const fl = fittingLoss(ctx, v.c, small, flow, zoneIn0);
             paths.push({ role: "body", k: r(v.c, 4), equivalentLengthFt: r(fl.equivalentLengthFt, 2), loss: r(fl.loss, 5), source: v.sourceLabel, verify: v.verify });
             p -= fl.loss;
             len += fl.equivalentLengthFt;
@@ -879,34 +1215,70 @@ function pressureWalk(
     }
     at.set(n, p);
     lengthTo.set(n, len);
-    zAt.set(n, z0);
-    if (kids.length === 0 && f.fittingType !== "accessory" && f.fittingType !== "cap") ends.push({ elementId: f.id, label: `open end at ${runLabel(elements, f)}`, isFixture: false, pressure: p, elevationFt: z0 / MM_PER_FT });
+    zAt.set(n, Number.isFinite(fitZ) ? fitZ : z0);
+    zoneInletAt.set(n, zoneIn0);
+    deviceLossTo.set(n, devLoss0);
+    if (kids.length === 0 && f.fittingType !== "accessory" && f.fittingType !== "cap") {
+      ends.push({ elementId: f.id, label: `open end at ${runLabel(elements, f)}`, isFixture: false, pressure: p, elevationFt: z0 / MM_PER_FT });
+      endDeviceLoss.set(f.id, devLoss0);
+    }
   }
   const fixtures = ends.filter((e) => e.isFixture);
   const pool = fixtures.length > 0 ? fixtures : ends;
   const critical = [...pool].sort((a, c) => a.pressure - c.pressure)[0] ?? null;
   const rounded = (e: FixtureEnd): FixtureEnd => ({ ...e, pressure: r(e.pressure, 5), elevationFt: r(e.elevationFt, 2) });
   if (service === "gas") {
-    const longest = Math.max(0, ...[...lengthTo.entries()].filter(([k]) => (walk.children.get(k) ?? []).length === 0).map(([, v]) => v));
+    // Developed length from source to each node's farthest downstream outlet (IFGC 402.4.2 branch length).
+    const anyLoaded = [...load.values()].some((v) => v > 0);
+    const farthest = new Map<RunGraphNode, number>();
+    for (let i = walk.order.length - 1; i >= 0; i--) {
+      const k = walk.order[i];
+      if (!k) continue;
+      const kids = walk.children.get(k) ?? [];
+      let far = kids.length === 0 && (!anyLoaded || (load.get(k) ?? 0) > 0) ? (lengthTo.get(k) ?? 0) : 0;
+      for (const c of kids) far = Math.max(far, farthest.get(c) ?? 0);
+      farthest.set(k, far);
+    }
+    const longest = Math.max(0, ...[...lengthTo.entries()].filter(([k]) => (walk.children.get(k) ?? []).length === 0 && (!anyLoaded || (load.get(k) ?? 0) > 0)).map(([, v]) => v));
     const sizing = design.gasSizing ?? PIPE_DESIGN_DEFAULTS.gasSizing;
     const allowable = design.allowableDropInWc ?? PIPE_DESIGN_DEFAULTS.allowableDropInWc;
     const inlet = design.inletPressureInWc ?? PIPE_DESIGN_DEFAULTS.inletPressureInWc;
+    const highPressure = inlet >= HIGH_PRESSURE_IN_WC - 1e-6;
     const network = gasNetwork({ elements }, system.id, { firm: design, ...(gasSegs[0] ? { anchor: gasSegs[0].elementId } : {}) });
     if (network && network.zones.length > 1) return zonedGasReport(elements, network, gasSegs, fits, ends.map(rounded), ctx, design, b, warnings, load.get(walk.root) ?? 0);
+    const designLengths = new Map<ElementId, number>();
     const segments: GasSegmentResult[] = gasSegs.map((s) => {
       const el = elements[s.elementId];
       const size = el?.kind === "run_segment" ? el.size : null;
-      const designDrop = size ? pipeLoss(ctx, size, s.cfh, sizing === "longest_run" ? longest : s.lengthFt).loss : 0;
+      const designLen =
+        sizing === "longest_run"
+          ? longest
+          : sizing === "branch_length"
+            ? (farthest.get(s.elementId) || longest)
+            : s.lengthFt;
+      designLengths.set(s.elementId, designLen);
+      const designDrop = size ? pipeLoss(ctx, size, s.cfh, designLen, inlet).loss : 0;
       return { ...s, designDropInWc: r(designDrop, 5), ok: designDrop <= allowable + 1e-9 };
     });
     const worst = critical ? inlet - critical.pressure : 0;
-    for (const s of segments) if (!s.ok) warnings.push({ elementId: s.elementId, message: `The ${s.label} carries ${s.cfh} cfh; over the ${r(longest, 1)} ft longest run it would drop ${r(s.designDropInWc, 3)} in. w.c., more than the ${allowable} in. allowed; go up a size` });
+    for (const s of segments) {
+      if (!s.ok) {
+        const dl = designLengths.get(s.elementId) ?? longest;
+        const lenWords = sizing === "branch_length" ? `${r(dl, 1)} ft branch length` : sizing === "longest_run" ? `${r(dl, 1)} ft longest run` : `${r(dl, 1)} ft segment length`;
+        warnings.push({ elementId: s.elementId, message: `The ${s.label} carries ${s.cfh} cfh; over the ${lenWords} it would drop ${r(s.designDropInWc, 3)} in. w.c., more than the ${allowable} in. allowed; go up a size` });
+      }
+    }
     if (worst > allowable + 1e-9 && critical) warnings.push({ elementId: critical.elementId, message: `${critical.label} sees ${r(worst, 3)} in. w.c. of drop from the meter, more than the ${allowable} in. allowed` });
     const totalMbh = load.get(walk.root) ?? 0;
+    const eqWord = highPressure ? "IFGC 402.4 high-pressure (Equation 4-2)" : ctx.gasEq === "mueller" ? "Mueller" : "Spitzglass low-pressure";
     const basis = [
-      `${ctx.gasEq === "mueller" ? "Mueller" : "Spitzglass low-pressure"} equation, gas specific gravity ${ctx.gasS}, ${gasHv} Btu/cf, ${VERIFY}`,
+      `${eqWord} equation, gas specific gravity ${ctx.gasS}, ${gasHv} Btu/cf, ${VERIFY}`,
       `Fittings by equivalent length (typical L/D), ${VERIFY}`,
-      sizing === "longest_run" ? `Each pipe checked at its own flow over the longest run's developed length (${r(longest, 1)} ft)` : "Each pipe checked over its own path length",
+      sizing === "longest_run"
+        ? `Each pipe checked at its own flow over the longest run's developed length (${r(longest, 1)} ft)`
+        : sizing === "branch_length"
+          ? "Each pipe checked at its own flow over the developed length from the source to its branch's farthest outlet (IFGC 402.4.2)"
+          : "Each pipe checked over its own path length",
       ...(segments.some((s) => elements[s.elementId]?.kind === "run_segment" && (elements[s.elementId] as RunSegment).size.shape === "pipe" && ((elements[s.elementId] as RunSegment).size as { material: string }).material === "csst")
         ? ["CSST bores are placeholders: use the manufacturer's capacity tables for CSST"]
         : []),
@@ -915,7 +1287,7 @@ function pressureWalk(
       kind: "gas",
       unit: "in_wc",
       ...b(basis),
-      equation: ctx.gasEq,
+      equation: highPressure ? "ifgc_high_pressure" : ctx.gasEq,
       specificGravity: ctx.gasS,
       heatingValueBtuPerCf: gasHv,
       inletInWc: inlet,
@@ -931,38 +1303,93 @@ function pressureWalk(
     };
   }
   const minPsi = design.minFixturePressurePsi ?? null;
-  const supplyKnown = design.supplyPressurePsi !== undefined;
-  if (!supplyKnown) warnings.push({ elementId: null, message: `${system.name} has no supply pressure set, so fixture pressures are losses below 0 psi at the source; set the supply pressure to get pressures` });
-  if (minPsi === null) warnings.push({ elementId: null, message: "Set the pressure the critical fixture needs to get a pass or fail" });
-  const peak = ctx.toFlow(load.get(walk.root) ?? 0);
+  const supplyKnown = resolvedSupplyPsi !== undefined;
+  if (!isDhwr && !supplyKnown) warnings.push({ elementId: null, message: `${system.name} has no supply pressure set, so fixture pressures are losses below 0 psi at the source; set the supply pressure to get pressures` });
+  if (!isDhwr && minPsi === null) warnings.push({ elementId: null, message: "Set the pressure the critical fixture needs to get a pass or fail" });
+  const peak = ctx.toFlow(effectiveLoad(walk.root));
+  const criticalDeviceLoss = critical ? (endDeviceLoss.get(critical.elementId) ?? 0) : deviceLosses.reduce((sum, d) => sum + d.lossPsi, 0);
+
+  let dhwrSummary: DhwrLoopSummary | undefined;
+  if (isDhwr && dhwrDesign) {
+    const segFrictionPsi = segs.reduce((sum, s) => sum + s.frictionPsi, 0);
+    const fittingPsi = fits.reduce((sum, f) => sum + f.paths.reduce((ps, p) => ps + p.loss, 0), 0);
+    const fitAllowPct = fits.length === 0 ? (dhwrDesign.fittingAllowancePct ?? DHWR_DEFAULT_FITTING_ALLOWANCE_PCT) : 0;
+    const loopFrictionPsi = segFrictionPsi * (1 + fitAllowPct / 100) + fittingPsi;
+    const devLossPsi = deviceLosses.reduce((sum, d) => sum + d.lossPsi, 0);
+    const totalHeadPsi = loopFrictionPsi + devLossPsi;
+    const totalHeadFt = totalHeadPsi / WATER_STATIC_PSI_PER_FT;
+    const maxV = dhwrDesign.maxVelocityFps ?? design.maxVelocityFps ?? DHWR_DEFAULT_MAX_VELOCITY_FPS;
+    const pump = buildDhwrPumpMetadata(elements, dhwrPumpPart, dhwrLoopGpm, totalHeadFt, dhwrDesign);
+    if (pump && pump.meetsDuty === false) {
+      warnings.push({ elementId: pump.elementId, message: `${pump.label} delivers ${pump.availableHeadAtDutyFt ?? pump.ratedHeadFt ?? 0} ft at ${r(dhwrLoopGpm, 2)} gpm, less than the ${r(totalHeadFt, 2)} ft DHWR loop head required` });
+    }
+    dhwrSummary = {
+      flowBasis: dhwrFlowBasis,
+      designFlowGpm: r(dhwrLoopGpm, 3),
+      deltaTF: dhwrDeltaTF,
+      waterTempF: tempF,
+      ambientTempF: dhwrAmbientF,
+      pipeHeatLossBtuh: r(dhwrPipeLossBtuh, 1),
+      bufferTankLossBtuh: r(dhwrBufferTank?.standbyLossBtuh ?? 0, 1),
+      totalHeatLossBtuh: r(dhwrPipeLossBtuh + (dhwrBufferTank?.standbyLossBtuh ?? 0), 1),
+      loopLengthFt: r(dhwrLoopLengthFt, 2),
+      supplyLengthIncludedFt: r(dhwrSupplyIncludedFt, 2),
+      loopFrictionPsi: r(loopFrictionPsi, 4),
+      deviceLossPsi: r(devLossPsi, 4),
+      totalHeadPsi: r(totalHeadPsi, 4),
+      totalHeadFt: r(totalHeadFt, 2),
+      maxVelocityFps: maxV,
+      pump,
+      bufferTank: dhwrBufferTank,
+    };
+  }
+
   const basis = [
     ctx.friction === "darcy" ? `Darcy-Weisbach friction (Colebrook), water at ${tempF} °F, roughness by material, ${VERIFY}` : `Hazen-Williams friction, C by material${design.hazenC ? ` (system C ${design.hazenC})` : ""}, ${VERIFY}`,
     ctx.fittings === "k" ? `Fittings as K x velocity head, K = typical L/D x turbulent friction factor, ${VERIFY}` : `Fittings as equivalent lengths (typical L/D), ${VERIFY}`,
-    demandMethod === "flow_is_gpm" ? "Loads read as gpm" : demandMethod === "table" && table.length > 0 ? "Demand from the firm/project fixture-unit table" : `Demand from fixture units by a Hunter-curve-style fit (Q = 1.47 FU^0.735 gpm), ${VERIFY}`,
+    isDhwr && dhwrSummary
+      ? dhwrSummary.flowBasis === "heat_loss_delta_t"
+        ? `DHWR loop flow from heat loss (${dhwrSummary.totalHeatLossBtuh} Btu/h) / (500 × ${dhwrSummary.deltaTF} °F ΔT) = ${dhwrSummary.designFlowGpm} gpm`
+        : `DHWR loop flow ${dhwrSummary.designFlowGpm} gpm (explicit)`
+      : demandMethod === "flow_is_gpm"
+        ? "Loads read as gpm"
+        : demandMethod === "table" && table.length > 0
+          ? "Demand from the firm/project fixture-unit table"
+          : `Demand from fixture units by a Hunter-curve-style fit (Q = 1.47 FU^0.735 gpm), ${VERIFY}`,
+    ...(flowTestResult
+      ? [`Supply pressure ${flowTestResult.availableAtDesignPsi} psi at ${r(peak, 1)} gpm from hydrant/service flow test (${flowTestResult.staticPsi} psi static, ${flowTestResult.residualPsi} psi @ ${flowTestResult.testGpm} gpm, N^1.85 curve${flowTestResult.elevationAdjustPsi !== 0 ? `, ${flowTestResult.elevationAdjustPsi > 0 ? "+" : ""}${flowTestResult.elevationAdjustPsi} psi elevation adj` : ""})`]
+      : []),
+    ...(deviceLosses.length > 0 ? [`Inline device pressure drops applied (${deviceLosses.map((d) => `${d.label}: ${r(d.lossPsi, 2)} psi`).join(", ")})`] : []),
     "Static head from each fixture's height above the source",
   ];
+  const dhwrPass = dhwrSummary ? segs.every((s) => !s.overVelocity) && (dhwrSummary.pump?.meetsDuty ?? true) : null;
   return {
     kind: "water",
     unit: "psi",
     ...b(basis),
     method: { friction: ctx.friction, fittings: ctx.fittings, demand: demandMethod, waterTempF: tempF },
-    supplyPsi: supplyKnown ? (design.supplyPressurePsi ?? null) : null,
+    supplyPsi: supplyKnown ? r(resolvedSupplyPsi as number, 3) : null,
+    rootElevationFt: r(rootElevationFt, 2),
     segments: segs,
     fittings: fits,
+    deviceLosses,
+    criticalDeviceLossPsi: r(criticalDeviceLoss, 4),
     ends: ends.map(rounded),
     critical: critical ? rounded(critical) : null,
     minFixturePsi: minPsi,
-    pass: minPsi === null || !supplyKnown || !critical ? null : critical.pressure >= minPsi - 1e-9,
-    totalFixtureUnits: r(load.get(walk.root) ?? 0, 2),
+    pass: isDhwr ? dhwrPass : minPsi === null || !supplyKnown || !critical ? null : critical.pressure >= minPsi - 1e-9,
+    totalFixtureUnits: r(effectiveLoad(walk.root), 2),
     peakGpm: r(peak, 3),
+    ...(flowTestResult ? { flowTest: flowTestResult } : {}),
+    ...(dhwrSummary ? { dhwr: dhwrSummary } : {}),
   };
 }
 
 /**
  * A gas system with regulators: each pipe is checked at its own flow over its
- * zone's longest length against its zone's allowable drop, and each appliance
- * against the drop from its own zone's start (the 402.4.3 hybrid pressure
- * approach, with the equation; the code tables size it in plumbing.gas_system).
+ * zone's longest length (or branch length in branch_length mode) against its
+ * zone's allowable drop, using IFGC Equation 4-2 for high-pressure zones
+ * (>= 1.5 psi) and Spitzglass/Mueller for low-pressure zones.
  */
 function zonedGasReport(
   elements: Elements,
@@ -987,12 +1414,16 @@ function zonedGasReport(
     if (!size || zs.length === 0) return { ...s, designDropInWc: 0, ok: true };
     const strict = [...zs].sort((a, c) => a.allowableDropInWc - c.allowableDropInWc)[0] ?? zs[0];
     if (!strict) return { ...s, designDropInWc: 0, ok: true };
-    const length = network.method === "longest_length" ? strict.longestFt : s.lengthFt;
-    const drop = pipeLoss(ctx, size, s.cfh, length).loss;
+    const length =
+      network.method === "longest_length"
+        ? strict.longestFt
+        : (segmentBranchLengthFt(strict, s.elementId) ?? strict.longestFt);
+    const drop = pipeLoss(ctx, size, s.cfh, length, strict.inletInWc).loss;
     const ok = drop <= strict.allowableDropInWc + 1e-9;
     if (!ok) {
       zoneFail.add(strict.id);
-      warnings.push({ elementId: s.elementId, message: `The ${s.label} carries ${s.cfh} cfh; over ${strict.label}'s ${r(strict.longestFt, 1)} ft longest run it would drop ${r(drop, 3)} in. w.c., more than the ${strict.allowableDropInWc} in. allowed there; go up a size` });
+      const lenKind = network.method === "branch_length" ? `${r(length, 1)} ft branch length` : `${r(strict.longestFt, 1)} ft longest run`;
+      warnings.push({ elementId: s.elementId, message: `The ${s.label} carries ${s.cfh} cfh; over ${strict.label}'s ${lenKind} it would drop ${r(drop, 3)} in. w.c., more than the ${strict.allowableDropInWc} in. allowed there; go up a size` });
     }
     return { ...s, designDropInWc: r(drop, 5), ok };
   });
@@ -1008,10 +1439,11 @@ function zonedGasReport(
   }
   for (const issue of network.issues) if (issue.severity === "error") warnings.push({ elementId: issue.elementId, message: issue.message });
   const high = network.zones.filter((z) => z.highPressure);
+  const allHigh = high.length > 0 && high.length === network.zones.length;
   const basis = [
-    `${ctx.gasEq === "mueller" ? "Mueller" : "Spitzglass low-pressure"} equation, gas specific gravity ${ctx.gasS}, ${ctx.gasHv} Btu/cf, ${VERIFY}`,
-    `${network.zones.length} pressure zones split by regulators: each pipe is checked over its zone's longest pipe length (from the regulator) against that zone's allowable drop, each appliance from its zone's start`,
-    ...(high.length > 0 ? [`${high.map((z) => z.label).join(", ")} ${high.length === 1 ? "is" : "are"} at 1-1/2 psi or more, where the fuel gas code's high-pressure equation applies; size ${high.length === 1 ? "it" : "them"} with the gas sizing calc (plumbing.gas_system)`] : []),
+    `${allHigh ? "IFGC 402.4 high-pressure (Equation 4-2)" : ctx.gasEq === "mueller" ? "Mueller" : "Spitzglass low-pressure"} equation, gas specific gravity ${ctx.gasS}, ${ctx.gasHv} Btu/cf, ${VERIFY}`,
+    `${network.zones.length} pressure zones split by regulators: each pipe is checked over its zone's ${network.method === "branch_length" ? "branch length (IFGC 402.4.2)" : "longest pipe length (from the regulator)"} against that zone's allowable drop, each appliance from its zone's start`,
+    ...(high.length > 0 ? [`${high.map((z) => z.label).join(", ")} ${high.length === 1 ? "is" : "are"} at 1-1/2 psi or more, evaluated with the fuel gas code's high-pressure equation (IFGC Equation 4-2)`] : []),
   ];
   const source = zoneById.get("zone-source");
   const critical = [...ends.filter((e) => e.isFixture)].sort((a, c) => a.pressure - c.pressure)[0] ?? null;
@@ -1019,7 +1451,7 @@ function zonedGasReport(
     kind: "gas",
     unit: "in_wc",
     ...b(basis),
-    equation: ctx.gasEq,
+    equation: allHigh ? "ifgc_high_pressure" : ctx.gasEq,
     specificGravity: ctx.gasS,
     heatingValueBtuPerCf: ctx.gasHv,
     inletInWc: source?.inletInWc ?? design.inletPressureInWc ?? PIPE_DESIGN_DEFAULTS.inletPressureInWc,

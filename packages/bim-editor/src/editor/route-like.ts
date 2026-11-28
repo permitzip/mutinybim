@@ -1,5 +1,6 @@
-import { defaultPipeSpec, slopeInPerFt, type RunFitting, type RunSegment, type RunSize } from '@permitzip/bim-kernel'
+import { defaultPipeSpec, elementsOfKind, resolveConnectors, slopeInPerFt, worldConnector, type BimElement, type PartInstance, type RunFitting, type RunPoint, type RunSegment, type RunSize } from '@permitzip/bim-kernel'
 import { MM_PER_FT, MM_PER_IN } from './placement'
+import { isVerticalDirection, verticalStubElevationMm } from './plus-tee'
 import type { RouteChoices } from './RoutePanel'
 import { slopeChoiceOf } from './route-slope'
 
@@ -39,4 +40,52 @@ function insulationOf(el: RunSegment | RunFitting): Pick<RouteChoices, 'insulati
   const ins = el.insulation
   if (!ins) return { insulation: 'none', insulationIn: '1', linerSurface: 'faced' }
   return { insulation: ins.kind, insulationIn: inches(ins.thicknessMm), linerSurface: ins.surface ?? 'faced' }
+}
+
+/**
+ * Route panel choices to start routing from a part's free duct/pipe connector
+ * (such as a bottom-port expansion tank, floor drain, or vertical equipment
+ * connector). For vertical ports, sets the initial elevation to a valid stub
+ * depth along the connector's outward Z direction so routing starts cleanly
+ * instead of being refused.
+ */
+export function routeChoicesForPartConnector(
+  elements: Readonly<Record<string, BimElement>>,
+  part: PartInstance,
+  connectorId: string,
+  current: RouteChoices,
+  minStraightMm = 152.4,
+): { readonly choices: RouteChoices; readonly vertical: boolean; readonly position: RunPoint; readonly direction: RunPoint; readonly elevationMm: number } | string {
+  const type = elements[part.typeId]
+  if (type?.kind !== 'part_type') return "That part's type isn't loaded yet; reload and try again."
+  const conn = resolveConnectors(type.definition, part.values).find((c) => c.id === connectorId)
+  if (!conn) return 'That connector is no longer on this part.'
+  if (part.links?.[conn.id]) return 'That connector is already connected.'
+  if (conn.domain !== 'pipe' && conn.domain !== 'duct') return `Routing from ${conn.domain} connectors isn't available here.`
+  const w = worldConnector(part, conn)
+  const existingSystem = elementsOfKind(elements, 'mep_system').find((s) => s.domain === conn.domain && s.systemKind === conn.systemKind)
+  const system = existingSystem ? existingSystem.id : `new:${conn.systemKind}`
+  const vertical = isVerticalDirection(w.direction)
+  const size: RunSize =
+    conn.domain === 'pipe'
+      ? { shape: 'pipe', nominalMm: conn.diameter ?? MM_PER_IN, material: current.material }
+      : conn.shape === 'rect' && conn.width && conn.height
+        ? { shape: 'rect', width: conn.width, height: conn.height }
+        : { shape: 'round', diameter: conn.diameter ?? 8 * MM_PER_IN }
+  const elevationMm = vertical ? verticalStubElevationMm(w.position.z, w.direction.z, size, minStraightMm) : w.position.z
+  const base: RouteChoices = {
+    ...current,
+    kind: conn.domain,
+    system,
+    elevationFt: feet(elevationMm),
+    elbowFamily: '',
+    takeoffFamily: '',
+  }
+  const choices: RouteChoices =
+    size.shape === 'pipe'
+      ? { ...base, nominalIn: inches(size.nominalMm), pipeType: '', slopeInPerFt: '' }
+      : size.shape === 'rect'
+        ? { ...base, shape: 'rect', widthIn: inches(size.width), heightIn: inches(size.height) }
+        : { ...base, shape: 'round', diameterIn: inches(size.diameter) }
+  return { choices, vertical, position: w.position, direction: w.direction, elevationMm }
 }

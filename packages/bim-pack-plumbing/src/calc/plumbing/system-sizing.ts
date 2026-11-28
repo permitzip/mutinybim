@@ -1,6 +1,29 @@
-import { connectionTypeOf, elementsOfKind, inPerFtLabel, isVerticalLeg, mergePipeDesign, minSlopeFor, PIPE_DESIGN_DEFAULTS, serviceOf, slopeInPerFt, specOfSize, type ElementId, type MepSystem, type ModelState, type RunSegment, type SystemKind } from "@permitzip/bim-kernel";
+import { connectionTypeOf, elementsOfKind, inPerFtLabel, isVerticalLeg, mergePipeDesign, minSlopeFor, PIPE_DESIGN_DEFAULTS, serviceOf, slopeInPerFt, specOfSize, type ElementId, type MepSystem, type ModelState, type PartInstance, type RunSegment, type SystemKind } from "@permitzip/bim-kernel";
 import { sizingInputs } from "../../routing/pipe/plumbing-settings";
-import { hazenWilliamsPsiPer100Ft, hunterStyleGpm, pipeLoadWalk, pipeNodeId, type PipeLoadWalk, type PipeWarning } from "../../routing/pipe/hydraulics";
+import {
+  DHWR_DEFAULT_AMBIENT_TEMP_F,
+  DHWR_DEFAULT_DELTA_T_F,
+  DHWR_DEFAULT_FITTING_ALLOWANCE_PCT,
+  DHWR_DEFAULT_MAX_VELOCITY_FPS,
+  dhwrPartFlowGpm,
+  evaluateDevicePressureDrop,
+  extractBufferTankMetadata,
+  extractRecircPumpPart,
+  flowTestSupplyPsi,
+  hazenWilliamsPsiPer100Ft,
+  hunterStyleGpm,
+  pipeLoadWalk,
+  pipeNodeId,
+  pipeSegmentHeatLossBtuh,
+  resolveDhwrDesign,
+  resolveWaterFlowTest,
+  WATER_STATIC_PSI_PER_FT,
+  type DhwrLoopSummary,
+  type FlowTestSupplyResult,
+  type PipeLoadWalk,
+  type PipeWarning,
+} from "../../routing/pipe/hydraulics";
+import { buildDhwrPumpMetadata } from "../../routing/pipe/hydraulics-extras";
 import { projectPlumbingSettings } from "../../routing/pipe/plumbing-catalog";
 import { z } from "zod";
 import { nominalLabel, methodCite, ipcCite, isIpcEdition, type IpcEdition, defineCalc, round, ipcTables } from "@permitzip/bim-calc";
@@ -54,6 +77,7 @@ export type PipeSizingFindingCode =
   | "no_rainfall_rate"
   | "no_vent_terminal"
   | "storm_slope"
+  | "pump_undersized"
   | "walk";
 
 export interface PipeSizingFinding {
@@ -63,7 +87,7 @@ export interface PipeSizingFinding {
   readonly message: string;
 }
 
-export type PipeSizingRole = "water" | "building_drain" | "horizontal_branch" | "stack" | "vent_stack" | "branch_vent" | "storm_leader" | "storm_drain";
+export type PipeSizingRole = "water" | "dhwr_return" | "building_drain" | "horizontal_branch" | "stack" | "vent_stack" | "branch_vent" | "storm_leader" | "storm_drain";
 
 export interface PipeSizeProposal {
   readonly segmentId: string;
@@ -81,6 +105,10 @@ export interface PipeSizeProposal {
   /** Water: at the proposed size. */
   readonly frictionPsiPer100Ft?: number;
   readonly velocityFps?: number;
+  /** Water / DHWR: whether flow came from building-level Hunter curve, branch simultaneous fixture sum, or DHWR loop flow. */
+  readonly demandBasis?: "hunter_main" | "fixture_sum_branch" | "dhwr_loop";
+  /** Plain-English note contrasting branch-level vs main-level demand basis. */
+  readonly demandNote?: string;
 }
 
 export interface PipeSystemSizing {
@@ -97,10 +125,16 @@ export interface PipeSystemSizing {
   readonly allowablePsiPer100Ft: number | null;
   readonly maxVelocityFps: number | null;
   readonly developedLengthFt: number | null;
-  /** Water: WSFU at the source. Sanitary and vent: DFU (at the outfall; vented at the open air). Storm: roof area, sq ft. */
+  /** Water: WSFU at the source. DHWR: recirculation flow (gpm). Sanitary and vent: DFU. Storm: roof area, sq ft. */
   readonly totalLoad: number;
   /** Storm: the design rainfall rate it was sized at, in/h. */
   readonly rainfallInPerHr?: number;
+  /** Water: flow-test supply curve evaluation when flow-test data was used. */
+  readonly flowTest?: FlowTestSupplyResult;
+  /** Water: branch-level vs main-level Hunter WSFU demand notes. */
+  readonly demandNotes?: readonly string[];
+  /** DHWR: recirculation loop flow, head loss, recirc pump duty & buffer tank metadata. */
+  readonly dhwr?: DhwrLoopSummary;
   readonly proposals: readonly PipeSizeProposal[];
   readonly findings: readonly PipeSizingFinding[];
 }
@@ -118,7 +152,7 @@ const USUAL_FIXTURE_MIN_IN = 0.5;
 const SIZED_WATER: ReadonlySet<SystemKind> = new Set(["domestic_cold_water", "domestic_hot_water"]);
 const SIZED_DRAIN: ReadonlySet<SystemKind> = new Set(["sanitary"]);
 
-export type PipeSizingServiceKind = "water" | "drainage" | "vent" | "storm";
+export type PipeSizingServiceKind = "water" | "dhwr" | "drainage" | "vent" | "storm";
 
 /** The project's plumbing code from its Code Study rows, by name (Plumbing, IPC, VPC, UPC), confirmed first. */
 export function plumbingAdoptionFrom(rows: ReadonlyArray<{ readonly code_name: string; readonly edition: string; readonly status: string }>): ProjectCodeAdoption | null {
@@ -130,12 +164,13 @@ export function plumbingAdoptionFrom(rows: ReadonlyArray<{ readonly code_name: s
 /** Which systems this sizes, and why not the others. */
 export function pipeSizingService(kind: SystemKind): PipeSizingServiceKind | { readonly reason: string } {
   if (SIZED_WATER.has(kind)) return "water";
+  if (kind === "domestic_hot_water_return") return "dhwr";
   if (SIZED_DRAIN.has(kind)) return "drainage";
   if (kind === "storm") return "storm";
   const s = serviceOf(kind);
   if (s === "vent") return "vent";
   if (s === "gas") return { reason: "Gas systems are sized zone by zone by plumbing.gas_system." };
-  return { reason: "Hot water return, hydronic and condensate piping carry gpm, not fixture units; size them from their flow." };
+  return { reason: "Hydronic and condensate piping carry gpm, not fixture units; size them from their flow." };
 }
 
 function projectSettingsOf(model: ModelState): PlumbingSettings {
@@ -214,13 +249,17 @@ function sizeWater(model: ModelState, system: MepSystem, ipc: IpcEdition, settin
   let developed = 0;
   let rise = 0;
   let total = 0;
+  let rootElevationFt = 0;
+  let inlineDeviceLossPsi = 0;
   const pieces = walks(model, system, findings);
-  // First pass: the longest developed length and the highest fixture over the source, which fix the allowable friction.
+  // First pass: the longest developed length, highest fixture over the source, and inline device losses.
   const dist = new Map<string, number>();
   for (const lw of pieces) {
     const rootSeg = lw.walk.order.map((n) => segOf(model, n)).find((s): s is RunSegment => s !== null);
     const rootParent = rootSeg ? lw.walk.parent.get(rootSeg.id) : null;
     const rootZ = rootSeg ? absZ(model, rootSeg, rootSeg.links.end?.elementId === (rootParent ? pipeNodeId(rootParent) : "") ? rootSeg.end.z : rootSeg.start.z) : 0;
+    rootElevationFt = rootZ / MM_PER_FT;
+    const seenDevices = new Set<string>();
     for (const n of lw.walk.order) {
       const p = lw.walk.parent.get(n);
       const seg = segOf(model, n);
@@ -228,10 +267,27 @@ function sizeWater(model: ModelState, system: MepSystem, ipc: IpcEdition, settin
       dist.set(n, d);
       developed = Math.max(developed, d);
       if (seg) rise = Math.max(rise, absZ(model, seg, seg.start.z) - rootZ, absZ(model, seg, seg.end.z) - rootZ);
+      if (n.includes("#")) {
+        const partId = pipeNodeId(n);
+        const part = model.elements[partId];
+        const kids = lw.walk.children.get(n) ?? [];
+        const isInline = n === lw.root || kids.some((k) => k.includes("#") && pipeNodeId(k) === partId);
+        if (part?.kind === "part" && isInline && !seenDevices.has(part.id)) {
+          seenDevices.add(part.id);
+          const partWsfu = lw.load.get(n) ?? 0;
+          const partGpm = readCurve(curve, partWsfu).gpm;
+          const devDrop = evaluateDevicePressureDrop(model.elements, part, partGpm);
+          if (devDrop) inlineDeviceLossPsi += devDrop.lossPsi;
+        }
+      }
     }
     total = Math.max(total, lw.load.get(lw.root) ?? 0, ...lw.walk.order.map((n) => lw.load.get(n) ?? 0));
   }
-  const supply = design.supplyPressurePsi;
+  const designPoint = total > 0 ? { wsfu: round(total, 2), gpm: round(readCurve(curve, total).gpm, 1) } : null;
+  const waterFlowTest = resolveWaterFlowTest(model.elements, system, design);
+  const flowTestResult = waterFlowTest ? flowTestSupplyPsi(waterFlowTest, designPoint?.gpm ?? 0, rootElevationFt) : undefined;
+  const supply = flowTestResult ? flowTestResult.availableAtDesignPsi : design.supplyPressurePsi;
+  const fixedTotalPsi = round((design.fixedLossesPsi ?? 0) + inlineDeviceLossPsi, 2);
   const staticPsi = round((rise / MM_PER_FT) * PSI_PER_FT, 2);
   let fixturePsi = design.minFixturePressurePsi;
   if (fixturePsi === undefined && supply !== undefined) {
@@ -241,13 +297,25 @@ function sizeWater(model: ModelState, system: MepSystem, ipc: IpcEdition, settin
   let available: number | null = null;
   let allowable: number | null = null;
   const equivalent = developed * (1 + WATER_FITTING_ALLOWANCE_PCT / 100);
+  if (flowTestResult) {
+    const ftCite = methodCite("Hydrant / service flow test", "P(Q) = P_static − (P_static − P_residual) × (Q / Q_test)^1.85");
+    cites.push(ftCite);
+    steps.push({
+      label: "Flow-test supply",
+      detail: `${flowTestResult.staticPsi} psi static, ${flowTestResult.residualPsi} psi @ ${flowTestResult.testGpm} gpm → ${flowTestResult.availableAtDesignPsi} psi at ${designPoint?.gpm ?? 0} gpm${flowTestResult.elevationAdjustPsi !== 0 ? ` (includes ${flowTestResult.elevationAdjustPsi > 0 ? "+" : ""}${flowTestResult.elevationAdjustPsi} psi elevation adjustment)` : ""}`,
+      cite: [ftCite],
+    });
+    if (flowTestResult.extrapolated) {
+      findings.push({ code: "walk", severity: "warning", elementId: system.id, message: `Design flow (${designPoint?.gpm ?? 0} gpm) exceeds flow-test rate (${flowTestResult.testGpm} gpm); supply pressure is extrapolated on the N^1.85 curve.` });
+    }
+  }
   if (supply === undefined) {
     findings.push({ code: "no_supply_pressure", severity: "warning", elementId: system.id, message: `${system.name} has no supply pressure, so pipes are sized on velocity alone. Set the supply (flow test or design minimum) and fixed losses (meter, backflow preventer) on the system to size by friction.` });
   } else {
-    available = round(supply - (design.fixedLossesPsi ?? 0) - staticPsi - (fixturePsi ?? 0), 2);
-    const lossCite = [methodCite("Pressure available for friction", "supply − fixed losses − static head (0.433 psi/ft) − critical fixture pressure"), ipcCite(ipc, "fixture_flow_pressure")];
+    available = round(supply - fixedTotalPsi - staticPsi - (fixturePsi ?? 0), 2);
+    const lossCite = [methodCite("Pressure available for friction", "supply − fixed & device losses − static head (0.433 psi/ft) − critical fixture pressure"), ipcCite(ipc, "fixture_flow_pressure")];
     cites.push(...lossCite);
-    steps.push({ label: "Available for friction", detail: `${supply} psi − ${design.fixedLossesPsi ?? 0} fixed − ${staticPsi} static (${round(rise / MM_PER_FT, 1)} ft) − ${fixturePsi} at the critical fixture = ${available} psi`, cite: lossCite });
+    steps.push({ label: "Available for friction", detail: `${supply} psi − ${fixedTotalPsi} fixed${inlineDeviceLossPsi > 0 ? ` (includes ${round(inlineDeviceLossPsi, 2)} psi inline devices)` : ""} − ${staticPsi} static (${round(rise / MM_PER_FT, 1)} ft) − ${fixturePsi} at the critical fixture = ${available} psi`, cite: lossCite });
     if (available <= 0) findings.push({ code: "no_pressure_left", severity: "error", elementId: system.id, message: `Nothing is left for pipe friction on ${system.name} (${available} psi): raise the supply (a booster) or cut a loss. Sized on velocity alone meanwhile.` });
     else if (equivalent > 0) {
       allowable = round((available / equivalent) * 100, 3);
@@ -258,6 +326,8 @@ function sizeWater(model: ModelState, system: MepSystem, ipc: IpcEdition, settin
   }
   let beyond = false;
   let capped = false;
+  let branchCappedCount = 0;
+  let mainCurveCount = 0;
   for (const lw of pieces) {
     // The most a pipe can carry is every fixture it serves running at once: each fixture's Table 604.3 flow, or its own units on the Hunter fit.
     const most = new Map<string, number>();
@@ -280,7 +350,12 @@ function sizeWater(model: ModelState, system: MepSystem, ipc: IpcEdition, settin
       if (reading.beyondRange) beyond = true;
       const ceiling = most.get(n) ?? Number.POSITIVE_INFINITY;
       const byFixtures = ceiling > 0 && ceiling < reading.gpm;
-      if (byFixtures) capped = true;
+      if (byFixtures) {
+        capped = true;
+        branchCappedCount += 1;
+      } else {
+        mainCurveCount += 1;
+      }
       const gpm = byFixtures ? ceiling : reading.gpm;
       const spec = seg.size.shape === "pipe" ? specOfSize(seg.size) : null;
       const label = labelOf(model, seg);
@@ -318,21 +393,229 @@ function sizeWater(model: ModelState, system: MepSystem, ipc: IpcEdition, settin
           : allowable === null || (byFriction && byFriction.nominalIn < chosen.nominalIn - 1e-9)
             ? `velocity ${vmax} ft/s`
             : `friction ${allowable} psi/100 ft`;
-      proposals.push(proposalOf(seg, label, "water", chosen.nominalIn, carries, governs, { frictionPsiPer100Ft: round(at.psi, 3), velocityFps: round(at.fps, 2) }));
+      const demandBasis = byFixtures ? ("fixture_sum_branch" as const) : ("hunter_main" as const);
+      const demandNote = byFixtures
+        ? `Branch-level demand: connected fixture sum (${round(gpm, 1)} gpm) caps building-level ${curve.label} reading (${round(reading.gpm, 1)} gpm for ${round(wsfu, 2)} WSFU)`
+        : `Main-level demand: ${curve.label} applied to ${round(wsfu, 2)} cumulative WSFU = ${round(gpm, 1)} gpm`;
+      proposals.push(proposalOf(seg, label, "water", chosen.nominalIn, carries, governs, { frictionPsiPer100Ft: round(at.psi, 3), velocityFps: round(at.fps, 2), demandBasis, demandNote }));
     }
+  }
+  const demandNotes: string[] = [];
+  if (designPoint) {
+    demandNotes.push(`Main-level Hunter demand: ${designPoint.wsfu} total WSFU at the source = ${designPoint.gpm} gpm on ${curve.label} (${mainCurveCount} main/header segment${mainCurveCount === 1 ? "" : "s"}).`);
   }
   if (capped) {
     const capCite = methodCite("Fixture flow ceiling", "a pipe never carries more than every fixture it serves running at once: Table 604.3 flow by fixture, else the fixture's own units on the Hunter fit (1.47 FU^0.735, verify for permit work)");
     cites.push(capCite);
     steps.push({ label: "Small branches", detail: `${curve.label} reads a building's demand; on a branch serving a few fixtures that reading is more than those fixtures can draw, so the branch carries their sum instead`, cite: [capCite, curve.cite] });
+    demandNotes.push(`Branch-level fixture demand: ${branchCappedCount} small branch${branchCappedCount === 1 ? "" : "es"} capped at simultaneous connected fixture flow (Table 604.3 / fixture ceiling) instead of the building-level Hunter curve.`);
   }
   if (beyond) findings.push({ code: "beyond_curve", severity: "warning", elementId: system.id, message: `Some pipes carry more fixture units than ${curve.label} reaches; their flow is held at the curve's end. Use a curve that covers the load.` });
   changeFindings(proposals, findings);
-  const designPoint = total > 0 ? { wsfu: round(total, 2), gpm: round(readCurve(curve, total).gpm, 1) } : null;
   if (designPoint) steps.push({ label: "Design point", detail: `${designPoint.wsfu} WSFU at the source: ${designPoint.gpm} gpm on ${curve.label}`, cite: [curve.cite] });
   return {
     ok: true,
-    sizing: { ...base, curve: { id: curve.id, label: curve.label }, designPoint, availablePsi: available, allowablePsiPer100Ft: allowable, developedLengthFt: developed > 0 ? round(developed, 1) : null, totalLoad: round(total, 2), proposals: proposals.sort((a, b) => a.segmentId.localeCompare(b.segmentId)), findings },
+    sizing: {
+      ...base,
+      curve: { id: curve.id, label: curve.label },
+      designPoint,
+      availablePsi: available,
+      allowablePsiPer100Ft: allowable,
+      developedLengthFt: developed > 0 ? round(developed, 1) : null,
+      totalLoad: round(total, 2),
+      ...(flowTestResult ? { flowTest: flowTestResult } : {}),
+      ...(demandNotes.length > 0 ? { demandNotes } : {}),
+      proposals: proposals.sort((a, b) => a.segmentId.localeCompare(b.segmentId)),
+      findings,
+    },
+    steps,
+    cites,
+  };
+}
+
+// ------------------------------------------------------------------ DHWR recirculation loop
+
+function sizeDhwr(model: ModelState, system: MepSystem, ipc: IpcEdition, mode: ReturnType<typeof systemSizingMode>): SizingOutcome {
+  const findings: PipeSizingFinding[] = [];
+  const steps: CalcStep[] = [];
+  const design = mergePipeDesign(undefined, system.design?.pipe);
+  const dhwrDesign = resolveDhwrDesign(model.elements, system, design);
+  const tempF = design.waterTempF ?? PIPE_DESIGN_DEFAULTS.hotWaterTempF;
+  const ambientF = dhwrDesign.ambientTempF ?? DHWR_DEFAULT_AMBIENT_TEMP_F;
+  const deltaTF = dhwrDesign.deltaTF ?? DHWR_DEFAULT_DELTA_T_F;
+  const vmax = dhwrDesign.maxVelocityFps ?? design.maxVelocityFps ?? DHWR_DEFAULT_MAX_VELOCITY_FPS;
+  const maxFriction = dhwrDesign.maxFrictionPsiPer100Ft ?? null;
+  const fitAllowPct = dhwrDesign.fittingAllowancePct ?? DHWR_DEFAULT_FITTING_ALLOWANCE_PCT;
+  const velCite = methodCite("DHWR velocity limit", `${vmax} ft/s hot water recirculation`, dhwrDesign.maxVelocityFps || design.maxVelocityFps ? "system setting" : "ASPE / PermitZIP default (verify for permit work)");
+  const hazenCite = methodCite("Hazen–Williams", "psi per 100 ft = 4.52 Q^1.852 / (C^1.852 d^4.8704) x 100");
+  const heatCite = methodCite("DHWR loop flow", "Q_recirc = Q_heat_loss / (500 × ΔT)", "ASPE Plumbing Engineering Design Handbook");
+  const cites: Citation[] = [velCite, hazenCite, heatCite, ipcCite(ipc, "water_sizing")];
+
+  const pieces = walks(model, system, findings);
+  const segList = segmentsOf(model, system);
+  const connectedParts: PartInstance[] = [];
+  const seenParts = new Set<string>();
+  let walkedRootFlow = 0;
+  for (const lw of pieces) {
+    walkedRootFlow = Math.max(walkedRootFlow, lw.load.get(lw.root) ?? 0);
+    for (const n of lw.walk.order) {
+      if (!n.includes("#")) continue;
+      const part = model.elements[pipeNodeId(n)];
+      if (part?.kind === "part" && !seenParts.has(part.id)) {
+        seenParts.add(part.id);
+        connectedParts.push(part);
+      }
+    }
+  }
+  const pumpPart = extractRecircPumpPart(model.elements, connectedParts);
+  const bufferTank = extractBufferTankMetadata(model.elements, connectedParts, dhwrDesign);
+  const loopLengthFt = segList.reduce((sum, s) => sum + lengthFt(s), 0);
+  const returnPipeLossBtuh = segList.reduce((sum, s) => sum + pipeSegmentHeatLossBtuh(s, tempF, ambientF, dhwrDesign.heatLossBtuhPerFt), 0);
+  let pipeHeatLossBtuh = returnPipeLossBtuh;
+  let supplyLengthIncludedFt = 0;
+  if (dhwrDesign.heatLossBtuh !== undefined) {
+    pipeHeatLossBtuh = dhwrDesign.heatLossBtuh;
+    supplyLengthIncludedFt = dhwrDesign.supplyLoopLengthFt ?? 0;
+  } else if (dhwrDesign.supplyLoopLengthFt !== undefined && loopLengthFt > 0) {
+    supplyLengthIncludedFt = dhwrDesign.supplyLoopLengthFt;
+    pipeHeatLossBtuh = returnPipeLossBtuh + supplyLengthIncludedFt * (returnPipeLossBtuh / loopLengthFt);
+  }
+  const bufferLossBtuh = bufferTank?.standbyLossBtuh ?? 0;
+  const totalHeatLossBtuh = pipeHeatLossBtuh + bufferLossBtuh;
+  const pumpExplicit = pumpPart ? dhwrPartFlowGpm(model.elements, pumpPart) : null;
+
+  let designFlowGpm = 0;
+  let flowBasis: "explicit_gpm" | "heat_loss_delta_t" = "heat_loss_delta_t";
+  if (dhwrDesign.designFlowGpm !== undefined && dhwrDesign.designFlowGpm > 0) {
+    designFlowGpm = dhwrDesign.designFlowGpm;
+    flowBasis = "explicit_gpm";
+  } else if (walkedRootFlow > 0) {
+    designFlowGpm = walkedRootFlow;
+    flowBasis = "explicit_gpm";
+  } else if (pumpExplicit !== null && pumpExplicit > 0 && dhwrDesign.heatLossBtuh === undefined && dhwrDesign.heatLossBtuhPerFt === undefined && dhwrDesign.deltaTF === undefined) {
+    designFlowGpm = pumpExplicit;
+    flowBasis = "explicit_gpm";
+  } else if (totalHeatLossBtuh > 0) {
+    designFlowGpm = totalHeatLossBtuh / (500 * deltaTF);
+    flowBasis = "heat_loss_delta_t";
+  }
+
+  steps.push({
+    label: "Recirculation flow",
+    detail:
+      flowBasis === "explicit_gpm"
+        ? `${round(designFlowGpm, 2)} gpm (explicit loop flow)`
+        : `${round(totalHeatLossBtuh, 0)} Btu/h (${round(pipeHeatLossBtuh, 0)} piping${bufferLossBtuh > 0 ? ` + ${round(bufferLossBtuh, 0)} buffer tank` : ""}) / (500 × ${deltaTF} °F ΔT) = ${round(designFlowGpm, 2)} gpm`,
+    cite: [heatCite],
+  });
+  if (bufferTank) {
+    steps.push({
+      label: "Buffer tank",
+      detail: `${bufferTank.label}${bufferTank.volumeGal !== null ? `, ${bufferTank.volumeGal} gal` : ""}${bufferTank.standbyLossBtuh > 0 ? `, ${bufferTank.standbyLossBtuh} Btu/h standby loss` : ""}`,
+      cite: [heatCite],
+    });
+  }
+
+  const proposals: PipeSizeProposal[] = [];
+  let proposedPipeFrictionPsi = 0;
+  for (const seg of segList) {
+    const spec = seg.size.shape === "pipe" ? specOfSize(seg.size) : null;
+    const label = labelOf(model, seg);
+    if (!spec) {
+      findings.push({ code: "no_size_fits", severity: "warning", elementId: seg.id, message: `The ${label} isn't a listed pipe product, so it isn't sized; give it a material and spec` });
+      continue;
+    }
+    const c = design.hazenC ?? spec.hazenWilliamsC;
+    const sizes = [...spec.sizes].filter((s) => s.nominalIn >= USUAL_FIXTURE_MIN_IN - 1e-9).sort((a, b) => a.nominalIn - b.nominalIn);
+    const fits = (s: (typeof sizes)[number]) => {
+      const idIn = s.idMm / MM_PER_IN;
+      const psi = hazenWilliamsPsiPer100Ft(designFlowGpm, c, idIn);
+      const fps = designFlowGpm / 448.831 / ((Math.PI * (idIn / 12) ** 2) / 4);
+      return { psi, fps, ok: fps <= vmax + 1e-9 && (maxFriction === null || psi <= maxFriction + 1e-9) };
+    };
+    const chosen = sizes.find((s) => fits(s).ok);
+    const carries = `${round(designFlowGpm, 2)} gpm (${flowBasis === "heat_loss_delta_t" ? `${round(totalHeatLossBtuh, 0)} Btu/h @ ${deltaTF} °F ΔT` : "explicit DHWR"})`;
+    if (!chosen) {
+      findings.push({ code: "no_size_fits", severity: "error", elementId: seg.id, message: `No ${spec.name} size carries ${round(designFlowGpm, 2)} gpm on ${label} within ${vmax} ft/s${maxFriction !== null ? ` and ${maxFriction} psi/100 ft` : ""}` });
+      continue;
+    }
+    const at = fits(chosen);
+    proposedPipeFrictionPsi += (at.psi * lengthFt(seg)) / 100;
+    const byVelocity = sizes.find((s) => designFlowGpm / 448.831 / ((Math.PI * (s.idMm / MM_PER_IN / 12) ** 2) / 4) <= vmax + 1e-9);
+    const governs =
+      chosen.nominalIn <= USUAL_FIXTURE_MIN_IN + 1e-9 && at.fps < vmax * 0.5
+        ? `minimum DHWR size (1/2")`
+        : maxFriction !== null && byVelocity && byVelocity.nominalIn < chosen.nominalIn - 1e-9
+          ? `friction ${maxFriction} psi/100 ft`
+          : `velocity ${vmax} ft/s`;
+    const demandNote = `DHWR loop demand: ${round(designFlowGpm, 2)} gpm (${flowBasis === "heat_loss_delta_t" ? "heat loss / ΔT" : "explicit flow"}), sized at ≤ ${vmax} ft/s`;
+    proposals.push(proposalOf(seg, label, "dhwr_return", chosen.nominalIn, carries, governs, { frictionPsiPer100Ft: round(at.psi, 3), velocityFps: round(at.fps, 2), demandBasis: "dhwr_loop", demandNote }));
+  }
+
+  let deviceLossPsi = 0;
+  for (const part of connectedParts) {
+    if (pumpPart && part.id === pumpPart.id) continue;
+    const drop = evaluateDevicePressureDrop(model.elements, part, designFlowGpm);
+    if (drop) deviceLossPsi += drop.lossPsi;
+  }
+  const loopFrictionPsi = proposedPipeFrictionPsi * (1 + fitAllowPct / 100);
+  const totalHeadPsi = loopFrictionPsi + deviceLossPsi;
+  const totalHeadFt = totalHeadPsi / WATER_STATIC_PSI_PER_FT;
+  const pump = buildDhwrPumpMetadata(model.elements, pumpPart, designFlowGpm, totalHeadFt, dhwrDesign);
+  if (pump && pump.meetsDuty === false) {
+    findings.push({
+      code: "pump_undersized",
+      severity: "error",
+      elementId: pump.elementId,
+      message: `${pump.label} delivers ${pump.availableHeadAtDutyFt ?? pump.ratedHeadFt ?? 0} ft at ${round(designFlowGpm, 2)} gpm, less than the ${round(totalHeadFt, 2)} ft loop head required`,
+    });
+  }
+  steps.push({
+    label: "Loop head & pump duty",
+    detail: `${round(designFlowGpm, 2)} gpm @ ${round(totalHeadFt, 2)} ft head (${round(totalHeadPsi, 3)} psi: ${round(loopFrictionPsi, 3)} psi piping + ${fitAllowPct}% fittings${deviceLossPsi > 0 ? ` + ${round(deviceLossPsi, 3)} psi inline devices` : ""})${pump ? `; ${pump.external ? "external" : "integral"} pump ${pump.label}${pump.meetsDuty === true ? " meets duty" : pump.meetsDuty === false ? " is undersized" : ""}` : ""}`,
+    cite: [hazenCite],
+  });
+
+  const dhwrSummary: DhwrLoopSummary = {
+    flowBasis,
+    designFlowGpm: round(designFlowGpm, 3),
+    deltaTF,
+    waterTempF: tempF,
+    ambientTempF: ambientF,
+    pipeHeatLossBtuh: round(pipeHeatLossBtuh, 1),
+    bufferTankLossBtuh: round(bufferLossBtuh, 1),
+    totalHeatLossBtuh: round(totalHeatLossBtuh, 1),
+    loopLengthFt: round(loopLengthFt, 2),
+    supplyLengthIncludedFt: round(supplyLengthIncludedFt, 2),
+    loopFrictionPsi: round(loopFrictionPsi, 4),
+    deviceLossPsi: round(deviceLossPsi, 4),
+    totalHeadPsi: round(totalHeadPsi, 4),
+    totalHeadFt: round(totalHeadFt, 2),
+    maxVelocityFps: vmax,
+    pump,
+    bufferTank,
+  };
+  changeFindings(proposals, findings);
+  return {
+    ok: true,
+    sizing: {
+      systemId: system.id,
+      systemName: system.name,
+      systemKind: system.systemKind,
+      service: "dhwr",
+      sizingMode: mode.mode,
+      sizingModeFrom: mode.from,
+      curve: null,
+      designPoint: null,
+      availablePsi: null,
+      allowablePsiPer100Ft: maxFriction,
+      maxVelocityFps: vmax,
+      developedLengthFt: loopLengthFt > 0 ? round(loopLengthFt, 1) : null,
+      totalLoad: round(designFlowGpm, 2),
+      dhwr: dhwrSummary,
+      proposals: proposals.sort((a, b) => a.segmentId.localeCompare(b.segmentId)),
+      findings,
+    },
     steps,
     cites,
   };
@@ -495,6 +778,7 @@ export function sizePipeSystem(model: ModelState, systemId: string, ipc: IpcEdit
   if (segmentsOf(model, system).length === 0) return { ok: false, reason: `${system.name} has no pipe yet; route it first.` };
   const mode = systemSizingMode(model, system);
   if (service === "water") return sizeWater(model, system, ipc, projectSettingsOf(model), mode);
+  if (service === "dhwr") return sizeDhwr(model, system, ipc, mode);
   if (service === "storm") return sizeStormSystem(model, system, ipc, mode);
   if (service === "vent") {
     const sanitary = new Map<string, PipeSystemSizing | null>();
@@ -510,17 +794,17 @@ export function sizePipeSystem(model: ModelState, systemId: string, ipc: IpcEdit
   return sizeDrainage(model, system, ipc, mode);
 }
 
-const sizeSystemInput = z.object({ system_id: z.string().min(1).max(200).describe("A domestic cold or hot water, sanitary, vent or storm pipe system (mep_system) id.") }).strict();
+const sizeSystemInput = z.object({ system_id: z.string().min(1).max(200).describe("A domestic cold/hot water, hot water return (DHWR), sanitary, vent or storm pipe system (mep_system) id.") }).strict();
 
-const TOTAL_LABEL: Readonly<Record<PipeSizingServiceKind, string>> = { water: "Fixture units at the source", drainage: "Drainage fixture units at the outfall", vent: "Drainage fixture units vented", storm: "Roof area drained, sq ft" };
+const TOTAL_LABEL: Readonly<Record<PipeSizingServiceKind, string>> = { water: "Fixture units at the source", dhwr: "Recirculation flow", drainage: "Drainage fixture units at the outfall", vent: "Drainage fixture units vented", storm: "Roof area drained, sq ft" };
 
 export const sizeSystemCalc = defineCalc({
   id: "plumbing.size_system",
   version: "1.0.0",
   domain: "plumbing",
-  title: "Water, sanitary, vent and storm system sizing (plumbing code)",
+  title: "Water, DHWR, sanitary, vent and storm system sizing (plumbing code)",
   summary:
-    "Sizes a drawn domestic water system (fixture units to gpm on its demand curve; friction within the pressure left after static head and the critical fixture over the developed length; velocity limit; Table 604.5 minimums) or sanitary system (DFU by Table 710.1(1) at slope for the building drain, 710.1(2) for branches and stacks, never smaller downstream), vent system (stack vents and vent stacks by Table 906.1 on DFU vented and developed length; branch vents half the drain they vent, 1-1/4 in. least, a size up over 40 ft, 906.2) or storm system (roof area at the system's design rainfall rate: leaders by Table 1106.2(1), horizontal drains by Table 1106.3 at slope). Returns each pipe's needed size against the drawn size and findings. Proposes only; bim_size_pipes applies it, or auto-sizing when the system is set to auto.",
+    "Sizes a drawn domestic water system (fixture units to gpm on its demand curve; friction within the pressure left after static head and the critical fixture over the developed length; velocity limit; Table 604.5 minimums), domestic hot water return (DHWR) loop (heat loss / ΔT or explicit gpm, velocity-limited sizing, loop head loss, recirc pump duty), sanitary system (DFU by Table 710.1(1) at slope for the building drain, 710.1(2) for branches and stacks, never smaller downstream), vent system (Table 906.1/906.2) or storm system (Table 1106.2/1106.3). Returns each pipe's needed size against the drawn size and findings. Proposes only; bim_size_pipes applies it, or auto-sizing when the system is set to auto.",
   codeFamily: "ipc",
   needsModel: true,
   input: sizeSystemInput,
@@ -534,8 +818,15 @@ export const sizeSystemCalc = defineCalc({
     const issues: CalcIssue[] = s.findings.filter((f) => f.code !== "oversized_pipe").map((f) => ({ severity: f.severity, message: f.message, cite: r.cites.slice(0, 2) }));
     const values: CalcValue[] = [
       { key: "sizing_mode", label: "Auto-sizing", value: s.sizingMode === "auto" ? "on" : "off (check only)", unit: null, cite: [] },
-      { key: "total", label: TOTAL_LABEL[s.service], value: s.totalLoad, unit: s.service === "water" ? "wsfu" : s.service === "storm" ? null : "dfu", cite: r.cites.slice(0, 1) },
+      { key: "total", label: TOTAL_LABEL[s.service], value: s.totalLoad, unit: s.service === "water" ? "wsfu" : s.service === "dhwr" ? "gpm" : s.service === "storm" ? null : "dfu", cite: r.cites.slice(0, 1) },
       ...(s.designPoint ? [{ key: "design_gpm", label: "Design flow", value: s.designPoint.gpm, unit: "gpm" as const, cite: r.cites }] : []),
+      ...(s.dhwr
+        ? [
+            { key: "recirc_gpm", label: "Recirculation flow", value: s.dhwr.designFlowGpm, unit: "gpm" as const, cite: r.cites },
+            { key: "loop_head_ft", label: "Loop head loss", value: s.dhwr.totalHeadFt, unit: "ft" as const, cite: r.cites },
+            { key: "heat_loss_btuh", label: "Loop heat loss", value: s.dhwr.totalHeatLossBtuh, unit: null, cite: r.cites },
+          ]
+        : []),
       ...(s.allowablePsiPer100Ft !== null ? [{ key: "allowable_psi_per_100ft", label: "Allowable friction", value: s.allowablePsiPer100Ft, unit: "psi_per_100ft" as const, cite: r.cites }] : []),
       { key: "pipes_to_resize", label: "Pipes that need another size", value: s.proposals.filter((p) => p.change !== "same").length, unit: null, cite: [] },
       ...s.proposals.filter((p) => p.change !== "same").map((p): CalcValue => ({ key: `size:${p.segmentId}`, label: `${p.label} (drawn ${p.current}")`, value: p.proposed, unit: "in", cite: r.cites })),

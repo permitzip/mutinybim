@@ -27,7 +27,15 @@ export function labelOf(model: ModelState, seg: RunSegment): string {
   return `${nominalLabel(nominalInOf(seg.size))}" pipe ${seg.id}${sys?.kind === "mep_system" ? ` on ${sys.name}` : ""}`;
 }
 
-export function proposalOf(seg: RunSegment, label: string, role: PipeSizingRole, proposedIn: number, carries: string, governs: string, extra: Pick<PipeSizeProposal, "frictionPsiPer100Ft" | "velocityFps"> = {}): PipeSizeProposal {
+export function proposalOf(
+  seg: RunSegment,
+  label: string,
+  role: PipeSizingRole,
+  proposedIn: number,
+  carries: string,
+  governs: string,
+  extra: Pick<PipeSizeProposal, "frictionPsiPer100Ft" | "velocityFps" | "demandBasis" | "demandNote"> = {},
+): PipeSizeProposal {
   const current = nominalInOf(seg.size);
   const change = proposedIn > current + 1e-6 ? "up" : proposedIn < current - 1e-6 ? "down" : "same";
   return { segmentId: seg.id, label, role, currentIn: current, proposedIn, current: nominalLabel(current), proposed: nominalLabel(proposedIn), change, carries, governs, ...extra };

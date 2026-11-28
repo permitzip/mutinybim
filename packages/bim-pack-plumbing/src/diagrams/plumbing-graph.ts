@@ -1,6 +1,6 @@
 import { systemRules, elementsOfKind, drainSystemKinds } from "@permitzip/bim-kernel";
 import type { MepSystem, BimElement, ElementId, DiagramHints, DiagramGraph, DiagramNode, DiagramPipe } from "@permitzip/bim-kernel";
-import { plumbingTrees } from "./plumbing-topology";
+import { copyPlumbingNodeMeta, plumbingTrees } from "./plumbing-topology";
 
 /**
  * The plumbing riser graph, read from routed piping: one tree per plumbing
@@ -32,12 +32,14 @@ export function plumbingSystems(elements: Elements, kinds?: readonly string[]): 
 }
 
 /** `tree` with the terminal standing for `elementId` given `children` (the first one found, depth first); null when there is none. */
-function graft(tree: DiagramNode, elementId: string, children: readonly DiagramNode[]): DiagramNode | null {
-  if (tree.role === "terminal" && tree.elementId === elementId && tree.children.length === 0) return { ...tree, children };
+function graft(tree: DiagramNode, elementId: string, children: readonly DiagramNode[], allowAppend = false): DiagramNode | null {
+  if (tree.role === "terminal" && tree.elementId === elementId && (tree.children.length === 0 || allowAppend)) {
+    return copyPlumbingNodeMeta(tree, { ...tree, children: [...tree.children, ...children] });
+  }
   for (let i = 0; i < tree.children.length; i++) {
     const c = tree.children[i] as DiagramNode;
-    const next = graft(c, elementId, children);
-    if (next) return { ...tree, children: [...tree.children.slice(0, i), next, ...tree.children.slice(i + 1)] };
+    const next = graft(c, elementId, children, allowAppend);
+    if (next) return copyPlumbingNodeMeta(tree, { ...tree, children: [...tree.children.slice(0, i), next, ...tree.children.slice(i + 1)] });
   }
   return null;
 }
@@ -59,12 +61,12 @@ function rerootAt(root: DiagramNode, targetElementId: string): DiagramNode | nul
     const parent = path[i]!;
     const nextInPath = path[i + 1]!;
     const siblings = parent.children.filter((c) => c !== nextInPath);
-    const rebuilt: DiagramNode = {
+    const rebuilt: DiagramNode = copyPlumbingNodeMeta(parent, {
       ...parent,
       role: i === 0 ? "terminal" : parent.role === "source" ? "branch" : parent.role,
       feed: nextInPath.feed,
       children: prevChild ? [...siblings, prevChild] : siblings,
-    };
+    });
     prevChild = rebuilt;
   }
   return prevChild;
@@ -96,7 +98,9 @@ export function plumbingDiagramGraph(elements: Elements, hints: DiagramHints = {
     for (let i = 0; i < roots.length; i++) {
       const host = roots[i] as DiagramNode;
       if (host === r || host.service === r.service) continue;
-      const grafted = graft(host, r.elementId, r.children);
+      // Allow domestic hot water return to attach onto a water heater that already has domestic hot water grafted.
+      const allowAppend = r.service === "domestic_hot_water_return";
+      const grafted = graft(host, r.elementId, r.children, allowAppend);
       if (!grafted) continue;
       roots = roots.flatMap((x, j) => (j === i ? [grafted] : x === r ? [] : [x]));
       break;

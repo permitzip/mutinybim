@@ -1,5 +1,6 @@
 import { MODEL_FRAME, directionFromWorkFrame, directionToWorkFrame, fromWorkFrame, routeSnapHeadings, toWorkFrame, type Vec2, type WorkFrame } from '@permitzip/bim-kernel'
 import { GRID_MM } from './placement'
+import { snapToIncrement } from './snap-grid'
 
 /**
  * Where the next route point goes, and which axis it is locked to.
@@ -38,6 +39,8 @@ export interface RoutePointInput {
   readonly frame?: WorkFrame
   /** Pipe: 45° steps only (pipe fittings are made at 45° and 90°). */
   readonly pipe?: boolean
+  /** Active snap increment in mm (`0` = Free 1 mm; absent: default 6" `GRID_MM`). */
+  readonly gridMm?: number
 }
 
 export interface RoutePointResult {
@@ -63,10 +66,10 @@ function nearestHeading(a: number): number {
 }
 
 /**
- * Snap a pointer point to the nearest snap heading from `from` (measured from the working angle), at a 6" length step.
+ * Snap a pointer point to the nearest snap heading from `from` (measured from the working angle), at the active `gridMm` length step (`0` = Free 1 mm).
  * `steps`: '45' keeps 45° steps only (pipe); 'free' keeps the pointer's own direction.
  */
-export function angleLock(from: Vec2, raw: Vec2, angleDeg = 0, steps: 'snap' | '45' | 'free' = 'snap'): Vec2 {
+export function angleLock(from: Vec2, raw: Vec2, angleDeg = 0, steps: 'snap' | '45' | 'free' = 'snap', gridMm: number = GRID_MM): Vec2 {
   const d = directionToWorkFrame({ angleDeg, origin: MODEL_FRAME.origin }, { x: raw.x - from.x, y: raw.y - from.y })
   const len = Math.hypot(d.x, d.y)
   if (len === 0) return from
@@ -74,12 +77,11 @@ export function angleLock(from: Vec2, raw: Vec2, angleDeg = 0, steps: 'snap' | '
   const a = steps === 'free' ? raw0 : steps === '45' ? Math.round(raw0 / (Math.PI / 4)) * (Math.PI / 4) : nearestHeading(raw0)
   const ux = Math.round(Math.cos(a) * 1e9) / 1e9
   const uy = Math.round(Math.sin(a) * 1e9) / 1e9
-  const along = Math.max(GRID_MM, Math.round((d.x * ux + d.y * uy) / GRID_MM) * GRID_MM)
+  const rawAlong = d.x * ux + d.y * uy
+  const along = gridMm <= 0 ? Math.max(1, Math.round(rawAlong)) : Math.max(gridMm, Math.round(rawAlong / gridMm) * gridMm)
   const u = directionFromWorkFrame({ angleDeg, origin: MODEL_FRAME.origin }, { x: ux, y: uy })
   return { x: Math.round((from.x + u.x * along) * 1000) / 1000, y: Math.round((from.y + u.y * along) * 1000) / 1000 }
 }
-
-const snap = (v: number, step: number) => Math.round(Math.round(v / step) * step * 1000) / 1000
 
 function axisOf(from: Vec2, to: Vec2, frame: WorkFrame): RouteAxis {
   const d = directionToWorkFrame(frame, { x: to.x - from.x, y: to.y - from.y })
@@ -96,22 +98,25 @@ function axisOf(from: Vec2, to: Vec2, frame: WorkFrame): RouteAxis {
 export function resolveRoutePoint(input: RoutePointInput): RoutePointResult | null {
   const { prev, raw, vertical, lock, shift } = input
   const frame = input.frame ?? MODEL_FRAME
+  const step = input.gridMm ?? GRID_MM
   const plan = { x: prev.x, y: prev.y }
   const wantsZ = lock === 'z' || shift || (lock === 'auto' && vertical !== null && vertical.pixelDistance <= VERTICAL_SNAP_PX)
   if (wantsZ && vertical) {
-    const elevationMm = snap(vertical.elevationMm, GRID_MM)
-    if (Math.abs(elevationMm - prev.elevationMm) >= GRID_MM / 2) return { point: plan, elevationMm, axis: 'z' }
+    const elevationMm = snapToIncrement(vertical.elevationMm, step)
+    const minStep = step <= 0 ? 1 : step / 2
+    if (Math.abs(elevationMm - prev.elevationMm) >= minStep) return { point: plan, elevationMm, axis: 'z' }
   }
   if (!raw) return null
   if (lock === 'x' || lock === 'y') {
-    // In the work frame: q is the pointer, p the last point; the locked coordinate steps on the 6" grid through the frame's origin.
+    // In the work frame: q is the pointer, p the last point; the locked coordinate steps on the active grid through the frame's origin.
     const q = toWorkFrame(frame, raw)
     const p = toWorkFrame(frame, plan)
-    const along = (r: number, from: number) => (Math.abs(r - from) < GRID_MM ? from + GRID_MM * Math.sign(r - from || 1) : snap(r, GRID_MM))
+    const minStep = step <= 0 ? 1 : step
+    const along = (r: number, from: number) => (Math.abs(r - from) < minStep ? from + minStep * Math.sign(r - from || 1) : snapToIncrement(r, step))
     const local = lock === 'x' ? { x: along(q.x, p.x), y: p.y } : { x: p.x, y: along(q.y, p.y) }
     return { point: fromWorkFrame(frame, local), elevationMm: prev.elevationMm, axis: lock }
   }
-  const point = angleLock(plan, raw, frame.angleDeg, lock === 'free' ? 'free' : input.pipe ? '45' : 'snap')
+  const point = angleLock(plan, raw, frame.angleDeg, lock === 'free' ? 'free' : input.pipe ? '45' : 'snap', step)
   return { point, elevationMm: prev.elevationMm, axis: axisOf(plan, point, frame) }
 }
 
@@ -159,10 +164,16 @@ export interface DragSnap {
  * The drag a pointer move asks for. A straight piece moves square to itself
  * or along itself, whichever the pointer favours; a corner (an elbow) moves
  * freely; an open end only stretches along its piece. Distances land on the
- * 6" grid (for a 45° or sloped piece, the distance square to it does).
+ * active `gridMm` step (`0` = Free 1 mm; for a 45° or sloped piece, the
+ * distance square to it does).
  */
-export function snapDrag(kind: 'segment' | 'corner' | 'end', axis: { readonly x: number; readonly y: number; readonly z: number } | null, raw: { readonly x: number; readonly y: number; readonly z: number }): DragSnap {
-  const g = (v: number) => snap(v, GRID_MM) || 0
+export function snapDrag(
+  kind: 'segment' | 'corner' | 'end',
+  axis: { readonly x: number; readonly y: number; readonly z: number } | null,
+  raw: { readonly x: number; readonly y: number; readonly z: number },
+  gridMm: number = GRID_MM,
+): DragSnap {
+  const g = (v: number) => snapToIncrement(v, gridMm)
   if (kind === 'corner' || !axis) return { delta: { x: g(raw.x), y: g(raw.y), z: g(raw.z) }, mode: 'corner' }
   const along = raw.x * axis.x + raw.y * axis.y + raw.z * axis.z
   const square = { x: raw.x - axis.x * along, y: raw.y - axis.y * along, z: raw.z - axis.z * along }

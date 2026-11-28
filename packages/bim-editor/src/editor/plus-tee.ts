@@ -1,4 +1,4 @@
-import { ROUTING_PLUS_EVERY_RUN_FEATURE, ROUTING_TAP_FACES_FEATURE, ROUTING_TAP_OFFSET_FEATURE, isPitchedOrLevel, type BimElement, type RunFitting, type RunPoint, type RunSegment } from '@permitzip/bim-kernel'
+import { ROUTING_PLUS_EVERY_RUN_FEATURE, ROUTING_TAP_FACES_FEATURE, ROUTING_TAP_OFFSET_FEATURE, isPitchedOrLevel, partLabelOf, resolveConnectors, worldConnector, type BimElement, type RunFitting, type RunPoint, type RunSegment, type RunSize } from '@permitzip/bim-kernel'
 
 type Elements = Readonly<Record<string, BimElement>>
 
@@ -118,10 +118,49 @@ export interface PlusSpotKernel extends TeeHandleKernel {
   portInfo(elements: Elements, ref: { readonly elementId: string; readonly port: string }): { readonly position: RunPoint; readonly direction: RunPoint } | null
 }
 
+/** True when a direction vector points straight up or straight down. */
+export function isVerticalDirection(d: RunPoint): boolean {
+  return Math.hypot(d.x, d.y) < 1e-3 && Math.abs(d.z) > 0.5
+}
+
+/** Width/diameter scale (mm) for sizing a vertical stub off a vertical connector. */
+function runSizeSpanMm(size: RunSize | null | undefined): number {
+  if (!size) return 50.8
+  switch (size.shape) {
+    case 'pipe':
+      return size.nominalMm
+    case 'round':
+      return size.diameter
+    case 'rect':
+    case 'oval':
+      return Math.max(size.width, size.height)
+    default:
+      return size.tradeSizeMm
+  }
+}
+
+/**
+ * Valid initial vertical stub length (mm) out of a vertical connector (such as
+ * a bottom-port expansion tank, floor drain, or vertical pipe open end): always
+ * long enough to clear a 90° elbow takeoff plus `minStraightMm` so the route
+ * starts valid immediately instead of being refused.
+ */
+export function verticalStubLengthMm(size: RunSize | null | undefined, minStraightMm = 152.4): number {
+  const span = runSizeSpanMm(size)
+  const needed = span * 2.5 + Math.max(minStraightMm, 152.4)
+  return Math.max(457.2, Math.ceil(needed / 152.4) * 152.4)
+}
+
+/** Target elevation (mm, level-relative) for a vertical stub leaving a vertical connector along `dirZ`. */
+export function verticalStubElevationMm(connectorZ: number, dirZ: number, size?: RunSize | null, minStraightMm = 152.4): number {
+  const sign = dirZ < 0 ? -1 : 1
+  return Math.round((connectorZ + sign * verticalStubLengthMm(size, minStraightMm)) * 1000) / 1000
+}
+
 /** A "+" on a selected piece, in model space (level-relative mm): drawn a little beyond `at`, the way `toward` points, in any view or drawing. */
 export interface PlusSpot {
-  /** `continue`: route on from an open end (a turn on the first leg puts its elbow right on the end); `tee`: the elbow becomes a tee with this port's leg running on. */
-  readonly kind: 'continue' | 'tee'
+  /** `continue`: route on from an open end (a turn on the first leg puts its elbow right on the end); `tee`: the elbow becomes a tee with this port's leg running on; `connector`: route out of a part's free duct/pipe connector. */
+  readonly kind: 'continue' | 'tee' | 'connector'
   readonly elementId: string
   readonly port: string
   readonly label: string
@@ -131,11 +170,33 @@ export interface PlusSpot {
 }
 
 /**
- * Every "+" on a selected straight piece or fitting: one past each open end
- * and, on an elbow, one on each side a leg could run on through the corner.
+ * Every "+" on a selected straight piece, fitting, or part with free duct/pipe
+ * connectors: one past each open end, one on each elbow side that can become a
+ * tee, and one on each unconnected duct/pipe connector of a placed part.
  * The 3D view and the printed drawings draw the same list.
  */
 export function plusSpots(elements: Elements, el: BimElement, kernel: PlusSpotKernel, serverFeatures: readonly string[] = []): PlusSpot[] {
+  if (el.kind === 'part') {
+    if (el.planned !== undefined) return []
+    const type = elements[el.typeId]
+    if (type?.kind !== 'part_type') return []
+    const partName = partLabelOf(elements, el)
+    const out: PlusSpot[] = []
+    for (const c of resolveConnectors(type.definition, el.values)) {
+      if ((c.domain !== 'pipe' && c.domain !== 'duct') || el.links?.[c.id]) continue
+      const w = worldConnector(el, c)
+      const dirWord = isVerticalDirection(w.direction) ? (w.direction.z < 0 ? ' (drops down)' : ' (rises up)') : ''
+      out.push({
+        kind: 'connector',
+        elementId: el.id,
+        port: c.id,
+        label: `Route ${c.domain} from ${partName}'s ${c.label.toLowerCase()}${dirWord}`,
+        at: w.position,
+        toward: w.direction,
+      })
+    }
+    return out
+  }
   if (el.kind !== 'run_segment' && el.kind !== 'run_fitting') return []
   const label = kernel.runLabel(elements, el)
   const out: PlusSpot[] = []

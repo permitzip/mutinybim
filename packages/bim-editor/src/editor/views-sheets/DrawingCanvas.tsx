@@ -6,7 +6,7 @@ import type { SheetTitle } from '../../contracts/building-model/sheet-title'
 import { toast } from 'sonner'
 import { escapeLeavesField, leftFieldHint } from '../escape-step'
 import { ChevronDown, Eye, EyeOff, KeyRound, Circle, Cloud, Minus, MousePointer2, MoveHorizontal, PaintBucket, PenTool, Printer, Puzzle, Rainbow, Repeat, Spline, Square, SquareDashed, Tag, Trash2, Type, Hexagon, Waves, Waypoints, ZoomIn, ZoomOut } from 'lucide-react'
-import { DEFAULT_ANNOTATION_CROP_OFFSET_MM, DEFAULT_HIGHLIGHTER_OPACITY, DEFAULT_MARKER_OPACITY, DEFAULT_NOTE_SIZE_MM, ELEV_RADIUS_MM, HEAD_RADIUS_MM, NORTH_ARROW_RADIUS_MM, boxToPaper, paperToBox, LEADER_ARROWS, NOTE_LIMITS, STANDARD_SCALES, calloutBoundaryPolygon, calloutHead, calloutLeaderAnchor, calloutSyncCommands, canonicalJson, chainOf, dimensionPoints, drawDimension, elementsOfKind, elevationMarkCenter, enlargedPlanCommands, gridBubbleEndpoints, layoutDraft, leaderPrimitives, leaderStart, noteAutoShoulderPaper, noteContentFingerprint, noteLabel, noteLeadersAfterMove, noteText, normalizeParagraphs, paragraphsForCommand, polygonBounds, referencingSheet, resolveNote, sectionMarkEndpoints, tagLines, textBlockToSvg, viewportNorthArrow, viewportTitleLayout, cropForWindow, detailItemBounds, documentIndex, frameForViewport, modelToPaper, paperWorkingAngleDeg, paperToModel, planReferenceViews, rectangleLines, sceneToSvg, scaleLabel, sheetViewports, viewCrop, viewOnPaper, viewportOnPaper, LOAD_SUMMARY_TEMPLATE, asElementId, blockFieldChoices, fieldBlockTemplateProblem, renderFieldBlock, type FieldBlockSpec, type DrawingItem, type DrawingShape, type ModelState, type NoteLeader, type NoteParagraph, type Primitive, type TextBlock, type Rect, type Vec2, type ViewElement, type ViewProps, type ViewFrame, type Viewport, type ViewBackgrounds, type ElementId, type TagSpec, scheduleViewColumns } from '@permitzip/bim-kernel'
+import { DEFAULT_ANNOTATION_CROP_OFFSET_MM, DEFAULT_HIGHLIGHTER_OPACITY, DEFAULT_MARKER_OPACITY, DEFAULT_NOTE_SIZE_MM, ELEV_RADIUS_MM, HEAD_RADIUS_MM, NORTH_ARROW_RADIUS_MM, boxToPaper, paperToBox, LEADER_ARROWS, NOTE_LIMITS, STANDARD_SCALES, calloutBoundaryPolygon, calloutHead, calloutLeaderAnchor, calloutSyncCommands, canonicalJson, dimensionPoints, drawDimension, elementsOfKind, elevationMarkCenter, enlargedPlanCommands, gridBubbleEndpoints, layoutDraft, leaderPrimitives, leaderStart, noteAutoShoulderPaper, noteContentFingerprint, noteLabel, noteLeadersAfterMove, noteText, normalizeParagraphs, paragraphsForCommand, polygonBounds, referencingSheet, resolveNote, sectionMarkEndpoints, tagLines, textBlockToSvg, viewportNorthArrow, viewportTitleLayout, cropForWindow, detailItemBounds, documentIndex, frameForViewport, modelToPaper, paperWorkingAngleDeg, paperToModel, planReferenceViews, rectangleLines, sceneToSvg, scaleLabel, sheetViewports, viewCrop, viewOnPaper, viewportOnPaper, LOAD_SUMMARY_TEMPLATE, asElementId, blockFieldChoices, fieldBlockTemplateProblem, renderFieldBlock, type FieldBlockSpec, type DrawingItem, type DrawingShape, type ModelState, type NoteLeader, type NoteParagraph, type Primitive, type TextBlock, type Rect, type Vec2, type ViewElement, type ViewProps, type ViewFrame, type Viewport, type ViewBackgrounds, type ElementId, type TagSpec, scheduleViewColumns } from '@permitzip/bim-kernel'
 import { distributionEquipment } from '@permitzip/bim-pack-electrical'
 import type { Presence } from '@permitzip/bim-sync'
 import { NOTE_LOCK_REFRESH_MS, PresenceClock, editingNoteActivity, lockMessage, noteLocks, type NoteLock } from '@permitzip/bim-sync/note-locks'
@@ -54,6 +54,7 @@ import { DetailSelectionProperties } from './draft/DetailSelectionProperties'
 import { DraftOptionsBar } from './draft/DraftOptionsBar'
 import { DraftOverlay } from './draft/DraftOverlay'
 import { isDraftShape, marqueeHits } from './draft/draft-input'
+import { cycleDraftTab, draftCreateSimilarFor, resolveDraftItemClick, type DraftTabState } from './draft/draft-tab-select'
 import { useDraftController, type DraftController } from './draft/useDraftController'
 import { useDraftInput } from './draft/useDraftInput'
 import { ToolHintBar } from '../ToolHintBar'
@@ -558,6 +559,20 @@ export function DrawingCanvas({ target, model, sheetTitle, canEdit, blockedReaso
   )
 
   const selectedIds = useMemo(() => (selection?.kind === 'item' ? [selection.id, ...alsoPicked.filter((id) => id !== selection.id)] : []), [selection, alsoPicked])
+  /** Hovering a drafted item + pressing Tab pre-highlights its connected chain; clicking commits & locks the chain so it never collapses back to one segment. */
+  const [hoveredItemId, setHoveredItemId] = useState<string | null>(null)
+  const [tabPreview, setTabPreview] = useState<DraftTabState | null>(null)
+  const [chainLocked, setChainLocked] = useState(false)
+  useEffect(() => {
+    if (tool !== 'select') {
+      setHoveredItemId(null)
+      setTabPreview(null)
+      setChainLocked(false)
+    }
+  }, [tool])
+  useEffect(() => {
+    if (selectedIds.length <= 1 && chainLocked) setChainLocked(false)
+  }, [selectedIds.length, chainLocked])
   /** A schedule picked on the sheet shows grips on its column edges. */
   const selectedSchedule = selection?.kind === 'viewport' ? (placed.find((p) => p.viewport.id === selection.id && p.view.viewType === 'schedule') ?? null) : null
   const scheduleColumns = useMemo(() => (selectedSchedule ? scheduleViewColumns(model, selectedSchedule.view.props) : null), [model, selectedSchedule])
@@ -953,35 +968,61 @@ export function DrawingCanvas({ target, model, sheetTitle, canEdit, blockedReaso
         e.preventDefault()
         return
       }
-      if (e.key === 'Tab' && !e.metaKey && !e.ctrlKey && !e.altKey && tool === 'select' && selection?.kind === 'item') {
-        const chain = chainOf(items, selection.id)
-        if (chain.length > 1) {
-          e.preventDefault()
-          setSelection({ kind: 'item', id: chain[0]!.id })
-          setAlsoPicked(chain.slice(1).map((c) => c.id))
-          toast(`Selected joined chain of ${chain.length} items.`)
-          return
-        }
-        // Otherwise cycle through overlapping drawn items under the currently selected item's footprint.
-        const current = items.find((it) => it.id === selection.id)
-        const curBox = current ? (current.dim || current.tag ? annotationBox(model, annotatedView, current, toPaperPoint) : detailBox(current, toPaperPoint)) : null
-        if (curBox) {
-          const cx = curBox.x + curBox.w / 2
-          const cy = curBox.y + curBox.h / 2
-          const overlapping = items.filter((it) => {
-            if (it.deleted) return false
-            const b = it.dim || it.tag ? annotationBox(model, annotatedView, it, toPaperPoint) : detailBox(it, toPaperPoint)
-            if (!b) return false
-            return cx >= b.x - 1.5 && cx <= b.x + b.w + 1.5 && cy >= b.y - 1.5 && cy <= b.y + b.h + 1.5
-          })
-          if (overlapping.length > 1) {
+      if (e.key === 'Tab' && !e.metaKey && !e.ctrlKey && !e.altKey && tool === 'select') {
+        const hoverTarget = hoveredItemId && items.some((it) => !it.deleted && it.id === hoveredItemId) ? hoveredItemId : null
+        // 1. Hover + Tab (Revit-style): pre-highlight the connected chain; clicking any segment commits and persists it.
+        if (hoverTarget && (selection?.kind !== 'item' || !selectedIds.includes(hoverTarget))) {
+          const next = cycleDraftTab(items, tabPreview, hoverTarget)
+          if (next) {
             e.preventDefault()
-            const idx = overlapping.findIndex((it) => it.id === selection.id)
-            const next = overlapping[(idx + (e.shiftKey ? overlapping.length - 1 : 1)) % overlapping.length]!
-            setAlsoPicked([])
-            setSelection({ kind: 'item', id: next.id })
-            toast(`Selected ${next.shape} (${((idx + 1) % overlapping.length) + 1} of ${overlapping.length} overlapping).`)
+            setTabPreview(next)
+            toast(next.mode === 'chain' ? `Chain of ${next.ids.length} items highlighted — click to select all.` : 'Single item highlighted — Tab again for chain.')
             return
+          }
+        }
+        // 2. Tab while an item is already selected: cycle between full connected chain (locked against click collapse) and single segment.
+        if (selection?.kind === 'item') {
+          const anchor = hoverTarget ?? selection.id
+          const currentTab: DraftTabState | null = chainLocked && selectedIds.length > 1 ? { anchorId: anchor, mode: 'chain', ids: selectedIds } : null
+          const next = cycleDraftTab(items, currentTab, anchor)
+          if (next) {
+            e.preventDefault()
+            setTabPreview(null)
+            if (next.mode === 'chain') {
+              setSelection({ kind: 'item', id: next.ids[0]! })
+              setAlsoPicked(next.ids.slice(1))
+              setChainLocked(true)
+              toast(`Selected joined chain of ${next.ids.length} items.`)
+            } else {
+              setSelection({ kind: 'item', id: anchor })
+              setAlsoPicked([])
+              setChainLocked(false)
+              toast('Selected single segment (Tab again for chain).')
+            }
+            return
+          }
+          // Otherwise cycle through overlapping drawn items under the currently selected item's footprint.
+          const current = items.find((it) => it.id === selection.id)
+          const curBox = current ? (current.dim || current.tag ? annotationBox(model, annotatedView, current, toPaperPoint) : detailBox(current, toPaperPoint)) : null
+          if (curBox) {
+            const cx = curBox.x + curBox.w / 2
+            const cy = curBox.y + curBox.h / 2
+            const overlapping = items.filter((it) => {
+              if (it.deleted) return false
+              const b = it.dim || it.tag ? annotationBox(model, annotatedView, it, toPaperPoint) : detailBox(it, toPaperPoint)
+              if (!b) return false
+              return cx >= b.x - 1.5 && cx <= b.x + b.w + 1.5 && cy >= b.y - 1.5 && cy <= b.y + b.h + 1.5
+            })
+            if (overlapping.length > 1) {
+              e.preventDefault()
+              const idx = overlapping.findIndex((it) => it.id === selection.id)
+              const nextItem = overlapping[(idx + (e.shiftKey ? overlapping.length - 1 : 1)) % overlapping.length]!
+              setAlsoPicked([])
+              setChainLocked(false)
+              setSelection({ kind: 'item', id: nextItem.id })
+              toast(`Selected ${nextItem.shape} (${((idx + 1) % overlapping.length) + 1} of ${overlapping.length} overlapping).`)
+              return
+            }
           }
         }
       }
@@ -995,13 +1036,34 @@ export function DrawingCanvas({ target, model, sheetTitle, canEdit, blockedReaso
           return
         }
       }
-      if (plainKey && !e.repeat && similarChord.current.press(e.key, e.timeStamp) && tool === 'select' && selection?.kind === 'item') {
-        const picked = items.find((i) => i.id === selection.id)
-        if (picked?.tag) {
-          e.preventDefault()
-          e.stopImmediatePropagation()
-          startTagLike(picked.tag)
-          return
+      if (plainKey && !e.repeat && similarChord.current.press(e.key, e.timeStamp) && tool === 'select' && canEdit) {
+        if (selection?.kind === 'item') {
+          const picked = items.find((i) => i.id === selection.id)
+          if (picked?.tag) {
+            e.preventDefault()
+            e.stopImmediatePropagation()
+            startTagLike(picked.tag)
+            return
+          }
+          if (picked) {
+            const similar = draftCreateSimilarFor(picked, draft.settings)
+            if (similar) {
+              e.preventDefault()
+              e.stopImmediatePropagation()
+              draft.setSettings(similar.settings)
+              setTool(similar.tool as Tool)
+              toast(`Create Similar: drawing ${similar.label}.`)
+              return
+            }
+          }
+        } else if (modelEdit && modelEdit.selectedIds.length === 1 && onCreateSimilar) {
+          const elId = modelEdit.selectedIds[0]
+          if (elId) {
+            e.preventDefault()
+            e.stopImmediatePropagation()
+            onCreateSimilar(elId)
+            return
+          }
         }
       }
       const step = plainKey && tool === 'select' && selection?.kind === 'item' ? nudgePaperStep(e.key, e.shiftKey) : null
@@ -1035,17 +1097,23 @@ export function DrawingCanvas({ target, model, sheetTitle, canEdit, blockedReaso
         return
       }
       if (e.key === 'Escape') {
+        if (tabPreview) {
+          setTabPreview(null)
+          return
+        }
         if (drag) setDrag(null)
         else if (tool !== 'select') setTool('select')
         else if (modelEdit && modelEdit.selectedIds.length > 0) modelEdit.select(null)
         else if (selection && selection.kind !== 'viewport') {
           setSelection(null)
           setAlsoPicked([])
+          setChainLocked(false)
         }
         else if (active) finishEditing()
         else {
           setSelection(null)
           setAlsoViewports([])
+          setChainLocked(false)
         }
       }
       if ((e.key === 'Delete' || e.key === 'Backspace') && selection && canEdit) {
@@ -1072,7 +1140,7 @@ export function DrawingCanvas({ target, model, sheetTitle, canEdit, blockedReaso
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [drag, setDrag, noteEdit, tool, setTool, selection, canEdit, send, active, finishEditing, items, editNote, draftInput, draft, selectedIds, selectedViewportIds, modelEdit, boundary, finishBoundary, cancelBoundary, plineSketch, finishPlineSketch, cancelPlineSketch, tracing, placing, modelView, startTagLike, blockedReason, toStored, annotatedView, model, toPaperPoint, target.kind, markupBrush])
+  }, [drag, setDrag, noteEdit, tool, setTool, selection, canEdit, send, active, finishEditing, items, editNote, draftInput, draft, selectedIds, selectedViewportIds, modelEdit, boundary, finishBoundary, cancelBoundary, plineSketch, finishPlineSketch, cancelPlineSketch, tracing, placing, modelView, startTagLike, blockedReason, toStored, annotatedView, model, toPaperPoint, target.kind, markupBrush, hoveredItemId, tabPreview, chainLocked, onCreateSimilar])
 
   /** Paper point under a pointer event on the overlay or anything in it. */
   const paperOf = (e: React.PointerEvent<SVGElement>): Vec2 | null => {
@@ -1844,10 +1912,17 @@ export function DrawingCanvas({ target, model, sheetTitle, canEdit, blockedReaso
     onToolsAvailable?.(tools.map((t) => t.tool))
   }, [tools, onToolsAvailable])
 
-  /** Press on a placed item with Select: pick it (or keep the multi-pick it is in) and hold the pointer, ready to drag. */
+  /** Press on a placed item with Select: commit a Tab-highlighted chain or preserve a chain selection instead of collapsing back to one segment. */
   const pressItem = (e: React.PointerEvent<SVGElement>, itemId: string) => {
-    const inPick = selectedIds.length > 1 && selectedIds.includes(itemId)
-    if (!inPick) {
+    const resolved = resolveDraftItemClick({ itemId, selectedIds, chainLocked, tabPreview })
+    if (resolved.committedPreview) {
+      setTabPreview(null)
+      setSelection({ kind: 'item', id: resolved.ids[0]! })
+      setAlsoPicked(resolved.ids.slice(1))
+      setChainLocked(true)
+    } else if (!resolved.chainLocked && resolved.ids.length === 1) {
+      setTabPreview(null)
+      setChainLocked(false)
       setAlsoPicked([])
       setSelection({ kind: 'item', id: itemId })
     }
@@ -1856,7 +1931,7 @@ export function DrawingCanvas({ target, model, sheetTitle, canEdit, blockedReaso
       e.stopPropagation()
       return
     }
-    startDrag(e, { kind: 'items-move', ids: inPick ? selectedIds : [itemId], from: at, to: at, started: false, collapseTo: inPick ? itemId : null })
+    startDrag(e, { kind: 'items-move', ids: resolved.ids, from: at, to: at, started: false, collapseTo: resolved.collapseTo })
   }
 
   const grabNote = (item: DrawingItem, edge: NoteEdge, e: React.PointerEvent<SVGRectElement>) => {
@@ -2549,6 +2624,7 @@ export function DrawingCanvas({ target, model, sheetTitle, canEdit, blockedReaso
                   const box = item.dim || item.tag ? annotationBox(model, annotatedView, item, toPaperPoint) : detailBox(item, toPaperPoint)
                   if (!box) return null
                   const selected = selectedIds.includes(item.id)
+                  const preHighlighted = Boolean(tabPreview?.ids.includes(item.id)) && !selected
                   const isMoving = Boolean(moveDelta && movingIds.has(item.id))
                   const liveTagLines = isMoving && item.tag ? (tagLines(model, item.tag) ?? []) : null
                   const zoomScale = 1 / Math.max(zoom, 0.35)
@@ -2598,16 +2674,16 @@ export function DrawingCanvas({ target, model, sheetTitle, canEdit, blockedReaso
                             ))}
                           </g>
                         )}
-                        {selected && (
+                        {(selected || preHighlighted) && (
                           <rect
                             x={box.x - selPad}
                             y={box.y - selPad}
                             width={box.w + selPad * 2}
                             height={box.h + selPad * 2}
                             fill={PRIMARY}
-                            fillOpacity={0.05}
+                            fillOpacity={selected ? 0.05 : 0.08}
                             stroke={PRIMARY}
-                            strokeOpacity={0.85}
+                            strokeOpacity={selected ? 0.85 : 0.65}
                             strokeDasharray={selDash}
                             strokeWidth={selStroke}
                             pointerEvents="none"
@@ -2623,11 +2699,22 @@ export function DrawingCanvas({ target, model, sheetTitle, canEdit, blockedReaso
                           className={tool === 'select' && !draftInput.active ? 'cursor-pointer' : 'pointer-events-none'}
                           data-testid={`drawn-${item.shape}`}
                           data-selected={selected || undefined}
+                          data-tab-highlighted={preHighlighted || undefined}
+                          onPointerEnter={() => {
+                            if (tool === 'select' && !draftInput.active) {
+                              setHoveredItemId(item.id)
+                              if (tabPreview && !tabPreview.ids.includes(item.id)) setTabPreview(null)
+                            }
+                          }}
+                          onPointerLeave={() => {
+                            setHoveredItemId((cur) => (cur === item.id ? null : cur))
+                          }}
                           onPointerDown={(e) => {
                             if (tool !== 'select' || draftInput.active || e.button !== 0) return
                             if (e.shiftKey && selection?.kind === 'item') {
                               e.stopPropagation()
                               // Shift+click adds to (or takes from) the pick for modify operations.
+                              setChainLocked(false)
                               if (item.id !== selection.id) setAlsoPicked((cur) => (cur.includes(item.id) ? cur.filter((id) => id !== item.id) : [...cur, item.id]))
                               return
                             }

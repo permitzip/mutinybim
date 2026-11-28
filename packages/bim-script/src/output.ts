@@ -49,9 +49,50 @@ export const MAX_SCRIPT_REPORT_BYTES = 16 * 1024;
 /** At most this many rendered images requested per run. */
 export const MAX_SCRIPT_RENDERS = 6;
 
+/** Low-token notice of an active decision, local rule, or review record impacted by a script's edits. Never includes `privateNote`. */
+export interface ScriptDecisionImpact {
+  readonly id: string;
+  readonly kind: "determination" | "rule" | "requirement_state";
+  readonly subjectId: string;
+  readonly key: string;
+  readonly title: string;
+  readonly status: string;
+  readonly publicNote?: string;
+  /** True when the script explicitly superseded this determination in the same run. */
+  readonly superseded: boolean;
+  /** The new determination id when superseded in the same run. */
+  readonly supersededBy?: string;
+}
+
+/** Low-token staleness alert for a drafting/detail view linked to modified or deleted model elements/systems. */
+export interface ScriptDetailImpact {
+  readonly viewId: string;
+  readonly viewName: string;
+  readonly matchedElementIds: readonly string[];
+  readonly matchedSystemIds: readonly string[];
+  readonly deletedElementIds: readonly string[];
+  readonly notice: string;
+}
+
 export type ScriptOutput =
-  | { readonly kind: "edits"; readonly label: string; readonly steps: number; readonly batches: readonly EditBatch[]; readonly report?: readonly ScriptReport[]; readonly renders?: readonly ScriptRenderRequest[] }
-  | { readonly kind: "part_types"; readonly types: readonly { readonly typeId: string; readonly definition: PartTypeDefinition }[]; readonly report?: readonly ScriptReport[]; readonly renders?: readonly ScriptRenderRequest[] };
+  | {
+      readonly kind: "edits";
+      readonly label: string;
+      readonly steps: number;
+      readonly batches: readonly EditBatch[];
+      readonly report?: readonly ScriptReport[];
+      readonly renders?: readonly ScriptRenderRequest[];
+      readonly decisionImpacts?: readonly ScriptDecisionImpact[];
+      readonly detailImpacts?: readonly ScriptDetailImpact[];
+      readonly publicNote?: string;
+    }
+  | {
+      readonly kind: "part_types";
+      readonly types: readonly { readonly typeId: string; readonly definition: PartTypeDefinition }[];
+      readonly report?: readonly ScriptReport[];
+      readonly renders?: readonly ScriptRenderRequest[];
+      readonly publicNote?: string;
+    };
 
 const reportSchema = z.array(z.object({ label: z.string().min(1).max(120), value: z.unknown() })).max(MAX_SCRIPT_REPORTS).optional();
 const ptSchema = z.object({ x: z.number().finite(), y: z.number().finite() }).strict();
@@ -71,6 +112,35 @@ const renderRequestSchema = z
   .strict();
 const rendersSchema = z.array(renderRequestSchema).max(MAX_SCRIPT_RENDERS).optional();
 
+const decisionImpactSchema = z
+  .object({
+    id: z.string().min(1).max(200),
+    kind: z.enum(["determination", "rule", "requirement_state"]),
+    subjectId: z.string().min(1).max(200),
+    key: z.string().min(1).max(200),
+    title: z.string().min(1).max(160),
+    status: z.string().min(1).max(80),
+    publicNote: z.string().min(1).max(1000).optional(),
+    superseded: z.boolean(),
+    supersededBy: z.string().min(1).max(200).optional(),
+  })
+  .strict();
+
+const detailImpactSchema = z
+  .object({
+    viewId: z.string().min(1).max(200),
+    viewName: z.string().min(1).max(200),
+    matchedElementIds: z.array(z.string().min(1).max(200)).max(500),
+    matchedSystemIds: z.array(z.string().min(1).max(200)).max(200),
+    deletedElementIds: z.array(z.string().min(1).max(200)).max(500),
+    notice: z.string().min(1).max(400),
+  })
+  .strict();
+
+const decisionImpactsSchema = z.array(decisionImpactSchema).max(200).optional();
+const detailImpactsSchema = z.array(detailImpactSchema).max(200).optional();
+const publicNoteSchema = z.string().trim().min(1).max(1000).optional();
+
 /** The envelope as JSON (what a runner returns); batches and definitions are re-parsed by `parseScriptOutput`. */
 export const scriptOutputSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -80,12 +150,16 @@ export const scriptOutputSchema = z.discriminatedUnion("kind", [
     batches: z.array(z.object({ type: z.literal("batch_edits"), label: z.string().trim().min(1).max(160), commands: z.array(z.record(z.string(), z.unknown())).min(1).max(MAX_EDIT_BATCH_STEPS) })).max(200),
     report: reportSchema,
     renders: rendersSchema,
+    decisionImpacts: decisionImpactsSchema,
+    detailImpacts: detailImpactsSchema,
+    publicNote: publicNoteSchema,
   }),
   z.object({
     kind: z.literal("part_types"),
     types: z.array(z.object({ typeId: z.string().min(1).max(200), definition: z.unknown() })).min(1).max(200),
     report: reportSchema,
     renders: rendersSchema,
+    publicNote: publicNoteSchema,
   }),
 ]);
 
@@ -131,6 +205,7 @@ export function parseScriptOutput(raw: unknown): ScriptOutput {
   const out = env.data;
   const report = out.report ? { report: checkedReport(out.report) } : {};
   const renders = out.renders && out.renders.length > 0 ? { renders: out.renders } : {};
+  const publicNote = out.publicNote ? { publicNote: out.publicNote } : {};
   if (out.kind === "part_types") {
     return {
       kind: "part_types",
@@ -141,8 +216,11 @@ export function parseScriptOutput(raw: unknown): ScriptOutput {
       }),
       ...report,
       ...renders,
+      ...publicNote,
     };
   }
+  const decisionImpacts = out.decisionImpacts && out.decisionImpacts.length > 0 ? { decisionImpacts: out.decisionImpacts } : {};
+  const detailImpacts = out.detailImpacts && out.detailImpacts.length > 0 ? { detailImpacts: out.detailImpacts } : {};
   let steps = 0;
   const batches = out.batches.map((b, bi): EditBatch => {
     b.commands.forEach((step, si) => {
@@ -156,7 +234,7 @@ export function parseScriptOutput(raw: unknown): ScriptOutput {
     return { type: "batch_edits", label: b.label, commands: parsed.data.commands };
   });
   if (steps !== out.steps) throw new ScriptOutputError(`The output says ${out.steps} steps but its batches hold ${steps}.`);
-  return { kind: "edits", label: out.label, steps, batches, ...report, ...renders };
+  return { kind: "edits", label: out.label, steps, batches, ...report, ...renders, ...decisionImpacts, ...detailImpacts, ...publicNote };
 }
 
 /** A runner's reports, held to the same size the kit keeps them to. */

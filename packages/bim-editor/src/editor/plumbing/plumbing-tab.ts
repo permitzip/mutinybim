@@ -1,4 +1,4 @@
-import { ArrowDownToLine, ArrowUpFromLine, Check, ChartSpline, CircleDot, CirclePlus, Droplet, Droplets, Flame, Gauge, Layers, Library, Link2, ListTree, MapPin, Network, PackagePlus, Palette, Route, Square, Wand2 } from 'lucide-react'
+import { ArrowDownToLine, ArrowUpFromLine, Check, ChartSpline, CircleDot, CirclePlus, Droplet, Droplets, Flame, Gauge, Layers, Library, Link2, ListTree, MapPin, Network, PackagePlus, Palette, RefreshCw, Route, Square, Wand2, Wind } from 'lucide-react'
 import { type PipeSizingMode } from '@permitzip/bim-kernel'
 import { BUILDING_TYPE_LABEL, CLEANOUT_PROPOSAL_WORDS, DEMAND_CURVE_LABEL, FIXTURE_CONNECT_TARGETS, FIXTURE_CONNECT_WORDS, type FixtureConnectTarget, OUTFALL_CONNECTION_WORDS, PLUMBING_DEMAND_CURVES, type PlumbingBuildingType, type PlumbingDemandCurve } from '@permitzip/bim-pack-plumbing'
 import { tradeTab } from '../ribbon/trade-tab'
@@ -48,9 +48,18 @@ export interface PlumbingRibbon {
   readonly connectFixtures?: Readonly<Record<FixtureConnectTarget, PlumbingAction>>
 }
 
-const CONNECT_ICON: Readonly<Record<FixtureConnectTarget, RibbonCommand['icon']>> = { drain: ArrowDownToLine, vent: ArrowUpFromLine, cold_water: Droplet, hot_water: Flame }
+const CONNECT_ICON: Readonly<Record<FixtureConnectTarget, RibbonCommand['icon']>> = {
+  drain: ArrowDownToLine,
+  vent: ArrowUpFromLine,
+  cold_water: Droplet,
+  hot_water: Flame,
+  dhwr: RefreshCw,
+  gas: Flame,
+  flue: ArrowUpFromLine,
+  combustion_air: Wind,
+}
 
-/** Connect: one command, its four targets underneath (the group keeps five commands at most). */
+/** Connect: one command, its targets underneath (the group keeps five commands at most). */
 function connectCommand(actions: Readonly<Record<FixtureConnectTarget, PlumbingAction>>): RibbonCommand {
   const W = FIXTURE_CONNECT_WORDS
   const open = FIXTURE_CONNECT_TARGETS.some((t) => actions[t].blocked === null)
@@ -61,7 +70,7 @@ function connectCommand(actions: Readonly<Record<FixtureConnectTarget, PlumbingA
     description: W.description,
     keywords: [...W.keywords],
     disabledReason: open ? null : (actions.drain.blocked ?? W.selectFirst),
-    children: FIXTURE_CONNECT_TARGETS.map((t) => cmd(`connect-${t.replace('_', '-')}`, W.target[t].label, CONNECT_ICON[t], W.target[t].description, actions[t], [...W.keywords, W.target[t].label.toLowerCase()])),
+    children: FIXTURE_CONNECT_TARGETS.map((t) => cmd(`connect-${t.replace(/_/g, '-')}`, W.target[t].label, CONNECT_ICON[t], W.target[t].description, actions[t], [...W.keywords, W.target[t].label.toLowerCase()])),
     testId: 'ribbon-plumbing-connect-fixtures',
   }
 }

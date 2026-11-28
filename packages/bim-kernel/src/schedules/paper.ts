@@ -10,7 +10,12 @@ import type { CellValue, ColumnValues, RowGroup, RowSet, RowSetColumn } from "./
 import { drawFormTable, formTable, type FormTable } from "./forms/layout";
 import { builtinFormTemplate, formScheduleRow } from "./forms/evaluate";
 import type { FormScheduleDefinition } from "./forms/types";
-import { drawScheduleTable, layoutScheduleTable, type EvaluatedSchedule, type ScheduleRowStyle, type ScheduleTable } from "./schedule";
+import { drawScheduleTable, layoutScheduleTable, type DocumentUrlResolver, type EvaluatedSchedule, type ScheduleRowStyle, type ScheduleTable } from "./schedule";
+
+export interface SchedulePaperOptions {
+  /** Host-neutral resolver for logical cut-sheet / document refs carried in schedule cells. */
+  readonly resolveDocumentUrl?: DocumentUrlResolver;
+}
 
 /**
  * v2 schedules on paper (SCHEDULES-PLAN §5a, §5b). A list prints the engine's
@@ -48,6 +53,8 @@ interface PaperColumn {
   readonly heading: string;
   /** The definition column it prints (absent: one of an expand column's nested columns, sized by its text). */
   readonly columnId?: string;
+  /** Field/parameter path (e.g. `"vendor.cut_sheet"`), else column id, for cut-sheet link detection. */
+  readonly columnKey?: string;
   readonly widthMm?: number;
   readonly hideWhenEmpty: boolean;
   /** The text of this column on an element row. */
@@ -93,7 +100,8 @@ function paperColumns(rows: RowSet, def: ScheduleDefinitionV2, profile: DisplayP
   const out: PaperColumn[] = [];
   for (const column of rows.columns) {
     const d = def.columns.find((c) => c.id === column.id);
-    const base = { columnId: column.id, hideWhenEmpty: d?.hideWhenEmpty === true, ...(d?.widthMm === undefined ? {} : { widthMm: d.widthMm }) };
+    const columnKey = d && "path" in d && d.path ? d.path : column.id;
+    const base = { columnId: column.id, columnKey, hideWhenEmpty: d?.hideWhenEmpty === true, ...(d?.widthMm === undefined ? {} : { widthMm: d.widthMm }) };
     if (column.kind === "expand") {
       const paper = d?.kind === "expand" ? d.paper : "nested";
       if (paper === "hidden") continue;
@@ -203,7 +211,16 @@ export function evaluateScheduleV2(rows: RowSet, def: ScheduleDefinitionV2): Eva
   }
   if (rows.totals && rows.rowCount > 0) totalRow("GRAND TOTAL", rows.totals, "total");
 
-  return { title: def.name.toUpperCase(), headings: columns.map((c) => c.heading.trim()), rows: printed, elementIds: ids, rowStyles: styles, widthsMm: columns.map((c) => c.widthMm), columnIds: columns.map((c) => (c.child ? null : (c.columnId ?? null))) };
+  return {
+    title: def.name.toUpperCase(),
+    headings: columns.map((c) => c.heading.trim()),
+    rows: printed,
+    elementIds: ids,
+    rowStyles: styles,
+    widthsMm: columns.map((c) => c.widthMm),
+    columnIds: columns.map((c) => (c.child ? null : (c.columnId ?? null))),
+    columnKeys: columns.map((c) => (c.child ? null : (c.columnKey ?? c.columnId ?? null))),
+  };
 }
 
 function rowsHaveChildren(rows: RowSet, expandId: string): boolean {
@@ -237,11 +254,11 @@ function buildPaperRows(model: ScheduleModel, def: ScheduleDefinitionV2, ctx: Sc
 }
 
 /** The schedule as it prints, at this model state. */
-export function scheduleV2Paper(model: ScheduleModel, def: ScheduleDefinitionV2, ctx: ScheduleEngineContext = PAPER_CONTEXT): ScheduleV2Paper {
+export function scheduleV2Paper(model: ScheduleModel, def: ScheduleDefinitionV2, ctx: ScheduleEngineContext = PAPER_CONTEXT, opts?: SchedulePaperOptions): ScheduleV2Paper {
   if (def.presentation.kind === "form") {
     const form = scheduleV2Form(def);
     if (!form) return { kind: "list", table: problemTable(def, [`There is no form template called "${def.presentation.template}".`]) };
-    return { kind: "form", table: formTable(model, form) };
+    return { kind: "form", table: formTable(model, form, opts) };
   }
   let rows: RowSet;
   try {
@@ -254,7 +271,16 @@ export function scheduleV2Paper(model: ScheduleModel, def: ScheduleDefinitionV2,
     throw err;
   }
   const evaluated = evaluateScheduleV2(rows, def);
-  return { kind: "list", table: layoutScheduleTable(evaluated, { textSizeMm: def.display.textSizeMm, emptyText: def.display.emptyText, widthsMm: evaluated.widthsMm }), columnIds: evaluated.columnIds };
+  return {
+    kind: "list",
+    table: layoutScheduleTable(evaluated, {
+      textSizeMm: def.display.textSizeMm,
+      emptyText: def.display.emptyText,
+      widthsMm: evaluated.widthsMm,
+      ...(opts?.resolveDocumentUrl ? { resolveDocumentUrl: opts.resolveDocumentUrl } : {}),
+    }),
+    columnIds: evaluated.columnIds,
+  };
 }
 
 export function scheduleV2Size(paper: ScheduleV2Paper): Vec2 {

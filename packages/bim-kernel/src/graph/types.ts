@@ -118,9 +118,15 @@ export interface DeterminationBody {
   readonly key: string;
   readonly value: number | string | boolean;
   readonly unit?: string;
+  /** Optional concise title shown in low-token impact notices (falls back to key/subject/value). */
+  readonly title?: string;
   readonly inputs: readonly InputRef[];
   /** In the author's words. Never code text. */
   readonly reasoning: string;
+  /** Optional anonymized rationale safe to share across teams and external exports/snapshots. */
+  readonly publicNote?: string;
+  /** Optional org/team-scoped context (correspondence, internal review) kept separate from public exports/snapshots. */
+  readonly privateNote?: string;
   /** Who decided, as a person names themselves ("K. Example"). */
   readonly decidedBy: string;
   /** ISO 8601. */
@@ -314,6 +320,10 @@ export interface RuleRecord {
   readonly carriedForward?: readonly CarriedForward[];
   /** Tied to stages or anchors (round 11, D3). Absent: every stage, every anchor its templates name. */
   readonly appliesAt?: AppliesAt;
+  /** Optional anonymized rationale safe to share across teams and external exports/snapshots. */
+  readonly publicNote?: string;
+  /** Optional org/team-scoped context kept separate from public exports/snapshots. */
+  readonly privateNote?: string;
 }
 
 /** One accepted value from a source (contract 1.4.0, optional). */
@@ -358,6 +368,10 @@ export interface RequirementStateBody {
   readonly unit?: string;
   /** Required for `overridden` and `withdrawn`. */
   readonly reason: string;
+  /** Optional anonymized rationale safe to share across teams and external exports/snapshots. */
+  readonly publicNote?: string;
+  /** Optional org/team-scoped context kept separate from public exports/snapshots. */
+  readonly privateNote?: string;
   readonly by: string;
   readonly at?: string;
   /** For write-back: the source's verdict on the offer, set by the host ("PermitZIP code study didn't accept it: …"). */
@@ -506,3 +520,30 @@ export interface GraphQueryOptions {
 export const WHY_EMPTY = "Nothing in the code studies on this model points here";
 /** The empty "what re-opens" answer. */
 export const DEPENDS_ON_EMPTY = "Nothing in the code studies on this model re-opens";
+
+// ── Low-token decision impact notices ──────────────────────────────────────
+
+export type DecisionImpactKind = "determination" | "rule" | "requirement_state";
+
+/**
+ * Low-token title-only summary of an active decision, local rule, or review
+ * record impacted by touching/deleting model elements. Never carries `privateNote`.
+ */
+export interface DecisionImpactSummary {
+  readonly id: ElementId;
+  readonly kind: DecisionImpactKind;
+  /** Anchored element/space/zone id, or `"model"` for model-wide records. */
+  readonly subjectId: string;
+  readonly key: string;
+  readonly title: string;
+  readonly status: string;
+  /** Included when present; org-scoped `privateNote` is never exposed here. */
+  readonly publicNote?: string;
+}
+
+export interface DecisionImpactOptions {
+  /** Also include active model-wide determinations (default false). */
+  readonly includeModelWide?: boolean;
+  /** Maximum number of summaries returned (default 50). */
+  readonly limit?: number;
+}

@@ -1,11 +1,12 @@
 import fontkit from "@pdf-lib/fontkit";
 import { LineCapStyle, PDFArray, PDFDocument, PDFName, PDFString, StandardFonts, degrees, rgb, type PDFFont, type RGB } from "pdf-lib";
-import { TONE_GREY, fillGrey, lineWidthMm, organizationOf, smoothStrokeSvgPath, type ModelState, type SheetScene, type Tone } from "@permitzip/bim-kernel";
+import { TONE_GREY, fillGrey, lineWidthMm, organizationOf, resolveScheduleHref, smoothStrokeSvgPath, type DocumentUrlResolver, type ModelState, type SheetScene, type Tone } from "@permitzip/bim-kernel";
 import { drawTextBlocks } from "./text/pdf-text";
 import { WinAnsiWriter } from "./text/win-ansi";
 import type { NoteFontSource } from "./text/fonts";
 
 export { NOTE_FONT_URL_BASE, NoteFontMismatchError, fetchNoteFonts, type NoteFontSource } from "./text/fonts";
+export type { DocumentUrlResolver };
 
 /**
  * The vector PDF writer with no Node dependencies, so the browser can print a
@@ -74,6 +75,14 @@ export interface PdfPrintOptions {
   readonly sceneFonts?: SceneFontSource;
   /** Every colour printed black, as a black-only plotter prints it. */
   readonly monochrome?: boolean;
+  /**
+   * Host-neutral resolver mapping logical document references carried on text
+   * primitives (e.g. `doc:<id>` or relative cut-sheet slugs from schedule
+   * cells) to public `http://` or `https://` download URLs at print time.
+   * Unsafe schemes (`javascript:`, `data:`, `file:`, etc.) are strictly
+   * rejected and never passed to the resolver.
+   */
+  readonly resolveDocumentUrl?: DocumentUrlResolver;
 }
 
 /** Keyword that carries a library title block's Verify-code slot (paper mm) to the issue step's stamp. */
@@ -262,7 +271,7 @@ export async function renderSheetPdfWith(scene: SheetScene, meta: PdfMetadata, d
       const text = face ? p.text : winAnsi.text(font, p.text);
       const textWidth = font.widthOfTextAtSize(text, size);
       const dx = p.anchor === "middle" ? -textWidth / 2 : p.anchor === "end" ? -textWidth : 0;
-      const safeHref = p.href && /^https?:\/\//i.test(p.href.trim()) ? p.href.trim() : null;
+      const safeHref = p.href ? resolveScheduleHref(p.href, print.resolveDocumentUrl) : null;
       const capPt = p.size * MM_TO_PT;
       const descPt = capPt * 0.24;
       // Match SVG vAlign="middle": shift baseline down by 0.35 * cap height so centered inline codes align identically in PDF and SVG.

@@ -41,8 +41,8 @@ export interface ModelEditBridge {
   hint(text: string | null): void
   /** Esc with nothing left to back out of: leave the model tool for Select, as the "Esc to stop" hint says. */
   stopTool?(): void
-  /** The selected piece's "+" picked on the drawing: route on from that open end, or make the elbow a tee, as in the 3D view. */
-  plus?(spot: { readonly kind: 'continue' | 'tee'; readonly elementId: string; readonly port: string; readonly face?: 'top' | 'bottom' }): void
+  /** The selected piece's "+" picked on the drawing: route on from that open end, make the elbow a tee, or start from a part's connector, as in the 3D view. */
+  plus?(spot: { readonly kind: 'continue' | 'tee' | 'connector'; readonly elementId: string; readonly port: string; readonly face?: 'top' | 'bottom' }): void
   /** What the model server takes, so a "+" it would refuse isn't drawn. */
   readonly serverFeatures?: readonly string[]
 }

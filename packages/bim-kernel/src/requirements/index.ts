@@ -10,3 +10,4 @@ export * from "./facets";
 export * from "./model-engine";
 export * from "./run-end-candidates";
 export * from "./scenario";
+export * from "./equipment-audit";

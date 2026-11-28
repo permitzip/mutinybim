@@ -4,7 +4,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useSta
 import { clientOnly as dynamic } from '@permitzip/bim-editor/client-only'
 import { useEditorNavigation } from '@permitzip/bim-editor/host'
 import { toast } from 'sonner'
-import { RefreshCw, Wind, X, ArrowLeft } from 'lucide-react'
+import { RefreshCw, TableProperties, Wind, X, ArrowLeft } from 'lucide-react'
 import { AUTO_TAG_CATEGORIES, ORGANIZATION_ZONE, elementsOfKind, lockOf, planAutoTags, runLabel, type RunFitting, type RunSegment, SYSTEM_KINDS, displayContextOf, documentIndex, viewCamera3d, type Aabb3, normalizeLevelName, organizationOf, sheetDependsOn, sheetViewports, type Actor, type DisplayContext, type GroupVisibility, type ModelState, type PartInstance, type PartTypeDefinition, type SectionCut, type Sheet, type Vec2, type ViewElement, originPointPosition, viewFloorMm, viewModelLevel, canonicalViewLevel, modelLevels, viewRotationDeg, type OriginPoint, diagramKindLabel, type StoredDiagramKind, type ScheduleCategory, type ElementId, type WorkFrame, asElementId, type AuthorRef, type BranchRef, parseBranchModelId, type SubmittalCommand, matchingPlanCrop, projectParametersOf } from '@permitzip/bim-kernel'
 import type { ConnectionStatus, Presence, SaveState } from '@permitzip/bim-sync'
 import { AWAITING_WRITE_ACCESS, type ConnectionProblem } from './operator-messages'
@@ -79,7 +79,6 @@ const TrackpadHint = dynamic(() => import('./input/TrackpadHint').then((m) => m.
 const PhaseFiltersDialog = dynamic(() => import('./organization/PhaseFiltersDialog').then((m) => m.PhaseFiltersDialog), { ssr: false })
 const ManagePhasesDialog = dynamic(() => import('./organization/ManagePhasesDialog').then((m) => m.ManagePhasesDialog), { ssr: false })
 const CoordinatesDialog = dynamic(() => import('./orientation/CoordinatesDialog').then((m) => m.CoordinatesDialog), { ssr: false })
-const CameraTools = dynamic(() => import('./orientation/CameraTools'), { ssr: false })
 const NewViewDialog = dynamic(() => import('./views-sheets/ViewsSheetsDialogs').then((m) => m.NewViewDialog), { ssr: false })
 const SheetDialog = dynamic(() => import('./views-sheets/ViewsSheetsDialogs').then((m) => m.SheetDialog), { ssr: false })
 const ProjectInfoDialog = dynamic(() => import('./views-sheets/ProjectInfoDialog').then((m) => m.ProjectInfoDialog), { ssr: false })
@@ -130,7 +129,9 @@ import { useRouteDefaultsFrom } from './use-route-defaults'
 import { routeInsulationChoice } from './route-design'
 import { axisLockHint, type AxisLock } from './route-axis'
 import { MM_PER_FT, describeElement, feetInches, newElementId } from './placement'
-import { routeChoicesLike } from './route-like'
+import { routeChoicesForPartConnector, routeChoicesLike } from './route-like'
+import { useSnapGridMm } from './snap-grid'
+import { readLastOpenItem, writeLastOpenItem } from './views-sheets/last-open-view'
 import { routeSlope, slopeChoiceOf } from './route-slope'
 import type { ClickHandler, InheritPick } from './model-session'
 import type { DrawingTool } from './views-sheets/DrawingCanvas'
@@ -330,7 +331,6 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
   /** Print dialog: the saved revision and how many of your unsaved edits touch the sheet, taken when it opened. */
   const [printing, setPrinting] = useState<{ savedRevision: number; pendingOnSheet: number } | null>(null)
   const [viewer, setViewer] = useState<ModelViewer3D | null>(null)
-  const [cameraToolsView, setCameraToolsView] = useState<string | null>(null)
   const [lightingPreset, setLightingPresetState] = useState<SceneLightingPreset>('noon')
   const applyLightingPreset = useCallback((next: SceneLightingPreset) => {
     setLightingPresetState(next)
@@ -513,6 +513,8 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
   const [plusHandles, setPlusHandles] = useState<readonly PlusHandle[]>([])
   /** A "+" was picked: once the Route tool is armed with the piece's choices, start on this open end. */
   const pendingRouteStart = useRef<{ readonly elementId: string; readonly port: string } | null>(null)
+  /** A part connector "+" was picked (including vertical ports like bottom-port expansion tanks). */
+  const pendingConnectorStart = useRef<{ readonly partId: string; readonly connectorId: string } | null>(null)
   const [faceHandles, setFaceHandles] = useState<readonly FaceHandle[]>([])
   /** A top / bottom "+" was picked: once the Route tool is armed with the run's choices, start off that face. */
   const pendingFaceStart = useRef<FaceHandle | null>(null)
@@ -671,9 +673,8 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
   const [figureDialog, setFigureDialog] = useState<'chart' | 'picture' | null>(null)
   const [calcDialog, setCalcDialog] = useState(false)
   const [placedFigure, setPlacedFigure] = useState<{ readonly id: string } | null>(null)
-  // Detail views are only a drawing; form schedules (fixed-layout schedules without a v2 grid) render directly as live drawings so they never hit a dead-end placeholder; plans, sections and 3D views show the live model or their drawing.
-  const isFormOnlySchedule = openView !== null && openView.viewType === 'schedule' && Boolean(openView.props?.formSchedule) && !openView.props?.scheduleV2
-  const showDrawing = open.kind === 'sheet' || (openView !== null && (openView.viewType === 'detail' || isFormOnlySchedule || viewDisplay === 'drawing'))
+  // Detail views are only a drawing; ALL schedule views (scheduleV2, legacy list schedules, and form schedules such as panel / gas / lighting controls) open directly in the unified interactive schedule viewer unless the user switches to Print Preview (`viewDisplay === 'drawing'`).
+  const showDrawing = open.kind === 'sheet' || (openView !== null && (openView.viewType === 'detail' || viewDisplay === 'drawing'))
   const propertiesOpen = selection !== null || (!showDrawing && openView !== null)
   /** A schedule view on its live side opens as the editable grid. */
   const scheduleGridOpen = openView !== null && openView.viewType === 'schedule' && !showDrawing
@@ -749,7 +750,6 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
   const openKey = open.kind === 'model' ? `model:${open.mode}` : `${open.kind}:${open.id}:${openView?.version ?? 0}`
   // Switching projection keeps the picture, so saving it on the view must not re-frame the camera to the crop box.
   const cameraKey = open.kind === 'model' || !openView ? openKey : `${open.kind}:${open.id}:${framingSignature(openView)}`
-  const cameraToolsKey = `${model?.modelId}:${cameraKey}`
 
   // Before the camera effect, so a saved orthographic view opens orthographic.
   useEffect(() => {
@@ -985,6 +985,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
     (item: OpenItem, display?: ViewDisplay) => {
       const from = requested.kind === 'view' ? index?.views.find((v) => v.id === requested.id) : undefined
       setOpen(item)
+      writeLastOpenItem({ projectId, modelId: authorityModelId, userId }, item)
       const view = item.kind === 'view' ? index?.views.find((v) => v.id === item.id) : undefined
       displayChosenRef.current = display !== undefined
       setViewDisplay(display ?? (view ? viewDisplayPrefs.displayFor(view) : 'model'))
@@ -994,12 +995,34 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
       setPlaceLevel(null)
       setReturnSheet(null)
     },
-    [index, viewDisplayPrefs, requested],
+    [index, viewDisplayPrefs, requested, projectId, authorityModelId, userId],
   )
 
-  // The project tree's Building model › Schedules follows the model's list schedules live.
+  // Restore the user's last-open view or sheet for this model once the document index arrives (unless an explicit target was passed in props).
+  const restoredOpenScopeRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!index || openViewId || initialView === 'plan') return
+    const scopeKey = `${projectId}:${authorityModelId ?? 'default'}`
+    if (restoredOpenScopeRef.current === scopeKey) return
+    restoredOpenScopeRef.current = scopeKey
+    const saved = readLastOpenItem({ projectId, modelId: authorityModelId, userId })
+    if (!saved) return
+    const exists =
+      saved.kind === 'model' ||
+      (saved.kind === 'view' && index.views.some((v) => v.id === saved.id)) ||
+      (saved.kind === 'sheet' && index.sheets.some((s) => s.id === saved.id))
+    if (exists) openItem(saved)
+  }, [index, openViewId, initialView, projectId, authorityModelId, userId, openItem])
+
+  // Sync the user's configurable snap grid increment to the live ModelSession.
+  const snapGridMm = useSnapGridMm(userId)
+  useEffect(() => {
+    sessionRef.current?.setSnapGridMm(snapGridMm)
+  }, [snapGridMm, live])
+
+  // The project tree's Building model › Schedules follows every schedule view (v2, legacy, and form schedules) live.
   const scheduleListKey = useMemo(
-    () => JSON.stringify((index?.views ?? []).filter((v) => v.viewType === 'schedule' && (v.props?.schedule || v.props?.scheduleV2)).map((v) => [v.id, v.name])),
+    () => JSON.stringify((index?.views ?? []).filter((v) => v.viewType === 'schedule' && (v.props?.schedule || v.props?.scheduleV2 || v.props?.formSchedule)).map((v) => [v.id, v.name])),
     [index],
   )
   useEffect(() => {
@@ -1940,6 +1963,13 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
       setRoutePoints(session.routePointCount())
       return
     }
+    const pendingConn = pendingConnectorStart.current
+    if (pendingConn) {
+      pendingConnectorStart.current = null
+      setToolHint(session.startRouteOnConnector(pendingConn.partId, pendingConn.connectorId))
+      setRoutePoints(session.routePointCount())
+      return
+    }
     const face = pendingFaceStart.current
     if (face) {
       pendingFaceStart.current = null
@@ -2001,6 +2031,21 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
     (h: Pick<PlusHandle, 'kind' | 'elementId' | 'port' | 'face' | 's'>) => {
       const session = sessionRef.current
       if (!session) return
+      if (h.kind === 'connector') {
+        const view = session.currentView()
+        const el = session.element(h.elementId)
+        if (!view || el?.kind !== 'part') return
+        const next = routeChoicesForPartConnector(view.elements, el, h.port, routeChoices)
+        if (typeof next === 'string') {
+          setToolHint(next)
+          return
+        }
+        pendingConnectorStart.current = { partId: h.elementId, connectorId: h.port }
+        chooseTool('route')
+        chooseRoute(next.choices)
+        setPlaceLevel(el.levelId)
+        return
+      }
       if (h.kind === 'side') {
         const el = session.element(h.elementId)
         if (el?.kind !== 'run_segment' || h.s === undefined) return
@@ -2027,7 +2072,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
       pendingRouteStart.current = open
       routeLike(el)
     },
-    [routeLike],
+    [routeLike, routeChoices, chooseTool, chooseRoute],
   )
 
   const pickFace = useCallback(
@@ -2140,14 +2185,17 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
         setToolHint(session.tabCycle(e.shiftKey ? -1 : 1))
         return
       }
-      // Holding Alt (Option) draws the next leg at any angle; letting go snaps again.
-      if (tool === 'route' && e.key === 'Alt' && session && session.axisLockState() !== 'free') {
-        e.preventDefault()
-        altLockRef.current = session.axisLockState()
-        session.setAxisLock('free')
-        setAxisLockState('free')
-        setToolHint(axisLockHint('free'))
-        return
+      // Holding Alt (Option) temporarily overrides snap increment to Free (1 mm) while dragging, placing, moving, or routing.
+      if (e.key === 'Alt') {
+        session?.setAltHeld(true)
+        if (tool === 'route' && session && session.axisLockState() !== 'free') {
+          e.preventDefault()
+          altLockRef.current = session.axisLockState()
+          session.setAxisLock('free')
+          setAxisLockState('free')
+          setToolHint(axisLockHint('free'))
+          return
+        }
       }
       if (tool === 'route' && !e.metaKey && !e.ctrlKey && !e.altKey) {
         const key = e.key.toLowerCase()
@@ -2257,26 +2305,35 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
       const walker = sessionRef.current?.viewer
       if (walker?.walking()) walker.walkKey(e.code, false)
       if (e.key === 'Shift') sessionRef.current?.setShiftHeld(false)
-      const before = altLockRef.current
-      if (e.key === 'Alt' && before !== null) {
-        altLockRef.current = null
-        const s = sessionRef.current
-        if (s && s.axisLockState() === 'free') {
-          s.setAxisLock(before === 'auto' ? 'free' : before)
-          setAxisLockState(s.axisLockState())
-          setToolHint(axisLockHint(s.axisLockState()))
+      if (e.key === 'Alt') {
+        sessionRef.current?.setAltHeld(false)
+        const before = altLockRef.current
+        if (before !== null) {
+          altLockRef.current = null
+          const s = sessionRef.current
+          if (s && s.axisLockState() === 'free') {
+            s.setAxisLock(before === 'auto' ? 'free' : before)
+            setAxisLockState(s.axisLockState())
+            setToolHint(axisLockHint(s.axisLockState()))
+          }
         }
       }
     }
+    const onBlur = () => {
+      sessionRef.current?.setShiftHeld(false)
+      sessionRef.current?.setAltHeld(false)
+    }
     window.addEventListener('keydown', onKey)
     window.addEventListener('keyup', onKeyUp)
+    window.addEventListener('blur', onBlur)
     return () => {
       window.removeEventListener('keydown', onKey)
       window.removeEventListener('keyup', onKeyUp)
+      window.removeEventListener('blur', onBlur)
     }
   }, [arbiter, finishDrag, tool, selection, chooseTool, requestDelete, requestGroupDelete, runUndo, showDrawing, scheduleGridOpen, live3dOpen, projection, drawingSection, canEdit, routeChoices, chooseRoute, offsetArmed, inheritArmed, routeLike, stopPlannedPlacing, finishRouteAfterClicks])
   const createView = useCallback(
-    async (viewType: Exclude<CreatableViewType, 'section'>, input: { name: string; level: string | null; scale: number }): Promise<string | null> => {
+    async (viewType: Exclude<CreatableViewType, 'section'>, input: { name: string; level: string | null; scale: number; discipline?: string | null }): Promise<string | null> => {
       const viewer = sessionRef.current?.viewer
       if (viewType === 'three_d') {
         // What you are looking at now: this camera and projection, and the crop box that is cropping it (else the whole model).
@@ -2284,10 +2341,17 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
         const extent = (await viewer?.sceneExtentMm()) ?? undefined
         const box = crop3dRef.current.active && crop3dRef.current.on ? crop3dRef.current.box : null
         const id = newId('view')
-        const refusal = submitWithUndo(
-          { type: 'create_3d_view', viewId: id, name: input.name, projection, ...(camera ? { camera } : {}), ...(box ? { cropBox: box } : extent ? { extent } : {}) },
-          `create ${input.name}`,
-        )
+        const createCmd = { type: 'create_3d_view' as const, viewId: id, name: input.name, projection, ...(camera ? { camera } : {}), ...(box ? { cropBox: box } : extent ? { extent } : {}) }
+        const refusal = input.discipline
+          ? submitWithUndo(
+              {
+                type: 'batch_documents',
+                label: `Create ${input.name}`,
+                commands: [createCmd, { type: 'set_view_properties', viewId: id, props: { discipline: input.discipline } }],
+              },
+              `create ${input.name}`,
+            )
+          : submitWithUndo(createCmd, `create ${input.name}`)
         if (!refusal) openItem({ kind: 'view', id })
         return refusal
       }
@@ -2308,6 +2372,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
             scale: input.scale,
             ...(input.level ? { level: input.level } : {}),
             ...(levelElevationMm !== undefined ? { levelElevationMm } : {}),
+            ...(input.discipline ? { discipline: input.discipline } : {}),
           },
         },
         `create ${input.name}`,
@@ -3291,6 +3356,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
     open,
     onOpen: openItem,
     onRequest: onPanelRequest,
+    onRenameView: (view, name) => submitWithUndo({ type: 'rename_view', viewId: view.id, name }, `rename to ${name}`),
     spaces: spacesOpen
       ? {
           levelId: spacesLevelId,
@@ -3478,7 +3544,6 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
         <div className="relative min-w-0 flex-1 bg-muted/40">
           <div
             ref={canvasRef}
-            tabIndex={-1}
             data-testid="building-model-canvas"
             data-camera={cameraStill ? 'still' : 'moving'}
             className={showDrawing ? 'hidden' : 'absolute inset-0 touch-none'}
@@ -3655,15 +3720,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
               onCreateElevation={(side) => void createElevation(side)}
               projection={projection}
               onProjectionChange={changeProjection}
-              cameraToolsOpen={cameraToolsView === cameraToolsKey}
-              onCameraTools={() => setCameraToolsView(cameraToolsView === cameraToolsKey ? null : cameraToolsKey)}
             />
-          )}
-          {viewer && live3dOpen && !scheduleGridOpen && !loadError && cameraToolsView === cameraToolsKey && (
-            <ModelFromStore store={modelStore}>{shown => shown && (
-              <CameraTools key={cameraToolsKey} viewer={viewer} model={shown} initialLevel={activeLevel} selectedId={selectedId}
-                rightInset={propertiesOpen ? propertiesWidth : 0} canvasRef={canvasRef} onClose={() => setCameraToolsView(null)} />
-            )}</ModelFromStore>
           )}
           {showDrawing && open.kind === 'sheet' && openSheet && (
             <ModelFromStore store={modelStore}>
@@ -3678,6 +3735,20 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
                 )
               }
             </ModelFromStore>
+          )}
+          {showDrawing && openView?.viewType === 'schedule' && (
+            <div className="pointer-events-none absolute top-3 right-3 z-20 flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="secondary"
+                className="pointer-events-auto shadow-sm"
+                onClick={() => chooseDisplay('model')}
+                data-testid="schedule-interactive-toggle"
+              >
+                <TableProperties data-icon="inline-start" />
+                Interactive schedule
+              </Button>
+            </div>
           )}
           {showDrawing && model && (open.kind === 'sheet' || openView) && (
             <ModelFromStore store={modelStore}>
@@ -3818,6 +3889,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
                 editBlocked={canEdit ? null : blockedReason}
                 onOpenSheet={(sheetId) => openItem({ kind: 'sheet', id: sheetId })}
                 onOpenFormEditor={sharedValue<(kind: string, elementId: string) => boolean>(workflows.shared, 'openFormView') ?? undefined}
+                onTogglePrintPreview={() => chooseDisplay('drawing')}
                 backSheet={backSheet ? { number: backSheet.number, onBack: () => openItem({ kind: 'sheet', id: backSheet.id }) } : null}
               />
                 )}
@@ -4129,6 +4201,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
             lightingPreset={lightingPreset}
             onLightingPresetChange={applyLightingPreset}
             is3d={!showDrawing && !planOpen}
+            userId={userId}
             hasSelection={selectedIds.length > 0}
             selectionLocked={selectedIds.length > 0 && selectedIds.every((id) => lockOf(model?.elements[id]) !== null)}
             canEdit={canEdit}

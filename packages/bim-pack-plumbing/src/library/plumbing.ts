@@ -1,5 +1,6 @@
 import { connectionTypeSchema, type ConnectionFieldValue, type ConnectionTypeEntry, type ConnectionTypeInput } from "@permitzip/bim-kernel";
 import type { Dim, ParamDef, PartCategory, PartConnector, PartTypeDefinition, SystemKind, LibraryEntry } from "@permitzip/bim-kernel";
+import { customPartProfile, defaultPlumbingMaterialId } from "./plumbing-parts-detail";
 type GeometryPrimitive = PartTypeDefinition["geometry"][number];
 
 /**
@@ -60,6 +61,18 @@ export const PLUMBING_STARTER_CONNECTION_TYPES: readonly ConnectionTypeEntry[] =
   ct({ designator: "G-RANGE", trade: "gas", description: "Gas range, 36 in.", quantities: { mbh: 220, min_inlet_pressure: 0.25, sizes: { g: '3/4"' } } }),
   ct({ designator: "G-FRYER", trade: "gas", description: "Gas fryer", quantities: { mbh: 120, min_inlet_pressure: 0.25, sizes: { g: '3/4"' } } }),
   ct({ designator: "G-GRILL", trade: "gas", description: "Gas flat top grill, 36 in.", quantities: { mbh: 90, min_inlet_pressure: 0.25, sizes: { g: '1/2"' } } }),
+  ct({ designator: "GM", trade: "gas", description: "Gas meter, commercial", quantities: { sizes: { g: '2"' } } }),
+  ct({ designator: "RD", trade: "plumbing", description: "Roof drain, primary", quantities: { sizes: { w: '4"' }, custom: [{ name: "Roof area", unit: "sqft", value: 2500 }] } }),
+  ct({ designator: "ORD", trade: "plumbing", description: "Roof drain, overflow", quantities: { sizes: { w: '4"' }, custom: [{ name: "Roof area", unit: "sqft", value: 2500 }] } }),
+  ct({ designator: "BP", trade: "plumbing", description: "Domestic water booster pump", poles: 3, quantities: { gpm_fixed: 60, sizes: { cw: '2"' } } }, { loadVa: 3_600, voltage: 208, loadClass: "motor" }),
+  ct({ designator: "BT", trade: "plumbing", description: "Domestic hot water buffer tank", quantities: { sizes: { cw: '2"', hw: '2"' } } }),
+  ct({ designator: "WS", trade: "plumbing", description: "Commercial water softener", poles: 1, quantities: { sizes: { cw: '1-1/2"', w: '1-1/2"' } } }, { loadVa: 180, voltage: 120, loadClass: "motor" }),
+  ct({ designator: "CN", trade: "plumbing", description: "Condensate neutralizer", quantities: { sizes: { w: '3/4"' } } }),
+  ct({ designator: "TMV", trade: "plumbing", description: "Master thermostatic mixing valve", quantities: { sizes: { cw: '1"', hw: '1"' } } }),
+  ct({ designator: "TP", trade: "plumbing", description: "Floor drain trap primer", quantities: { sizes: { cw: '1/2"' } } }),
+  ct({ designator: "SP", trade: "plumbing", description: "Storm / sump pump basin", poles: 1, quantities: { gpm_fixed: 40, sizes: { w: '2"', v: '2"' } } }, { loadVa: 1_200, voltage: 120, loadClass: "motor" }),
+  ct({ designator: "DCVA", trade: "plumbing", description: "Backflow preventer, double check valve assembly", quantities: { sizes: { cw: '2"' } } }),
+  ct({ designator: "PVB", trade: "plumbing", description: "Backflow preventer, pressure vacuum breaker", quantities: { sizes: { cw: '1"' } } }),
 ];
 
 
@@ -80,7 +93,7 @@ const PORTS: Readonly<Record<Port, { readonly label: string; readonly kind: Syst
 };
 
 function pipeEndTypeFor(kind: SystemKind): string {
-  return kind === "sanitary" || kind === "vent" ? "plumbing_gas.no_hub" : "plumbing_gas.threaded";
+  return kind === "sanitary" || kind === "vent" || kind === "storm" ? "plumbing_gas.no_hub" : "plumbing_gas.threaded";
 }
 
 const p = (name: string): Dim => ({ param: name });
@@ -155,92 +168,17 @@ function connector(port: Port, spec: FixtureSpec, sized: ReadonlySet<Port> = new
   };
 }
 
-function customPartGeometry(spec: FixtureSpec): { readonly geometry: readonly GeometryPrimitive[]; readonly materialId?: string; readonly extraParams?: readonly ParamDef[]; readonly extraValues?: Readonly<Record<string, number | string>>; readonly extraInstanceParams?: readonly ParamDef[]; readonly wasteAtRiserBottom?: boolean } | null {
-  switch (spec.slug) {
-    case "cleanout-floor":
-      return {
-        materialId: "architecture.bronze_fixture",
-        extraInstanceParams: [{ ...len("riser_height", "Riser neck depth"), default: 18 * IN }],
-        wasteAtRiserBottom: true,
-        geometry: [
-          // Flush circular brass floor cleanout deck plate at z = 0 (6" Ø × 3/8" thick)
-          { kind: "cylinder", center: [0, 0, -5], radius: 3 * IN, height: 10, axis: "z" },
-          // Countersunk brass access plug top ring
-          { kind: "cylinder", center: [0, 0, 2], radius: 2 * IN, height: 4, axis: "z" },
-          // Adjustable vertical 4" riser neck extending down from floor to pipe invert (-riser_height..0)
-          { kind: "cylinder", center: [0, 0, { param: "riser_height", scale: -0.5 }], radius: 2.25 * IN, height: { param: "riser_height" }, axis: "z" },
-          // Bottom hub collar where riser neck joins the cleanout wye/tee branch
-          { kind: "cylinder", center: [0, 0, { param: "riser_height", scale: -1 }], radius: 2.75 * IN, height: 60, axis: "z" },
-        ],
-      };
-    case "water-meter":
-      return {
-        materialId: "architecture.bronze_fixture",
-        geometry: [
-          // Main horizontal bronze meter barrel spanning inlet to outlet along X
-          { kind: "cylinder", center: [0, 0, 0], radius: 2.25 * IN, height: p("width"), axis: "x" },
-          // Flanged inlet & outlet pipe spuds (outer faces sit flush at ±width/2 laying length)
-          { kind: "cylinder", center: [{ param: "width", scale: -0.5, add: 11 }, 0, 0], radius: 3.0 * IN, height: 22, axis: "x" },
-          { kind: "cylinder", center: [{ param: "width", scale: 0.5, add: -11 }, 0, 0], radius: 3.0 * IN, height: 22, axis: "x" },
-          // Measuring chamber dome
-          { kind: "cylinder", center: [0, 0, 2.0 * IN], radius: 2.6 * IN, height: 3.0 * IN, axis: "z" },
-          // Raised circular bronze register dial bonnet + flip lid
-          { kind: "cylinder", center: [0, 0, 4.2 * IN], radius: 2.0 * IN, height: 1.6 * IN, axis: "z" },
-        ],
-      };
-    case "rpz":
-      return {
-        materialId: "architecture.bronze_fixture",
-        geometry: [
-          // Horizontal bronze main RPZ body
-          { kind: "cylinder", center: [0, 0, 0], radius: 1.75 * IN, height: p("width"), axis: "x" },
-          // Inlet & outlet isolation ball valve collars + lever handles
-          { kind: "cylinder", center: [-7.5 * IN, 0, 0], radius: 2.4 * IN, height: 2.0 * IN, axis: "x" },
-          { kind: "cylinder", center: [7.5 * IN, 0, 0], radius: 2.4 * IN, height: 2.0 * IN, axis: "x" },
-          { kind: "box", center: [-7.5 * IN, 0, 3.2 * IN], size: [4.5 * IN, 0.75 * IN, 0.75 * IN] },
-          { kind: "box", center: [7.5 * IN, 0, 3.2 * IN], size: [4.5 * IN, 0.75 * IN, 0.75 * IN] },
-          // Twin check-valve access bonnets on top
-          { kind: "cylinder", center: [-2.8 * IN, 0, 2.2 * IN], radius: 1.8 * IN, height: 2.5 * IN, axis: "z" },
-          { kind: "cylinder", center: [2.8 * IN, 0, 2.2 * IN], radius: 1.8 * IN, height: 2.5 * IN, axis: "z" },
-          // Bottom differential relief valve discharge port + air-gap funnel
-          { kind: "cylinder", center: [0, 0, -2.6 * IN], radius: 1.4 * IN, height: 3.2 * IN, axis: "z" },
-        ],
-      };
-    case "expansion-tank":
-      return {
-        materialId: "architecture.equipment_enamel",
-        geometry: [
-          // Vertical cylindrical thermal expansion tank shell
-          { kind: "cylinder", center: [0, 0, half("height")], radius: half("width"), height: p("height"), axis: "z" },
-          // Top threaded connection spud
-          { kind: "cylinder", center: [0, 0, { param: "height", add: 30 }], radius: 25, height: 60, axis: "z" },
-        ],
-      };
-    case "vtr":
-      return {
-        materialId: "architecture.charcoal_metal",
-        geometry: [
-          // Weatherproof roof flashing cone base
-          { kind: "cylinder", center: [0, 0, 40], radius: 5.5 * IN, height: 80, axis: "z" },
-          // 3" Vent stack extending above roof flashing
-          { kind: "cylinder", center: [0, 0, half("height")], radius: 1.75 * IN, height: p("height"), axis: "z" },
-        ],
-      };
-    default:
-      return null;
-  }
-}
-
 function fixture(spec: FixtureSpec, version: string): LibraryEntry {
   const [w, d, h] = spec.size;
-  const custom = customPartGeometry(spec);
+  const custom = customPartProfile(spec.slug);
+  const materialId = custom?.materialId ?? defaultPlumbingMaterialId(spec.slug);
   const typeParams: ParamDef[] = [
     len("width", "Width"),
     len("depth", "Depth"),
     len("height", "Height"),
     len("connection_size", "Connection size"),
     txt("default_connection_type", "Starter connection type"),
-    ...(custom?.materialId ? [txt("material_id", "Material")] : []),
+    txt("material_id", "Material"),
     ...(custom?.extraParams ?? []),
   ];
   if (spec.heaterKind) typeParams.push(txt("heater_kind", "Water heater kind"));
@@ -250,7 +188,7 @@ function fixture(spec: FixtureSpec, version: string): LibraryEntry {
     height: h * IN,
     connection_size: (spec.pipeIn ?? 0.5) * IN,
     default_connection_type: spec.starter,
-    ...(custom?.materialId ? { material_id: custom.materialId } : {}),
+    material_id: materialId,
     ...(custom?.extraValues ?? {}),
   };
   const sizes = PLUMBING_STARTER_CONNECTION_TYPES.find((t) => t.designator === spec.starter)?.quantities?.sizes ?? {};
@@ -265,19 +203,14 @@ function fixture(spec: FixtureSpec, version: string): LibraryEntry {
     typeValues[ps.param] = inches * IN;
   }
   if (spec.heaterKind) typeValues.heater_kind = spec.heaterKind;
-  const connectors = spec.ports.map((port) => {
-    const c = connector(port, spec, sized);
-    if (custom?.wasteAtRiserBottom && port === "w") {
-      return { ...c, position: [0, 0, { param: "riser_height", scale: -1, add: -30 }] as PartConnector["position"] };
-    }
-    if (spec.slug === "expansion-tank" && port === "cw") {
-      return { ...c, position: [0, 0, { param: "height", add: 60 }] as PartConnector["position"], direction: [0, 0, 1] as PartConnector["direction"] };
-    }
-    if (spec.slug === "vtr" && port === "v") {
-      return { ...c, position: [0, 0, 0] as PartConnector["position"], direction: [0, 0, -1] as PartConnector["direction"] };
-    }
-    return c;
-  });
+  const connectors: PartConnector[] = [
+    ...spec.ports.map((port): PartConnector => {
+      const base = connector(port, spec, sized);
+      const override = custom?.connectorOverrides?.[port];
+      return override ? { ...base, ...override } : base;
+    }),
+    ...(custom?.extraConnectors ?? []),
+  ];
   const definition: PartTypeDefinition = {
     familyName: spec.familyName,
     typeName: spec.typeName,
@@ -288,7 +221,8 @@ function fixture(spec: FixtureSpec, version: string): LibraryEntry {
     instanceParams: [txt("room", "Room"), ...(custom?.extraInstanceParams ?? [])],
     connectors,
     geometry: custom ? [...custom.geometry] : [{ kind: "box", center: [0, 0, half("height")], size: [p("width"), p("depth"), p("height")] }],
-    symbol: spec.symbol === "circle" ? [{ kind: "circle", center: [0, 0], radius: half("width") }] : [{ kind: "rect", center: [0, 0], size: [p("width"), p("depth")] }],
+    symbol: custom?.symbol ? [...custom.symbol] : spec.symbol === "circle" ? [{ kind: "circle", center: [0, 0], radius: half("width") }] : [{ kind: "rect", center: [0, 0], size: [p("width"), p("depth")] }],
+    ...(custom?.clearances ? { clearances: [...custom.clearances] } : {}),
     tagFields: ["mark"],
     source: { kind: "builtin", libraryVersion: version },
   };
@@ -332,6 +266,18 @@ const FIXTURES: readonly FixtureSpec[] = [
   { slug: "gas-range", familyName: "Gas range", typeName: '36"', category: "plumbing_fixture", starter: "G-RANGE", ports: ["g"], size: [36, 34, 36], pipeIn: 0.75 },
   { slug: "gas-fryer", familyName: "Gas fryer", typeName: '18"', category: "plumbing_fixture", starter: "G-FRYER", ports: ["g"], size: [18, 34, 48], pipeIn: 0.75 },
   { slug: "gas-grill", familyName: "Gas flat top grill", typeName: '36"', category: "plumbing_fixture", starter: "G-GRILL", ports: ["g"], size: [36, 34, 18], pipeIn: 0.5 },
+  { slug: "gas-meter", familyName: "Gas meter", typeName: '2" commercial', category: "pipe_accessory", starter: "GM", ports: ["in", "out"], size: [16, 12, 18], pipeIn: 2, inlineKind: "natural_gas" },
+  { slug: "roof-drain", familyName: "Roof drain", typeName: '4" dome', category: "pipe_accessory", starter: "RD", ports: ["out"], size: [15, 15, 12], pipeIn: 4, inlineKind: "storm", symbol: "circle" },
+  { slug: "overflow-roof-drain", familyName: "Roof drain, overflow", typeName: '4" w/ 2" dam', category: "pipe_accessory", starter: "ORD", ports: ["out"], size: [15, 15, 12], pipeIn: 4, inlineKind: "storm", symbol: "circle" },
+  { slug: "booster-pump", familyName: "Domestic water booster pump", typeName: "Duplex 60 gpm", category: "pipe_accessory", starter: "BP", ports: ["in", "out", "power"], size: [36, 24, 48], pipeIn: 2, inlineKind: "domestic_cold_water" },
+  { slug: "buffer-tank", familyName: "Hot water buffer tank", typeName: "120 gal vertical", category: "pipe_accessory", starter: "BT", ports: ["cw", "hw", "hwr"], size: [28, 28, 64], pipeIn: 2, symbol: "circle" },
+  { slug: "water-softener", familyName: "Water softener", typeName: "Commercial simplex", category: "pipe_accessory", starter: "WS", ports: ["in", "out", "w", "power"], size: [42, 22, 66], pipeIn: 1.5, inlineKind: "domestic_cold_water" },
+  { slug: "condensate-neutralizer", familyName: "Condensate neutralizer", typeName: "Inline 500 MBH", category: "pipe_accessory", starter: "CN", ports: ["in", "out"], size: [16, 4, 4], pipeIn: 0.75, inlineKind: "condensate" },
+  { slug: "mixing-valve", familyName: "Thermostatic mixing valve", typeName: '1" master', category: "pipe_accessory", starter: "TMV", ports: ["cw", "hw", "out"], size: [10, 6, 9], pipeIn: 1, inlineKind: "domestic_hot_water" },
+  { slug: "trap-primer", familyName: "Trap primer", typeName: '1/2" pressure-drop', category: "pipe_accessory", starter: "TP", ports: ["cw", "out"], size: [6, 4, 8], pipeIn: 0.5, inlineKind: "domestic_cold_water", symbol: "circle" },
+  { slug: "sump-pump", familyName: "Storm sump pump", typeName: "24\" basin, 40 gpm", category: "pipe_accessory", starter: "SP", ports: ["out", "v", "power"], size: [24, 24, 30], pipeIn: 2, inlineKind: "storm", symbol: "circle" },
+  { slug: "dcva", familyName: "Backflow preventer, double check valve assembly", typeName: '2"', category: "pipe_accessory", starter: "DCVA", ports: ["in", "out"], size: [18, 6, 8], pipeIn: 2, inlineKind: "domestic_cold_water" },
+  { slug: "pvb", familyName: "Backflow preventer, pressure vacuum breaker", typeName: '1"', category: "pipe_accessory", starter: "PVB", ports: ["in", "out"], size: [8, 5, 10], pipeIn: 1, inlineKind: "domestic_cold_water", symbol: "circle" },
 ];
 
 /**
@@ -409,8 +355,8 @@ function drainagePart(spec: DrainageSpec, version: string): LibraryEntry {
     typeName: spec.typeName,
     category: "pipe_accessory",
     description: "Starter part for the building sewer checks; type its elevations and ratings in Properties (verify for permit work).",
-    typeParams: [len("width", "Width"), len("depth", "Depth"), len("height", "Height"), len("connection_size", "Connection size"), DRAINAGE_ROLE, ...(isManhole ? [txt("material_id", "Material")] : [])],
-    typeValues: { width: w * IN, depth: d * IN, height: h * IN, connection_size: spec.pipeIn * IN, drainage_role: spec.role, ...(isManhole ? { material_id: "architecture.concrete_cast" } : {}) },
+    typeParams: [len("width", "Width"), len("depth", "Depth"), len("height", "Height"), len("connection_size", "Connection size"), DRAINAGE_ROLE, txt("material_id", "Material")],
+    typeValues: { width: w * IN, depth: d * IN, height: h * IN, connection_size: spec.pipeIn * IN, drainage_role: spec.role, material_id: "plumbing_gas.cast_iron_dwv" },
     instanceParams: [txt("room", "Room"), ...spec.instanceParams],
     connectors: spec.role === "backwater_valve" ? [connector("in", inline), connector("out", inline)] : [connector("in", inline)],
     geometry,

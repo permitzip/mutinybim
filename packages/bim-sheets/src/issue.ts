@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { buildSheetScene, canonicalJson, type ModelState, type SheetDefinition } from "@permitzip/bim-kernel";
-import { modelPrintOptions, renderSheetPdf } from "./pdf";
+import { modelPrintOptions, renderSheetPdf, type PdfPrintOptions } from "./pdf";
 
 export interface IssueManifest {
   readonly issueId: string;
@@ -57,6 +57,7 @@ export async function issueFromSnapshot(
   sheet: SheetDefinition,
   renderer: string,
   capturedAt: string,
+  print?: Pick<PdfPrintOptions, "resolveDocumentUrl">,
 ): Promise<IssueManifest> {
   const canonical = await readFile(snapshotFile, "utf8");
   const snapshotSha256 = sha256(canonical);
@@ -67,7 +68,10 @@ export async function issueFromSnapshot(
     modelRevision: model.revision,
     snapshotSha256,
     renderer,
-  }, undefined, null, modelPrintOptions(model));
+  }, undefined, null, {
+    ...modelPrintOptions(model),
+    ...(print?.resolveDocumentUrl ? { resolveDocumentUrl: print.resolveDocumentUrl } : {}),
+  });
   const issueId = randomUUID();
   const pdfFile = `${sheet.number}-rev${model.revision}-${issueId.slice(0, 8)}.pdf`;
   await writeOnce(path.join(outDir, pdfFile), pdf.bytes);

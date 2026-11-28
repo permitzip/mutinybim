@@ -25,7 +25,7 @@ export interface PlusOnPaper {
 export function plusOnPaper(model: ModelState, view: ViewOnPaper, selectedIds: readonly string[], serverFeatures: readonly string[], paperMmPerPx: number): PlusOnPaper[] {
   if (selectedIds.length !== 1) return []
   const el = model.elements[selectedIds[0] ?? '']
-  if (el?.kind !== 'run_segment' && el?.kind !== 'run_fitting') return []
+  if (el?.kind !== 'run_segment' && el?.kind !== 'run_fitting' && el?.kind !== 'part') return []
   const level = model.elements[el.levelId]
   const floor = level?.kind === 'level' ? level.elevationMm : 0
   const out = OUT_PX * paperMmPerPx

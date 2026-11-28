@@ -63,7 +63,7 @@ Water, drainage, vent and fuel gas networks; fixture units; plumbing and gas siz
 | Add-on library rows | 4 |
 | Agent tools | 3 |
 | Block tables | 1 |
-| Built-in part types | 41 |
+| Built-in part types | 53 |
 | Calculation sheets | 3 |
 | Calculations | 14 |
 | Catalog record types | 2 |
@@ -82,8 +82,9 @@ Water, drainage, vent and fuel gas networks; fixture units; plumbing and gas siz
 | Form schedules | 2 |
 | Gravity outfalls | 1 |
 | Linked model categories in plans | 2 |
-| Lint rules | 14 |
+| Lint rules | 23 |
 | Load sections | 3 |
+| Materials | 15 |
 | Measure rules | 1 |
 | Network adapters | 1 |
 | Network couplings | 1 |
@@ -94,7 +95,7 @@ Water, drainage, vent and fuel gas networks; fixture units; plumbing and gas siz
 | Serves relationships | 1 |
 | Service inline codes | 9 |
 | Services | 12 |
-| Starter connection types | 35 |
+| Starter connection types | 47 |
 | System words | 1 |
 | Tag style presets | 6 |
 | View graphics | 1 |

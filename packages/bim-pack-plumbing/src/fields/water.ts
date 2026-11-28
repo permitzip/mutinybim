@@ -15,8 +15,9 @@ export const WATER_PSI_PER_FT = 0.433;
 
 export const WATER_FIELD_PATHS: readonly FieldPathInfo[] = [
   { path: "water.supply_psi", label: "Street (supply) pressure (psi)", on: "pipe", example: "60" },
-  { path: "water.fixed_losses_psi", label: "Losses before the first drawn pipe: meter, backflow preventer (psi)", on: "pipe", example: "12" },
-  { path: "water.elevation_psi", label: "Static head up to the most remote fixture (psi)", on: "pipe", example: "8.7" },
+  { path: "water.fixed_losses_psi", label: "Fixed and inline device losses: meter, backflow preventer, PRV, strainer (psi)", on: "pipe", example: "12" },
+  { path: "water.device_losses_psi", label: "Modeled inline device pressure drops along critical path (psi)", on: "pipe", example: "9.8" },
+  { path: "water.elevation_psi", label: "Static head from system root to the most remote fixture (psi)", on: "pipe", example: "8.7" },
   { path: "water.friction_psi", label: "Pipe and fitting friction to the most remote fixture (psi)", on: "pipe", example: "9.4" },
   { path: "water.residual_psi", label: "Pressure left at the most remote fixture (psi)", on: "pipe", example: "29.9" },
   { path: "water.min_fixture_psi", label: "Pressure the most remote fixture needs (psi)", on: "pipe", example: "15" },
@@ -55,15 +56,23 @@ export function resolveWaterField(elements: Elements, elementId: string, path: s
   const system = systemOf(elements, elementId);
   const report = system ? waterReportOf(elements, system.id) : null;
   if (!system || !report) return { value: null, text: "" };
-  const fixed = system.design?.pipe?.fixedLossesPsi ?? 0;
+  const baseFixed = system.design?.pipe?.fixedLossesPsi ?? 0;
+  const deviceLoss = report.criticalDeviceLossPsi ?? 0;
+  const fixed = baseFixed + deviceLoss;
   const critical = report.critical;
-  const elevation = critical ? critical.elevationFt * WATER_PSI_PER_FT : null;
+  const elevation = critical ? (critical.elevationFt - report.rootElevationFt) * WATER_PSI_PER_FT : null;
   const pathLoss = report.supplyPsi !== null && critical ? report.supplyPsi - fixed - critical.pressure : null;
   switch (path.slice("water.".length)) {
     case "supply_psi":
       return psi(report.supplyPsi);
     case "fixed_losses_psi":
       return psi(fixed);
+    case "device_losses_psi":
+      return psi(deviceLoss);
+    case "root_elevation_ft": {
+      const ft = Math.round(report.rootElevationFt * 100) / 100;
+      return { value: ft, text: `${Math.round(ft * 10) / 10} ft` };
+    }
     case "elevation_psi":
       return psi(elevation);
     case "friction_psi":
@@ -76,6 +85,14 @@ export function resolveWaterField(elements: Elements, elementId: string, path: s
       if (report.segments.length === 0) return { value: null, text: "" };
       const v = Math.max(...report.segments.map((s) => s.velocityFps));
       return { value: Math.round(v * 100) / 100, text: `${Math.round(v * 10) / 10} ft/s` };
+    }
+    case "total_wsfu": {
+      const fu = Math.round(report.totalFixtureUnits * 100) / 100;
+      return { value: fu, text: `${fu} WSFU` };
+    }
+    case "peak_gpm": {
+      const g = Math.round(report.peakGpm * 100) / 100;
+      return { value: g, text: `${Math.round(g * 10) / 10} gpm` };
     }
     default:
       return { value: null, text: "" };

@@ -4,9 +4,10 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { VIEW_CATEGORY_LABELS, type ViewCategory } from '@permitzip/bim-kernel'
 import { Button } from '@permitzip/bim-ui'
 import type { SceneLightingPreset } from '@permitzip/bim-viewer-3d'
-import { BatteryCharging, ChevronDown, Eye, Lock, Moon, Sparkles, Sun, Sunrise, Sunset, Unlock } from 'lucide-react'
+import { BatteryCharging, Check, ChevronDown, Eye, Grid2x2, Lock, Moon, Sparkles, Sun, Sunrise, Sunset, Unlock } from 'lucide-react'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '../ui/dropdown-menu'
 import { toggleSelectionLock, useSelectionLocks } from './selection-locks'
+import { SNAP_GRID_OPTIONS, setSnapGridMm, snapGridLabel, useSnapGridMm } from './snap-grid'
 
 const NON_LOCKABLE_VIEW_CATEGORIES: ReadonlySet<ViewCategory> = new Set(['tags', 'dimensions', 'rooms', 'grids', 'opening_tags', 'insulation'])
 const LOCKABLE_CATEGORIES: ReadonlyArray<{ readonly id: string; readonly label: string }> = (Object.entries(VIEW_CATEGORY_LABELS) as [ViewCategory, string][])
@@ -50,6 +51,7 @@ interface Props {
   readonly lightingPreset?: SceneLightingPreset
   readonly onLightingPresetChange?: (preset: SceneLightingPreset) => void
   readonly is3d?: boolean
+  readonly userId?: string
 }
 
 function PresetIcon({ preset }: { readonly preset: SceneLightingPreset }): ReactNode {
@@ -73,8 +75,11 @@ export function SelectionLocksBar({
   lightingPreset,
   onLightingPresetChange,
   is3d = false,
+  userId,
 }: Props): ReactNode {
   const locks = useSelectionLocks()
+  const snapGridMm = useSnapGridMm(userId)
+  const snapLabel = snapGridLabel(snapGridMm)
   const [localPreset, setLocalPreset] = useState<SceneLightingPreset>('noon')
   const [quality, setQuality] = useState<'draft' | 'standard' | 'high'>(() => viewer?.getRenderQuality?.() ?? 'standard')
 
@@ -130,8 +135,44 @@ export function SelectionLocksBar({
       className="ml-auto flex shrink-0 items-center gap-1"
       data-testid="selection-locks-bar"
       role="toolbar"
-      aria-label="Selection locks"
+      aria-label="Selection locks and snap grid"
     >
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            size="sm"
+            variant={snapGridMm <= 0 ? 'default' : 'outline'}
+            title={`Snap grid increment: ${snapLabel}. Click to change (Free, 1/2", 1", 3", 6", 12"). Hold Alt while dragging for temporary free-drag.`}
+            aria-label={`Snap grid: ${snapLabel}`}
+            data-testid="snap-grid-trigger"
+          >
+            <Grid2x2 className="size-3" />
+            Snap: {snapLabel}
+            <ChevronDown className="size-3" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-44" data-testid="snap-grid-menu">
+          <DropdownMenuLabel className="text-xs">Snap increment</DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          {SNAP_GRID_OPTIONS.map((opt) => {
+            const active = Math.abs(opt.mm - snapGridMm) < 0.05
+            return (
+              <DropdownMenuItem
+                key={opt.shortLabel}
+                onSelect={() => setSnapGridMm(opt.mm, userId)}
+                data-testid={`snap-grid-option-${opt.shortLabel}`}
+                className="flex items-center justify-between text-xs"
+              >
+                <span>{opt.label}</span>
+                {active && <Check className="size-3 text-primary" />}
+              </DropdownMenuItem>
+            )
+          })}
+          <DropdownMenuSeparator />
+          <div className="px-2 py-1 text-[11px] text-muted-foreground">Hold Alt while dragging for free move.</div>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <span className="mx-0.5 h-4 w-px bg-border" aria-hidden="true" />
       <span className="px-1 text-[11px] font-medium text-muted-foreground select-none">Select:</span>
       <Button
         size="sm"

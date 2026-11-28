@@ -307,6 +307,10 @@ const viewPropsPatchObject = z
     /** A v2 schedule: classes, typed columns (fields, formulas, aggregates, expand), groups, list or form. */
     scheduleV2: scheduleV2Schema,
     diagram: diagramDefinitionSchema,
+    /** Model element ids linked to this view for staleness alerts; null or [] clears them. */
+    linkedElementIds: z.array(id).max(500).nullable(),
+    /** System/service ids linked to this view for staleness alerts; null or [] clears them. */
+    linkedSystemIds: z.array(id).max(200).nullable(),
   })
   .partial()
   // An add-on's record under its view graphics row's `hintsKey` passes through to the row's own schema; any other key is refused by name.
@@ -358,7 +362,7 @@ const documentRecord = z.discriminatedUnion("kind", [
     viewType: z.enum(["floor_plan", "ceiling_plan", "section", "elevation", "three_d", "schedule", "detail"]),
     cropMin: vec2,
     cropMax: vec2,
-    props: viewPropsPatchObject.extend({ discipline: disciplineSchema, workingAngleDeg: z.number().finite().min(-45).max(45), viewBottomMm: z.number().finite().min(-30000).max(30000), viewTopMm: z.number().finite().min(-30000).max(60000), viewTopRef: z.enum(VIEW_TOP_REFS), browserGroup: z.string().trim().min(1).max(80), sortOrder: z.number().finite(), viewTemplateId: id.transform(asElementId), cropPolygon: z.array(vec2).min(3).max(200).readonly(), ...view3dPropsShape }).partial().optional(),
+    props: viewPropsPatchObject.extend({ discipline: disciplineSchema, workingAngleDeg: z.number().finite().min(-45).max(45), viewBottomMm: z.number().finite().min(-30000).max(30000), viewTopMm: z.number().finite().min(-30000).max(60000), viewTopRef: z.enum(VIEW_TOP_REFS), browserGroup: z.string().trim().min(1).max(80), sortOrder: z.number().finite(), viewTemplateId: id.transform(asElementId), cropPolygon: z.array(vec2).min(3).max(200).readonly(), linkedElementIds: z.array(id.transform(asElementId)).max(500).readonly(), linkedSystemIds: z.array(id.transform(asElementId)).max(200).readonly(), ...view3dPropsShape }).partial().optional(),
   }),
   z.object({
     ...base,
@@ -853,12 +857,30 @@ function replacedScheduleKinds(current: ViewProps | undefined, patch: z.infer<ty
 
 /** Patch fields replace; `discipline: null` clears the discipline (everything prints in ink). */
 function mergeProps(current: ViewProps | undefined, patch: z.infer<typeof viewPropsPatch>): ViewProps {
-  const { discipline, workingAngleDeg, viewBottomMm, viewTopMm, viewTopRef, viewTemplateId, browserGroup, sortOrder, categoryOverrides, cropPolygon, hiddenElementIds, ...rest } = patch;
+  const { discipline, workingAngleDeg, viewBottomMm, viewTopMm, viewTopRef, viewTemplateId, browserGroup, sortOrder, categoryOverrides, cropPolygon, hiddenElementIds, linkedElementIds, linkedSystemIds, ...rest } = patch;
   let merged: ViewProps = { ...current, ...rest };
   if (hiddenElementIds !== undefined) {
     const { hiddenElementIds: _oldHidden, ...withoutHidden } = merged;
     const deduped = [...new Set(hiddenElementIds)];
     merged = deduped.length === 0 ? withoutHidden : { ...withoutHidden, hiddenElementIds: deduped };
+  }
+  if (linkedElementIds !== undefined) {
+    const { linkedElementIds: _oldLinked, ...withoutLinked } = merged;
+    if (linkedElementIds === null) {
+      merged = withoutLinked;
+    } else {
+      const deduped = [...new Set(linkedElementIds)].map(asElementId);
+      merged = deduped.length === 0 ? withoutLinked : { ...withoutLinked, linkedElementIds: deduped };
+    }
+  }
+  if (linkedSystemIds !== undefined) {
+    const { linkedSystemIds: _oldLinkedSys, ...withoutLinkedSys } = merged;
+    if (linkedSystemIds === null) {
+      merged = withoutLinkedSys;
+    } else {
+      const deduped = [...new Set(linkedSystemIds)].map(asElementId);
+      merged = deduped.length === 0 ? withoutLinkedSys : { ...withoutLinkedSys, linkedSystemIds: deduped };
+    }
   }
   if (cropPolygon !== undefined) {
     const { cropPolygon: _oldPoly, ...withoutPoly } = merged;

@@ -1,20 +1,23 @@
 import { withModelStatePacks } from "../packs/scope";
 import type { ScenarioOverlay } from "../requirements/scenario";
 import { spaceOf, spacesOfZone } from "../spaces/space-index";
-import { draftElements } from "../store";
+import { draftElements, elementsOfKind } from "../store";
 import type { BimElement, ElementId, ModelState } from "../types";
 import { quantityDeltasBetween } from "../qto/delta";
 import { isLocatedKind } from "./auxiliary";
 import { ruleKeyOf } from "./compile";
-import { allAnchors, graphStateIn, previewStateIn, requirementById, type GraphState } from "./engine";
+import { allAnchors, graphStateIn, parseRequirementId, previewStateIn, requirementById, type GraphState } from "./engine";
 import { anchorKeyOf, determinationWords, type AnchorRef } from "./inputs";
 import { boundedAreaWords, groupedMakeupWords, makeupRole, spacesTouchedBy } from "./makeup";
 import { listWords, nameOf, valueWords } from "./names";
-import { isDeterminationRecord } from "./records";
+import { isDeterminationRecord, isRequirementStateRecord, isRuleRecordElement } from "./records";
 import {
   DEPENDS_ON_EMPTY,
   GRAPH_ANSWER_LIMIT,
   WHY_EMPTY,
+  type DecisionImpactKind,
+  type DecisionImpactOptions,
+  type DecisionImpactSummary,
   type DependsOnAnswer,
   type GraphEdge,
   type GraphQueryOptions,
@@ -376,4 +379,157 @@ export function dependsOn(model: ModelState, target: DependsOnTarget, options: G
     }
     return analyse(model, state, [...new Set([...removed, ...changed])], after, target.label, limit);
   });
+}
+
+// ── decisionImpactsFor ─────────────────────────────────────────────────────
+
+const DEFAULT_DECISION_IMPACT_LIMIT = 50;
+
+const IMPACT_KIND_ORDER: Readonly<Record<DecisionImpactKind, number>> = {
+  determination: 0,
+  requirement_state: 1,
+  rule: 2,
+};
+
+function shortTitle(text: string): string {
+  const clean = text.trim().replace(/\s+/g, " ");
+  return clean.length <= 160 ? clean : `${clean.slice(0, 159)}…`;
+}
+
+/**
+ * Finds active determinations, local rules, and requirement review records
+ * anchored to or referencing any touched/deleted element ids. Returns concise
+ * low-token title-only summaries (`privateNote` is never exposed).
+ */
+export function decisionImpactsFor(model: ModelState, elementIds: readonly string[], options: DecisionImpactOptions = {}): DecisionImpactSummary[] {
+  const includeModelWide = options.includeModelWide === true;
+  const limit = Math.max(0, options.limit ?? DEFAULT_DECISION_IMPACT_LIMIT);
+  if (limit === 0 || (elementIds.length === 0 && !includeModelWide)) return [];
+
+  const elements = model.elements;
+  const directIds = new Set(elementIds);
+  const relatedAnchors = new Set<string>(elementIds);
+
+  for (const id of directIds) {
+    const el = elements[id];
+    if (!el) continue;
+    if (isLocatedKind(el)) {
+      const sp = spaceOf(elements, el.id);
+      if (sp) relatedAnchors.add(sp.id);
+    }
+    for (const spId of spacesTouchedBy(elements, el)) relatedAnchors.add(spId);
+    if (el.kind === "space") {
+      for (const z of elementsOfKind(elements, "zone")) {
+        if (z.spaceIds.includes(el.id)) relatedAnchors.add(z.id);
+      }
+    }
+  }
+
+  // Collect determinations superseded by another determination record so they are excluded as inactive.
+  const allDets = elementsOfKind(elements, "determination").filter(isDeterminationRecord);
+  const supersededIds = new Set<string>();
+  for (const d of allDets) {
+    if (d.determination.supersedes) supersededIds.add(d.determination.supersedes);
+  }
+
+  interface RankedImpact {
+    readonly direct: boolean;
+    readonly summary: DecisionImpactSummary;
+  }
+
+  const hits = new Map<string, RankedImpact>();
+  const addHit = (direct: boolean, summary: DecisionImpactSummary): void => {
+    const prev = hits.get(summary.id);
+    if (!prev || (direct && !prev.direct)) hits.set(summary.id, { direct, summary });
+  };
+
+  for (const d of allDets) {
+    const body = d.determination;
+    if (body.status === "superseded" || supersededIds.has(d.id)) continue;
+    const subjectId = body.subject.kind === "model" || !body.subject.id ? "model" : body.subject.id;
+    const directSubject = subjectId !== "model" && directIds.has(subjectId);
+    const directInput = body.inputs.some((inp) => inp.elementId !== undefined && directIds.has(inp.elementId));
+    const relatedSubject = subjectId !== "model" && relatedAnchors.has(subjectId);
+    const modelWideHit = includeModelWide && subjectId === "model";
+    if (!directSubject && !directInput && !relatedSubject && !modelWideHit) continue;
+    addHit(directSubject || directInput, {
+      id: d.id,
+      kind: "determination",
+      subjectId,
+      key: body.key,
+      title: shortTitle(body.title?.trim() || determinationWords(elements, d)),
+      status: body.status,
+      ...(body.publicNote ? { publicNote: body.publicNote } : {}),
+    });
+  }
+
+  for (const r of elementsOfKind(elements, "rule")) {
+    if (!isRuleRecordElement(r)) continue;
+    const rule = r.rule;
+    if (rule.verification.status === "invalidated") continue;
+    const anchors = rule.appliesAt?.anchors ?? [];
+    let matchedSubject: string | null = null;
+    let direct = false;
+    for (const a of anchors) {
+      if (a.id !== null && directIds.has(a.id)) {
+        matchedSubject = a.id;
+        direct = true;
+        break;
+      }
+      if (a.id !== null && relatedAnchors.has(a.id) && matchedSubject === null) {
+        matchedSubject = a.id;
+      } else if (a.id === null && includeModelWide && matchedSubject === null) {
+        matchedSubject = "model";
+      }
+    }
+    if (matchedSubject === null) continue;
+    const citationPrefix = `${rule.citation.instrument} ${rule.citation.section}`.trim();
+    const title = citationPrefix ? `${citationPrefix}: ${rule.title}` : rule.title;
+    addHit(direct, {
+      id: r.id,
+      kind: "rule",
+      subjectId: matchedSubject,
+      key: rule.ruleId,
+      title: shortTitle(title),
+      status: rule.verification.status,
+      ...(rule.publicNote ? { publicNote: rule.publicNote } : {}),
+    });
+  }
+
+  for (const s of elementsOfKind(elements, "requirement_state")) {
+    if (!isRequirementStateRecord(s)) continue;
+    const parsed = parseRequirementId(s.state.requirementId);
+    const anchorId = parsed?.anchorId ?? null;
+    const subjectId = anchorId ?? "model";
+    const direct = anchorId !== null && directIds.has(anchorId);
+    const related = anchorId !== null && relatedAnchors.has(anchorId);
+    const modelWideHit = includeModelWide && anchorId === null;
+    if (!direct && !related && !modelWideHit) continue;
+    const key = parsed?.key ?? s.state.requirementId;
+    const title = s.state.reason ? `${key}: ${s.state.reason}` : key;
+    addHit(direct, {
+      id: s.id,
+      kind: "requirement_state",
+      subjectId,
+      key,
+      title: shortTitle(title),
+      status: s.state.status,
+      ...(s.state.publicNote ? { publicNote: s.state.publicNote } : {}),
+    });
+  }
+
+  const ordered = [...hits.values()]
+    .sort((a, b) => {
+      if (a.direct !== b.direct) return a.direct ? -1 : 1;
+      const kd = IMPACT_KIND_ORDER[a.summary.kind] - IMPACT_KIND_ORDER[b.summary.kind];
+      if (kd !== 0) return kd;
+      return (
+        a.summary.subjectId.localeCompare(b.summary.subjectId) ||
+        a.summary.key.localeCompare(b.summary.key) ||
+        a.summary.id.localeCompare(b.summary.id)
+      );
+    })
+    .slice(0, limit);
+
+  return ordered.map((x) => x.summary);
 }

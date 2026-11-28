@@ -1,8 +1,30 @@
 import { necEdition, type NecEdition } from '@permitzip/bim-calc'
 import { loadFromText, numberIn, proposeEquipmentLoads, readEquipmentSchedule, suggestLoadClass, type EquipmentScheduleRow, type LoadClass, type ProposedEquipmentLoad } from '@permitzip/bim-pack-electrical'
-import { CONNECTION_TYPE_PARAM, elementsOfKind, type Command, type ModelState, type ParamDef, type ParamValue, type PartCategory, type PartTypeDefinition } from '@permitzip/bim-kernel'
+import {
+  CONNECTION_TYPE_PARAM,
+  EQUIPMENT_BASELINE_PARAM,
+  elementsOfKind,
+  serializeEquipmentBaseline,
+  type Command,
+  type ModelState,
+  type ParamDef,
+  type ParamValue,
+  type PartCategory,
+  type PartTypeDefinition,
+} from '@permitzip/bim-kernel'
 import { EQUIPMENT_DRAFT_FIELDS, EQUIPMENT_DRAFT_PARAMETERS } from '@permitzip/bim-library'
 import { declareParameters, parseParameterText, undeclared, type EquipmentParameter } from './parameters'
+import {
+  MULTI_DISCIPLINE_EXTRA_PARAM_DEFS,
+  equipmentRequirementBaselineOf,
+  normalizeMultiDisciplineRow,
+  parseEquipmentRequirements,
+  type BuildingType,
+  type MultiDisciplineEquipmentRow,
+  type NormalizedEquipmentValues,
+} from './requirements-schedule'
+
+export * from './requirements-schedule'
 
 /**
  * The Equipment list (ROADMAP F4, NEXT-BATCH §5 step 1): rows pasted from a
@@ -31,15 +53,40 @@ export interface EquipmentDraftRow {
   readonly hotWater: string
   readonly waste: string
   readonly connection: string
+  // Optional generalized multi-discipline requirements (any building type)
+  readonly buildingType?: BuildingType
+  readonly location?: string
+  readonly manufacturer?: string
+  readonly modelNumber?: string
+  /** Structural: operating weight in lb (or text with unit such as "500 kg"). */
+  readonly operatingWeightLb?: string
+  /** Electrical: full load amps, minimum circuit ampacity, max overcurrent protection. */
+  readonly fla?: string
+  readonly mca?: string
+  readonly mocp?: string
+  /** Fuel gas: inlet pressure (in. w.c.) and fuel type (Natural Gas, Propane, etc.). */
+  readonly gasPressureInWc?: string
+  readonly fuel?: string
+  /** Plumbing: grease waste, indirect waste, condensate, vent. */
+  readonly greaseWaste?: string
+  readonly indirectWaste?: string
+  readonly condensate?: string
+  readonly vent?: string
+  /** Mechanical / EnergyPlus (#190 aligned): exhaust/makeup airflow, sensible/latent heat gain, combustion flue. */
+  readonly exhaustCfm?: string
+  readonly makeupCfm?: string
+  readonly sensibleHeatBtuh?: string
+  readonly latentHeatBtuh?: string
+  readonly combustionFlue?: string
   /**
-   * Columns beyond the eleven, by the parameter each fills (`mca`, `hood_id`):
+   * Columns beyond the core fields, by the parameter each fills (`hood_id`):
    * the text as written. Absent on drafts from before round 5b, which paste
    * and fill exactly the eleven as they always did.
    */
   readonly extras?: Readonly<Record<string, string>>
 }
 
-export type DraftField = Exclude<keyof EquipmentDraftRow, 'key' | 'extras'>
+export type DraftField = (typeof EQUIPMENT_DRAFT_FIELDS)[number]
 
 /** The eleven pasted columns: the equipment list template's default mapping (`EQUIPMENT_DRAFT_PARAMETERS`). */
 export const DRAFT_FIELDS: readonly DraftField[] = EQUIPMENT_DRAFT_FIELDS
@@ -207,9 +254,128 @@ export function withPastedExtras(rows: readonly EquipmentDraftRow[], text: strin
 
 const text = (n: number | null): string => (n === null ? '' : String(n))
 
-/** Pasted text as preview rows. Splitting and units read the same under any edition; horsepower is checked per row. */
-export function readDraft(nec: NecEdition | null, text: string): EquipmentDraftRow[] {
-  return text.trim() ? draftFromSchedule(readEquipmentSchedule(nec ?? UNIT_READING_EDITION, text).rows) : []
+/** Pasted text as preview rows. Uses generalized multi-discipline CSV/TSV/pipe parsing when structured multi-discipline headers are present, falling back to bim-pack-electrical's table reader for unstructured text. */
+export function readDraft(nec: NecEdition | null, text: string, buildingType?: BuildingType): EquipmentDraftRow[] {
+  if (!text.trim()) return []
+  const multi = parseEquipmentRequirements(text, { nec, ...(buildingType ? { buildingType } : {}) })
+  const mappedSet = new Set(Object.values(multi.mappedFields))
+  const hasExtendedField = [
+    'operatingWeightLb',
+    'fla',
+    'mca',
+    'mocp',
+    'gasPressureInWc',
+    'fuel',
+    'greaseWaste',
+    'indirectWaste',
+    'condensate',
+    'vent',
+    'exhaustCfm',
+    'makeupCfm',
+    'sensibleHeatBtuh',
+    'latentHeatBtuh',
+    'combustionFlue',
+    'location',
+    'manufacturer',
+    'modelNumber',
+  ].some((f) => mappedSet.has(f as never))
+  if (hasExtendedField && multi.rows.length > 0) {
+    return multi.rows.map((r) => draftRowFromMultiDiscipline(r))
+  }
+  return draftFromSchedule(readEquipmentSchedule(nec ?? UNIT_READING_EDITION, text).rows)
+}
+
+export function draftRowFromMultiDiscipline(r: MultiDisciplineEquipmentRow): EquipmentDraftRow {
+  return {
+    key: r.key,
+    mark: r.mark,
+    description: r.description,
+    quantity: r.quantity,
+    voltage: r.voltage,
+    phase: r.phase,
+    load: r.load,
+    gasMbh: r.gasMbh,
+    coldWater: r.coldWater,
+    hotWater: r.hotWater,
+    waste: r.waste,
+    connection: r.connection,
+    ...(r.buildingType ? { buildingType: r.buildingType } : {}),
+    ...(r.location ? { location: r.location } : {}),
+    ...(r.manufacturer ? { manufacturer: r.manufacturer } : {}),
+    ...(r.modelNumber ? { modelNumber: r.modelNumber } : {}),
+    ...(r.operatingWeightLb ? { operatingWeightLb: r.operatingWeightLb } : {}),
+    ...(r.fla ? { fla: r.fla } : {}),
+    ...(r.mca ? { mca: r.mca } : {}),
+    ...(r.mocp ? { mocp: r.mocp } : {}),
+    ...(r.gasPressureInWc ? { gasPressureInWc: r.gasPressureInWc } : {}),
+    ...(r.fuel ? { fuel: r.fuel } : {}),
+    ...(r.greaseWaste ? { greaseWaste: r.greaseWaste } : {}),
+    ...(r.indirectWaste ? { indirectWaste: r.indirectWaste } : {}),
+    ...(r.condensate ? { condensate: r.condensate } : {}),
+    ...(r.vent ? { vent: r.vent } : {}),
+    ...(r.exhaustCfm ? { exhaustCfm: r.exhaustCfm } : {}),
+    ...(r.makeupCfm ? { makeupCfm: r.makeupCfm } : {}),
+    ...(r.sensibleHeatBtuh ? { sensibleHeatBtuh: r.sensibleHeatBtuh } : {}),
+    ...(r.latentHeatBtuh ? { latentHeatBtuh: r.latentHeatBtuh } : {}),
+    ...(r.combustionFlue ? { combustionFlue: r.combustionFlue } : {}),
+  }
+}
+
+function toMultiDisciplineRow(row: EquipmentDraftRow): MultiDisciplineEquipmentRow {
+  return {
+    key: row.key,
+    mark: row.mark,
+    description: row.description,
+    quantity: row.quantity,
+    ...(row.buildingType ? { buildingType: row.buildingType } : {}),
+    ...(row.location ? { location: row.location } : {}),
+    ...(row.manufacturer ? { manufacturer: row.manufacturer } : {}),
+    ...(row.modelNumber ? { modelNumber: row.modelNumber } : {}),
+    operatingWeightLb: row.operatingWeightLb ?? '',
+    voltage: row.voltage,
+    phase: row.phase,
+    load: row.load,
+    fla: row.fla ?? '',
+    mca: row.mca ?? '',
+    mocp: row.mocp ?? '',
+    connection: row.connection,
+    gasMbh: row.gasMbh,
+    gasPressureInWc: row.gasPressureInWc ?? '',
+    fuel: row.fuel ?? '',
+    coldWater: row.coldWater,
+    hotWater: row.hotWater,
+    waste: row.waste,
+    greaseWaste: row.greaseWaste ?? '',
+    indirectWaste: row.indirectWaste ?? '',
+    condensate: row.condensate ?? '',
+    vent: row.vent ?? '',
+    exhaustCfm: row.exhaustCfm ?? '',
+    makeupCfm: row.makeupCfm ?? '',
+    sensibleHeatBtuh: row.sensibleHeatBtuh ?? '',
+    latentHeatBtuh: row.latentHeatBtuh ?? '',
+    combustionFlue: row.combustionFlue ?? '',
+    ...(row.extras ? { extras: row.extras } : {}),
+  }
+}
+
+function hasExtendedMultiDisciplineValues(row: EquipmentDraftRow): boolean {
+  return Boolean(
+    row.operatingWeightLb?.trim() ||
+      row.fla?.trim() ||
+      row.mca?.trim() ||
+      row.mocp?.trim() ||
+      row.gasPressureInWc?.trim() ||
+      row.fuel?.trim() ||
+      row.greaseWaste?.trim() ||
+      row.indirectWaste?.trim() ||
+      row.condensate?.trim() ||
+      row.vent?.trim() ||
+      row.exhaustCfm?.trim() ||
+      row.makeupCfm?.trim() ||
+      row.sensibleHeatBtuh?.trim() ||
+      row.latentHeatBtuh?.trim() ||
+      row.combustionFlue?.trim(),
+  )
 }
 
 export function draftFromSchedule(rows: readonly EquipmentScheduleRow[]): EquipmentDraftRow[] {
@@ -241,6 +407,8 @@ export interface DraftCheck {
   readonly problems: readonly string[]
   /** The extra columns' values as each parameter stores them. Absent: the row has none. */
   readonly extras?: Readonly<Record<string, ParamValue>>
+  /** Normalized multi-discipline engineering values when extended columns are populated. */
+  readonly multiDiscipline?: NormalizedEquipmentValues
 }
 
 const DESIGNATOR = /^[A-Z]{1,3}-?\d{1,3}[A-Z]?$/i
@@ -280,10 +448,34 @@ export function checkDraftRow(nec: NecEdition | null, row: EquipmentDraftRow, ta
   if (row.gasMbh.trim() !== '' && (g === null || g <= 0)) problems.push(`Gas "${row.gasMbh}" isn't an input in MBH (80).`)
   const mbh = g !== null && g > 0 ? g : null
 
-  const anything = load.va !== null || mbh !== null || row.coldWater.trim() !== '' || row.hotWater.trim() !== '' || row.waste.trim() !== ''
+  const hasExtended = hasExtendedMultiDisciplineValues(row)
+  const multiNorm = hasExtended ? normalizeMultiDisciplineRow(toMultiDisciplineRow(row), nec) : undefined
+  if (multiNorm) {
+    for (const msg of multiNorm.problems) {
+      // Avoid duplicating mark/qty/voltage/phase/load/gas problems already reported above.
+      if (
+        !/^(Give the equipment item a mark|Qty |Volts |Phase |Gas "|Horsepower needs|Row has no engineering requirements)/.test(msg) &&
+        msg !== load.problem &&
+        !problems.includes(msg)
+      ) {
+        problems.push(msg)
+      }
+    }
+  }
+
+  const effectiveVa = load.va ?? multiNorm?.loadVa ?? null
+  const effectiveVaBasis = load.va !== null ? load.vaBasis : (multiNorm?.loadVaBasis ?? '')
+
+  const anything =
+    effectiveVa !== null ||
+    mbh !== null ||
+    row.coldWater.trim() !== '' ||
+    row.hotWater.trim() !== '' ||
+    row.waste.trim() !== '' ||
+    hasExtended
   // A row that names a fixture or gas appliance ("Range, gas") adds its proposed starter load, so it isn't empty.
   const proposes = !anything && proposeEquipmentLoads({ mark, description: row.description, mbh: null, coldWater: '', hotWater: '', waste: '' }).length > 0
-  if (!anything && !proposes && !load.problem && problems.length === 0) problems.push('Nothing to add up: give a load, gas MBH, or water and waste sizes.')
+  if (!anything && !proposes && !load.problem && problems.length === 0) problems.push('Nothing to add up: give a load, gas MBH, water/waste, structural weight, or mechanical requirements.')
 
   const extras: Record<string, ParamValue> = {}
   for (const [name, raw] of Object.entries(row.extras ?? {})) {
@@ -298,7 +490,18 @@ export function checkDraftRow(nec: NecEdition | null, row: EquipmentDraftRow, ta
   }
 
   const { cls } = suggestLoadClass(`${row.description} ${mark}`)
-  return { quantity, voltageV, phases, va: load.va, vaBasis: load.vaBasis, mbh, loadClass: cls, problems, ...(Object.keys(extras).length > 0 ? { extras } : {}) }
+  return {
+    quantity,
+    voltageV,
+    phases,
+    va: effectiveVa,
+    vaBasis: effectiveVaBasis,
+    mbh,
+    loadClass: cls,
+    problems,
+    ...(Object.keys(extras).length > 0 ? { extras } : {}),
+    ...(multiNorm ? { multiDiscipline: multiNorm } : {}),
+  }
 }
 
 /** Every row's check; marks must be unique against the model and against rows above. */
@@ -323,38 +526,63 @@ const txt = (name: string, label: string): ParamDef => ({ name, label, kind: 'te
 
 /** Equipment with a water connection and nothing else is a plumbing fixture; the rest is equipment. */
 function categoryOf(check: DraftCheck, row: EquipmentDraftRow): PartCategory {
-  const water = row.coldWater.trim() !== '' || row.hotWater.trim() !== '' || row.waste.trim() !== ''
-  return water && check.va === null && check.mbh === null ? 'plumbing_fixture' : 'mechanical_equipment'
+  const water =
+    row.coldWater.trim() !== '' ||
+    row.hotWater.trim() !== '' ||
+    row.waste.trim() !== '' ||
+    Boolean(row.greaseWaste?.trim()) ||
+    Boolean(row.indirectWaste?.trim()) ||
+    Boolean(row.condensate?.trim()) ||
+    Boolean(row.vent?.trim())
+  const nonPlumbing =
+    check.va !== null ||
+    check.mbh !== null ||
+    Boolean(row.operatingWeightLb?.trim()) ||
+    Boolean(row.fla?.trim()) ||
+    Boolean(row.mca?.trim()) ||
+    Boolean(row.mocp?.trim()) ||
+    Boolean(row.exhaustCfm?.trim()) ||
+    Boolean(row.makeupCfm?.trim()) ||
+    Boolean(row.sensibleHeatBtuh?.trim()) ||
+    Boolean(row.latentHeatBtuh?.trim()) ||
+    Boolean(row.combustionFlue?.trim())
+  return water && !nonPlumbing ? 'plumbing_fixture' : 'mechanical_equipment'
 }
 
 /**
  * The one part type every listed item uses, per category. No drawn connectors:
  * the electrical engine circuits it by its nameplate (voltage, phases, load),
- * gas sizing reads `input_mbh`, and the water and waste sizes are as written.
+ * gas sizing reads `input_mbh`, structural/mechanical/plumbing parameters carry
+ * typed values, and `req_baseline` stores the compact planned baseline for
+ * schedule-vs-model drift audits (`auditEquipmentRequirements`).
  */
 export function listedEquipmentType(category: PartCategory, extraParams: readonly ParamDef[] = []): PartTypeDefinition {
+  const baseParams: ParamDef[] = [
+    txt('description', 'Description'),
+    num('voltage', 'Voltage', 'v'),
+    num('phases', 'Phases', 'none'),
+    num('load_va', 'Load', 'va'),
+    txt('load_class', 'Load class'),
+    num('input_mbh', 'Gas input (MBH)', 'none'),
+    txt('cw_size', 'Cold water'),
+    txt('hw_size', 'Hot water'),
+    txt('waste_size', 'Waste'),
+    txt('connection', 'Connection'),
+    CONNECTION_TYPE_PARAM,
+    txt('circuit', 'Circuit'),
+    txt(EQUIPMENT_BASELINE_PARAM, 'Requirement baseline'),
+    ...MULTI_DISCIPLINE_EXTRA_PARAM_DEFS,
+  ]
+  const seen = new Set(baseParams.map((p) => p.name))
+  const dedupedExtra = extraParams.filter((p) => !seen.has(p.name))
   return {
     familyName: category === 'plumbing_fixture' ? 'Fixture, from an equipment list' : 'Equipment, from an equipment list',
     typeName: 'Listed item',
     category,
-    description: 'An item from a pasted equipment list. Set its values in its properties; draw it from Not placed yet.',
+    description: 'An item from a multi-discipline equipment requirements schedule. Set its values in its properties; draw it from Not placed yet.',
     typeParams: [],
     typeValues: {},
-    instanceParams: [
-      txt('description', 'Description'),
-      num('voltage', 'Voltage', 'v'),
-      num('phases', 'Phases', 'none'),
-      num('load_va', 'Load', 'va'),
-      txt('load_class', 'Load class'),
-      num('input_mbh', 'Gas input (MBH)', 'none'),
-      txt('cw_size', 'Cold water'),
-      txt('hw_size', 'Hot water'),
-      txt('waste_size', 'Waste'),
-      txt('connection', 'Connection'),
-      CONNECTION_TYPE_PARAM,
-      txt('circuit', 'Circuit'),
-      ...extraParams,
-    ],
+    instanceParams: [...baseParams, ...dedupedExtra],
     connectors: [],
     geometry: [{ kind: 'box', center: [0, 0, 450], size: [600, 600, 900] }],
     symbol: [{ kind: 'rect', center: [0, 0], size: [600, 600] }],
@@ -387,8 +615,30 @@ function valuesOf(row: EquipmentDraftRow, check: DraftCheck): Record<string, Par
     if (DESIGNATOR.test(connection)) out.connection_type = connection.toUpperCase()
     else out.connection = connection
   }
-  // The eleven win: an extra column never overwrites what they read.
+  if (check.multiDiscipline) {
+    for (const [k, v] of Object.entries(check.multiDiscipline.paramValues)) {
+      if (!(k in out)) out[k] = v
+    }
+  }
+  // Extra mapped library columns never overwrite core typed fields.
   for (const [name, v] of Object.entries(check.extras ?? {})) if (!(name in out)) out[name] = v
+
+  // Persist a compact planned requirement baseline for kernel drift & fulfilment audits (kept <= 400 chars for v1 peer compatibility).
+  const multiRow = toMultiDisciplineRow(row)
+  const norm = check.multiDiscipline ?? normalizeMultiDisciplineRow(multiRow, null)
+  const baseline = equipmentRequirementBaselineOf(multiRow, norm, row.buildingType)
+  const serialized = serializeEquipmentBaseline(baseline)
+  if (serialized.length <= 400) {
+    out[EQUIPMENT_BASELINE_PARAM] = serialized
+  } else {
+    // Fallback compact baseline without optional metadata if a row carries many fields.
+    const compact = serializeEquipmentBaseline({
+      mark: baseline.mark,
+      values: baseline.values,
+      ...(baseline.requiredServices ? { requiredServices: baseline.requiredServices } : {}),
+    })
+    if (compact.length <= 400) out[EQUIPMENT_BASELINE_PARAM] = compact
+  }
   return out
 }
 
@@ -493,7 +743,29 @@ export function plannedEquipmentBatch(model: Pick<ModelState, 'elements'>, rows:
   for (const category of ['mechanical_equipment', 'plumbing_fixture'] as const) {
     const typeId = LISTED_TYPE_IDS[category]
     const params = used.get(category) ?? []
-    if (model.elements[typeId]) {
+    const existingEl = model.elements[typeId]
+    if (existingEl?.kind === 'part_type') {
+      const base = listedEquipmentType(category)
+      const haveNames = new Set([...existingEl.definition.instanceParams, ...existingEl.definition.typeParams].map((p) => p.name))
+      const missingCore = base.instanceParams.filter((p) => !haveNames.has(p.name))
+      const extraUndeclared = params.length > 0 ? undeclared(existingEl.definition, params) : { instance: [], type: [] }
+      if ('refused' in extraUndeclared) return extraUndeclared
+      const combinedNew = [...missingCore, ...extraUndeclared.instance.filter((p) => !missingCore.some((m) => m.name === p.name))]
+      if (combinedNew.length > 0 || extraUndeclared.type.length > 0) {
+        const definition: PartTypeDefinition = {
+          ...existingEl.definition,
+          instanceParams: [...existingEl.definition.instanceParams, ...combinedNew],
+          typeParams: [...existingEl.definition.typeParams, ...extraUndeclared.type],
+        }
+        declarations.push({
+          type: 'save_part_types',
+          label: `Update ${existingEl.definition.typeName} parameters`,
+          types: [{ typeId, definition }],
+        })
+      }
+      continue
+    }
+    if (existingEl) {
       if (params.length === 0) continue
       const declared = declareParameters(model, typeId, params)
       if ('refused' in declared) return declared

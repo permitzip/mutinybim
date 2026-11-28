@@ -1,47 +1,114 @@
-import { isConnectIntoRefusal, physicalConnect, physicalSourcesFor, planConnectInto, type BimElement, type ConnectFace, type ConnectInto, type ConnectIntoPlan, type ConnectIntoSource, type ModelState, type PartConnector, type SourceEndRef, type SourcesForFace, type SystemKind } from "@permitzip/bim-kernel";
+import { isConnectIntoRefusal, paramValue, physicalConnect, physicalSourcesFor, planConnectInto, type BimElement, type ConnectFace, type ConnectInto, type ConnectIntoPlan, type ConnectIntoSource, type ModelState, type PartConnector, type PartInstance, type PartTypeDefinition, type SourceEndRef, type SourcesForFace, type SystemKind } from "@permitzip/bim-kernel";
 import { FIXTURE_CONNECT_WORDS as W } from "../ui";
 
 /**
  * Plumbing › Connect: join the selected fixtures and equipment to the
- * nearest drain, vent, cold or hot water run in one action, through the
- * kernel's `connect_into` (round 15). The kernel picks each run, the
- * takeoff fitting (the system's own fitting preferences: combination wye and
- * 1/8 bend into a level drain, sanitary tee into a stack), the slope and any
- * drop; this file only says which of a fixture's connectors each target
- * means. A selection of fixtures never reads the rest of the model.
+ * nearest drain, vent, cold/hot water, DHWR, fuel gas, flue or combustion-air
+ * run in one action, through the kernel's `connect_into` (round 15+). The
+ * kernel picks each run, the takeoff fitting (the system's own fitting
+ * preferences: combination wye and 1/8 bend into a level drain, sanitary tee
+ * into a stack), the slope and any drop; this file only says which of a
+ * fixture's connectors each target means. A selection of fixtures never reads
+ * the rest of the model.
  *
  * The "+" grip on a fixture uses the same kernel faces, answered here only
- * for the add-on's own pipe ends (a duct neck or a power connection is
- * another add-on's to answer).
+ * for this add-on's own pipe and combustion ends (an HVAC duct neck or a power
+ * connection is another add-on's to answer).
  */
 
 type Elements = Readonly<Record<string, BimElement>>;
 
-export const FIXTURE_CONNECT_TARGETS = ["drain", "vent", "cold_water", "hot_water"] as const;
+export const FIXTURE_CONNECT_TARGETS = ["drain", "vent", "cold_water", "hot_water", "dhwr", "gas", "flue", "combustion_air"] as const;
 export type FixtureConnectTarget = (typeof FIXTURE_CONNECT_TARGETS)[number];
 
 /** Which connectors each target joins, by the system kind they carry. */
-const TARGET_KINDS: Readonly<Record<FixtureConnectTarget, ReadonlySet<SystemKind>>> = {
+export const TARGET_SYSTEM_KINDS: Readonly<Record<FixtureConnectTarget, ReadonlySet<SystemKind>>> = {
   drain: new Set<SystemKind>(["sanitary", "grease_waste", "indirect_waste"]),
   vent: new Set<SystemKind>(["vent"]),
   cold_water: new Set<SystemKind>(["domestic_cold_water"]),
   hot_water: new Set<SystemKind>(["domestic_hot_water"]),
+  dhwr: new Set<SystemKind>(["domestic_hot_water_return"]),
+  gas: new Set<SystemKind>(["natural_gas"]),
+  flue: new Set<SystemKind>(["flue", "combustion_exhaust", "exhaust_air"]),
+  combustion_air: new Set<SystemKind>(["combustion_air", "outside_air"]),
 };
 
 const PIPE = "pipe";
+const DUCT = "duct";
+const COMBUSTION_FLUE_KINDS = new Set<string>(["flue", "combustion_exhaust"]);
+const COMBUSTION_AIR_KINDS = new Set<string>(["combustion_air"]);
 
-function connectorsOf(elements: Elements, el: BimElement): readonly PartConnector[] {
-  if (el.kind !== "part") return [];
+function partTypeOf(elements: Elements, el: BimElement): PartTypeDefinition | null {
+  if (el.kind !== "part") return null;
   const type = elements[el.typeId];
-  return type?.kind === "part_type" ? type.definition.connectors : [];
+  return type?.kind === "part_type" ? type.definition : null;
 }
 
-/** A fixture's open, end-of-line pipe connectors for a target (an in-line part's in / out is joined by putting it on a pipe, not here). */
+function connectorsOf(elements: Elements, el: BimElement): readonly PartConnector[] {
+  return partTypeOf(elements, el)?.connectors ?? [];
+}
+
+/**
+ * Inline pass-through pipe accessories (PRV, RPZ, meter, inline regulator,
+ * inline cleanout) pair an `in` and `out` connector on the same domain and
+ * system kind — those are inserted onto a pipe rather than branched as
+ * end-of-line fixture connections. Engineered cut-sheet fixtures and equipment
+ * (water heaters, boilers, sinks, appliances) specify `flowDirection: "in" | "out"`
+ * on distinct connections and remain connectable.
+ */
+function isInlinePassThrough(def: PartTypeDefinition, connectors: readonly PartConnector[], c: PartConnector): boolean {
+  if (def.category !== "pipe_accessory") return false;
+  if (c.flowDirection !== "in" && c.flowDirection !== "out") return false;
+  const opposite = c.flowDirection === "in" ? "out" : "in";
+  return connectors.some((other) => other.id !== c.id && other.domain === c.domain && other.systemKind === c.systemKind && other.flowDirection === opposite);
+}
+
+/** Whether a part is a fuel-burning or plumbing appliance (so `exhaust_air` / `outside_air` connectors on it are flue / combustion-air rather than HVAC air terminals). */
+function isCombustionOrPlumbingAppliance(def: PartTypeDefinition, part: PartInstance, connectors: readonly PartConnector[]): boolean {
+  if (def.category === "plumbing_fixture") return true;
+  const heater = paramValue(def, part.values, "heater_kind");
+  if (typeof heater === "string" && heater.trim() !== "") return true;
+  if (connectors.some((c) => c.domain === PIPE && (c.systemKind === "natural_gas" || c.systemKind === "domestic_hot_water" || c.systemKind === "domestic_cold_water"))) return true;
+  return /\b(water[- ]?heater|boiler|furnace|unit[- ]?heater|burner|kiln)\b/i.test(`${def.familyName} ${def.typeName} ${part.mark}`);
+}
+
+/** Whether a connector belongs to `target` and is eligible for Plumbing › Connect. */
+function connectorMatchesTarget(def: PartTypeDefinition, part: PartInstance, connectors: readonly PartConnector[], c: PartConnector, target: FixtureConnectTarget): boolean {
+  if (isInlinePassThrough(def, connectors, c)) return false;
+  if (!TARGET_SYSTEM_KINDS[target].has(c.systemKind)) return false;
+  if (target === "flue") {
+    if (c.domain !== PIPE && c.domain !== DUCT) return false;
+    if (COMBUSTION_FLUE_KINDS.has(c.systemKind)) return true;
+    // `exhaust_air`: match when pipe-domain, named flue/combustion, or on a gas/plumbing appliance.
+    if (c.domain === PIPE) return true;
+    if (/\b(flue|combust\w*|chimney|b-?vent)\b/i.test(`${c.id} ${c.label}`)) return true;
+    return isCombustionOrPlumbingAppliance(def, part, connectors);
+  }
+  if (target === "combustion_air") {
+    if (c.domain !== PIPE && c.domain !== DUCT) return false;
+    if (COMBUSTION_AIR_KINDS.has(c.systemKind)) return true;
+    // `outside_air`: never hijack a weather hood louver; match when pipe-domain or combustion-air named on an appliance.
+    if (c.intake !== undefined) return false;
+    if (c.domain === PIPE) return true;
+    return /\b(combust\w*|burner[- ]?air|make[- ]?up[- ]?air|air[- ]?intake)\b/i.test(`${c.id} ${c.label}`) && isCombustionOrPlumbingAppliance(def, part, connectors);
+  }
+  return c.domain === PIPE;
+}
+
+/** Whether a connector is a plumbing or combustion end this add-on serves on the "+" grip. */
+function isConnectablePlumbingConnector(def: PartTypeDefinition, part: PartInstance, connectors: readonly PartConnector[], c: PartConnector): boolean {
+  if (isInlinePassThrough(def, connectors, c)) return false;
+  if (c.domain === PIPE) return true;
+  return connectorMatchesTarget(def, part, connectors, c, "flue") || connectorMatchesTarget(def, part, connectors, c, "combustion_air");
+}
+
+/** A fixture's open, connectable connectors for a target. */
 function openPorts(elements: Elements, el: BimElement, target: FixtureConnectTarget): string[] {
   if (el.kind !== "part") return [];
-  const kinds = TARGET_KINDS[target];
-  return connectorsOf(elements, el)
-    .filter((c) => c.domain === PIPE && kinds.has(c.systemKind) && c.flowDirection === undefined && !el.links?.[c.id])
+  const def = partTypeOf(elements, el);
+  if (!def) return [];
+  return def.connectors
+    .filter((c) => connectorMatchesTarget(def, el, def.connectors, c, target) && !el.links?.[c.id])
     .map((c) => c.id);
 }
 
@@ -66,7 +133,9 @@ export function fixtureConnectBlocked(elements: Elements, selectedIds: readonly 
   if (fixtureConnectSources(elements, parts, target).length > 0) return null;
   const any = parts.some((id) => {
     const el = elements[id];
-    return el ? connectorsOf(elements, el).some((c) => c.domain === PIPE && TARGET_KINDS[target].has(c.systemKind)) : false;
+    if (el?.kind !== "part") return false;
+    const def = partTypeOf(elements, el);
+    return def ? def.connectors.some((c) => connectorMatchesTarget(def, el, def.connectors, c, target)) : false;
   });
   return any ? W.target[target].allConnected : W.target[target].noneHave;
 }
@@ -137,32 +206,40 @@ export function previewFixtureConnect(model: ModelState, selectedIds: readonly s
 
 // ------------------------------------------------------------------ the "+" grip
 
-/** Whether the grip's end is one of this add-on's pipe ends (a fixture's pipe connector, or an open pipe end). */
+/** Whether the grip's end is one of this add-on's pipe or combustion ends (a fixture's pipe/flue/combustion-air connector, or an open pipe end). */
 function isPlumbingEnd(elements: Elements, ref: SourceEndRef): boolean {
   const el = elements[ref.elementId];
   if (!el) return false;
   if (el.kind === "run_segment") return el.domain === PIPE;
   if (el.kind !== "part") return false;
-  const connectors = connectorsOf(elements, el);
-  if (ref.end !== undefined) return connectors.find((c) => c.id === ref.end)?.domain === PIPE;
-  // The kernel serves a part's first open connector a run can take: answer only when that one is a pipe.
-  const first = connectors.find((c) => (c.domain === PIPE || c.domain === "duct") && !el.links?.[c.id]);
-  return first?.domain === PIPE;
+  const def = partTypeOf(elements, el);
+  if (!def) return false;
+  const connectors = def.connectors;
+  if (ref.end !== undefined) {
+    const c = connectors.find((x) => x.id === ref.end);
+    return c !== undefined && (c.domain === PIPE || connectorMatchesTarget(def, el, connectors, c, "flue") || connectorMatchesTarget(def, el, connectors, c, "combustion_air"));
+  }
+  // Answer when this part has an open pipe/combustion connector, unless its first open routed connector is an HVAC-only duct.
+  const first = connectors.find((c) => (c.domain === PIPE || c.domain === DUCT) && !el.links?.[c.id]);
+  if (!first) return false;
+  return isConnectablePlumbingConnector(def, el, connectors, first);
 }
 
-/** The order a fixture's open ends are offered when the grip names none: drain first, then vent, then water, then the rest. */
-const GRIP_ORDER: readonly FixtureConnectTarget[] = ["drain", "vent", "cold_water", "hot_water"];
+/** The order a fixture's open ends are offered when the grip names none: drain first, then vent, water, DHWR, gas, combustion, then the rest. */
+const GRIP_ORDER: readonly FixtureConnectTarget[] = ["drain", "vent", "cold_water", "hot_water", "dhwr", "gas", "flue", "combustion_air"];
 const gripRank = (kind: SystemKind): number => {
-  const i = GRIP_ORDER.findIndex((t) => TARGET_KINDS[t].has(kind));
+  const i = GRIP_ORDER.findIndex((t) => TARGET_SYSTEM_KINDS[t].has(kind));
   return i < 0 ? GRIP_ORDER.length : i;
 };
 
-/** A fixture's open pipe ends, drain first: the ends the grip can serve when the hover names none. */
+/** A fixture's open plumbing and combustion ends, drain first: the ends the grip can serve when the hover names none. */
 function gripEnds(elements: Elements, ref: SourceEndRef): SourceEndRef[] {
   const el = elements[ref.elementId];
   if (ref.end !== undefined || el?.kind !== "part") return [ref];
-  return connectorsOf(elements, el)
-    .filter((c) => c.domain === PIPE && c.flowDirection === undefined && !el.links?.[c.id])
+  const def = partTypeOf(elements, el);
+  if (!def) return [];
+  return def.connectors
+    .filter((c) => isConnectablePlumbingConnector(def, el, def.connectors, c) && !el.links?.[c.id])
     .sort((a, b) => gripRank(a.systemKind) - gripRank(b.systemKind))
     .map((c) => ({ elementId: ref.elementId, end: c.id }));
 }

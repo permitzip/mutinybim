@@ -6,7 +6,15 @@ import type { ScriptOutput } from "./output";
 /** The kit's own version: recorded in every part's provenance. */
 export const KIT_VERSION = "0.1.0";
 
-export interface ProvenanceInput {
+/** Two-layer work notes: `publicNote` is safe to share externally; `privateNote` stays org/team-scoped. */
+export interface WorkNotes {
+  /** Anonymized engineering rationale safe for cross-team / external exports and snapshots. */
+  readonly publicNote?: string;
+  /** Optional org/team-scoped detail (correspondence, internal review) kept out of public exports/snapshots. */
+  readonly privateNote?: string;
+}
+
+export interface ProvenanceInput extends WorkNotes {
   /** The script item that ran, with its content hash set. */
   readonly script: ScriptItem;
   readonly values: Readonly<Record<string, ScriptValue>>;
@@ -17,6 +25,53 @@ export interface ProvenanceInput {
   readonly generatedAt: string;
   readonly packs?: readonly string[];
   readonly sources?: ScriptProvenance["sources"];
+}
+
+/** Full run provenance record including optional two-layer public/private work notes. */
+export interface ScriptRunProvenance extends WorkNotes {
+  readonly script: { readonly id: string; readonly key: string; readonly version: string; readonly hash: string };
+  readonly values: Readonly<Record<string, ScriptValue>>;
+  readonly preset?: string;
+  readonly kitVersion: string;
+  readonly kernelContract: string;
+  readonly packs: readonly string[];
+  readonly generatedAt: string;
+  readonly generatedBy: AuthorRef;
+  readonly sources?: ScriptProvenance["sources"];
+}
+
+/** Keeps only `publicNote`, stripping org-scoped `privateNote` for shared exports or snapshots. */
+export function sanitizeWorkNotes(notes?: WorkNotes): { readonly publicNote?: string } {
+  const pub = notes?.publicNote?.trim();
+  return pub ? { publicNote: pub } : {};
+}
+
+/** Builds a run-level provenance record carrying optional two-layer work notes. */
+export function buildRunProvenance(input: ProvenanceInput): ScriptRunProvenance {
+  const hash = input.script.contentHash;
+  if (!hash) throw new Error(`Script ${input.script.key} ${input.script.version} has no content hash; load it through the library first.`);
+  const pub = input.publicNote?.trim();
+  const priv = input.privateNote?.trim();
+  return {
+    script: { id: input.script.id, key: input.script.key, version: input.script.version, hash },
+    values: { ...input.values },
+    ...(input.preset ? { preset: input.preset } : {}),
+    kitVersion: KIT_VERSION,
+    kernelContract: PACK_CONTRACT_VERSION,
+    packs: [...(input.packs ?? [])],
+    generatedAt: input.generatedAt,
+    generatedBy: input.generatedBy,
+    ...(input.sources ? { sources: input.sources } : {}),
+    ...(pub ? { publicNote: pub } : {}),
+    ...(priv ? { privateNote: priv } : {}),
+  };
+}
+
+/** Strips org/team-scoped `privateNote` from a run provenance record before public export or snapshot sharing. */
+export function publicRunProvenance(provenance: ScriptRunProvenance): Omit<ScriptRunProvenance, "privateNote"> {
+  if (!("privateNote" in provenance)) return provenance;
+  const { privateNote: _privateNote, ...pub } = provenance;
+  return pub;
 }
 
 /**

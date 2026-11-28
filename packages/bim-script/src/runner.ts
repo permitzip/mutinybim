@@ -1,4 +1,8 @@
+import { decisionImpactsFor, executeCommand, linkedDetailImpacts, withUpgradePolicy, type ModelState } from "@permitzip/bim-kernel";
 import type { ScriptManifest, ScriptValue } from "@permitzip/bim-library";
+import { runScript, type RunScriptInput } from "./context";
+import type { ScriptDefinition } from "./define";
+import type { ScriptDecisionImpact, ScriptDetailImpact, ScriptOutput } from "./output";
 import type { ModelSlice } from "./slice";
 
 /**
@@ -50,7 +54,16 @@ export type RunnerFailureCode =
 
 export type ScriptRunResult =
   /** `manifest`: the script's own (what `defineScript` declared), when the runner reports it; a host checks it before saving the script. */
-  | { readonly ok: true; readonly output: unknown; readonly bytes: number; readonly ms: number; readonly manifest?: ScriptManifest }
+  | {
+      readonly ok: true;
+      readonly output: unknown;
+      readonly bytes: number;
+      readonly ms: number;
+      readonly manifest?: ScriptManifest;
+      readonly decisionImpacts?: readonly ScriptDecisionImpact[];
+      readonly detailImpacts?: readonly ScriptDetailImpact[];
+      readonly notices?: readonly string[];
+    }
   | { readonly ok: false; readonly code: RunnerFailureCode; readonly message: string; readonly ms: number };
 
 export interface ScriptRunner {
@@ -58,6 +71,145 @@ export interface ScriptRunner {
   readonly id: string;
   readonly limits: RunnerLimits;
   run(request: ScriptRunRequest): Promise<ScriptRunResult>;
+}
+
+/** Structured low-token governance impact report from a script execution or dry-run. */
+export interface ScriptImpactReport {
+  readonly decisionImpacts: readonly ScriptDecisionImpact[];
+  readonly detailImpacts: readonly ScriptDetailImpact[];
+  /** Concise low-token notices for impacted decisions (with supersede status) and stale detail views. */
+  readonly notices: readonly string[];
+  /** True when at least one impacted active decision was NOT explicitly superseded in the same run. */
+  readonly hasUnresolvedDecisions: boolean;
+}
+
+/** Result of `dryRunScript`: the script output plus governance impact notices, without mutating the caller's model. */
+export interface ScriptDryRunResult extends ScriptImpactReport {
+  readonly output: ScriptOutput;
+}
+
+/** Formats concise, low-token impact notices from decision and linked-detail impacts. */
+export function formatImpactNotices(decisionImpacts: readonly ScriptDecisionImpact[], detailImpacts: readonly ScriptDetailImpact[]): string[] {
+  const notices: string[] = [];
+  for (const d of decisionImpacts) {
+    const tag = d.superseded ? `superseded by ${d.supersededBy ?? "new decision"}` : "NOT superseded — review or supersede";
+    const note = d.publicNote ? ` — ${d.publicNote}` : "";
+    notices.push(`[decision:${d.id}] ${d.title} (${d.subjectId}, ${tag})${note}`);
+  }
+  for (const v of detailImpacts) {
+    notices.push(`[detail:${v.viewId}] ${v.notice}`);
+  }
+  return notices;
+}
+
+const RUNNER_GRAPH_KINDS: ReadonlySet<string> = new Set(["determination", "rule", "requirement_state"]);
+
+/**
+ * Simulates a script's edit output against `beforeModel` (without mutating it)
+ * to compute low-token decision impacts (including whether each was superseded
+ * in the same run) and linked detail-view staleness alerts.
+ */
+export function analyzeScriptOutputImpacts(beforeModel: ModelState, output: ScriptOutput, features: readonly string[] = []): ScriptImpactReport {
+  if (output.kind !== "edits" || output.batches.length === 0) {
+    const decisionImpacts = output.kind === "edits" ? (output.decisionImpacts ?? []) : [];
+    const detailImpacts = output.kind === "edits" ? (output.detailImpacts ?? []) : [];
+    return {
+      decisionImpacts,
+      detailImpacts,
+      notices: formatImpactNotices(decisionImpacts, detailImpacts),
+      hasUnresolvedDecisions: decisionImpacts.some((d) => !d.superseded),
+    };
+  }
+  const featureSet = new Set(features);
+  const modifiedOrDeleted = new Set<string>();
+  const deletedIds = new Set<string>();
+  const supersededInRun = new Map<string, string>();
+  let head = beforeModel;
+
+  for (const batch of output.batches) {
+    for (const cmd of batch.commands) {
+      if (cmd.type === "supersede_determination") {
+        supersededInRun.set(cmd.determinationId, cmd.newDeterminationId);
+      }
+    }
+    const res = withUpgradePolicy((f) => featureSet.has(f), () => executeCommand(head, batch));
+    if (!res.ok) break;
+    head = res.model;
+    for (const id of res.changedIds) {
+      const prev = beforeModel.elements[id];
+      if (prev && !RUNNER_GRAPH_KINDS.has(prev.kind)) {
+        modifiedOrDeleted.add(id);
+        const cur = head.elements[id];
+        const wasDel = "deleted" in prev && prev.deleted === true;
+        const nowDel = cur === undefined || ("deleted" in cur && cur.deleted === true);
+        if (!wasDel && nowDel) deletedIds.add(id);
+      }
+    }
+    for (const id of res.removedIds) {
+      const prev = beforeModel.elements[id];
+      if (prev && !RUNNER_GRAPH_KINDS.has(prev.kind)) {
+        modifiedOrDeleted.add(id);
+        deletedIds.add(id);
+      }
+    }
+  }
+
+  const touched = [...modifiedOrDeleted];
+  const decisionImpacts: ScriptDecisionImpact[] =
+    touched.length > 0
+      ? decisionImpactsFor(beforeModel, touched).map((d) => {
+          const supersededBy = supersededInRun.get(d.id);
+          return {
+            id: d.id,
+            kind: d.kind,
+            subjectId: d.subjectId,
+            key: d.key,
+            title: d.title,
+            status: d.status,
+            ...(d.publicNote ? { publicNote: d.publicNote } : {}),
+            superseded: supersededBy !== undefined,
+            ...(supersededBy !== undefined ? { supersededBy } : {}),
+          };
+        })
+      : [];
+  const detailImpacts: ScriptDetailImpact[] =
+    touched.length > 0
+      ? linkedDetailImpacts(beforeModel, touched, {
+          deletedElementIds: [...deletedIds],
+          afterElements: head.elements,
+        }).map((v) => ({
+          viewId: v.viewId,
+          viewName: v.viewName,
+          matchedElementIds: [...v.matchedElementIds],
+          matchedSystemIds: [...v.matchedSystemIds],
+          deletedElementIds: [...v.deletedElementIds],
+          notice: v.notice,
+        }))
+      : [];
+  return {
+    decisionImpacts,
+    detailImpacts,
+    notices: formatImpactNotices(decisionImpacts, detailImpacts),
+    hasUnresolvedDecisions: decisionImpacts.some((d) => !d.superseded),
+  };
+}
+
+/**
+ * Dry-runs a script against a slice and returns its output together with
+ * low-token decision impact notices (showing whether each was superseded)
+ * and linked drafting/detail view staleness notices.
+ */
+export async function dryRunScript(definition: ScriptDefinition, input: RunScriptInput): Promise<ScriptDryRunResult> {
+  const output = await runScript(definition, input);
+  const decisionImpacts = output.kind === "edits" ? (output.decisionImpacts ?? []) : [];
+  const detailImpacts = output.kind === "edits" ? (output.detailImpacts ?? []) : [];
+  return {
+    output,
+    decisionImpacts,
+    detailImpacts,
+    notices: formatImpactNotices(decisionImpacts, detailImpacts),
+    hasUnresolvedDecisions: decisionImpacts.some((d) => !d.superseded),
+  };
 }
 
 /** Words for a failed run, for the agent and the person. */

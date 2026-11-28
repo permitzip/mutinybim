@@ -135,7 +135,7 @@ export type ViewTemplateLockKey = (typeof VIEW_TEMPLATE_LOCK_KEYS)[number];
 /** Reusable view settings stored on a `view_template` (including any pack-registered `ViewGraphicsHints`). */
 export type ViewTemplateProps = Omit<
   ViewProps,
-  "level" | "levelElevationMm" | "section" | "cropView" | "cropPolygon" | "showCropBox" | "camera3d" | "cropBox3d" | "workingFor" | "schedule" | "formSchedule" | "scheduleV2" | "diagram" | "viewTemplateId"
+  "level" | "levelElevationMm" | "section" | "cropView" | "cropPolygon" | "showCropBox" | "camera3d" | "cropBox3d" | "workingFor" | "schedule" | "formSchedule" | "scheduleV2" | "diagram" | "viewTemplateId" | "linkedElementIds" | "linkedSystemIds"
 >;
 
 /** A saved, reusable view template bound live to any number of views via `ViewProps.viewTemplateId`. */
@@ -201,6 +201,8 @@ const KNOWN_TEMPLATE_KERNEL_KEYS: ReadonlySet<string> = new Set([
   "workingAngleDeg",
   "projection",
   "viewTemplateId",
+  "linkedElementIds",
+  "linkedSystemIds",
 ]);
 
 /**
@@ -388,6 +390,10 @@ export interface ViewProps extends ViewGraphicsHints {
   readonly scheduleV2?: ScheduleDefinitionV2;
   /** Detail views only: a live diagram drawn from the model's connection graph at every evaluation (`diagrams/`). */
   readonly diagram?: DiagramDefinition;
+  /** Model element ids this view (typically a drafting/detail view) depicts or depends on; modifying or deleting them raises staleness alerts. */
+  readonly linkedElementIds?: readonly ElementId[];
+  /** Service/system ids this view (typically a drafting/detail view) depicts or depends on; modifying or deleting elements in those systems raises staleness alerts. */
+  readonly linkedSystemIds?: readonly ElementId[];
   /** 3D views only: where the view looks from (`view3d.ts`). */
   readonly camera3d?: View3dCamera;
   /** 3D views only: the 3D crop box; it crops while `cropView` is on and shows while `showCropBox` is on. */

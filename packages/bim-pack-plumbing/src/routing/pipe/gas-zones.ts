@@ -1,5 +1,5 @@
 import { convert, QUANTITY_BINDINGS } from "@permitzip/bim-units";
-import { paramValue, resolveConnectors, connectionTypeOfLoadPoint, loadPointLabel, loadPointQuantities, runEndOf, resolveFitting, len3, sub3, isSource, type RunGraphNode, partLabelOf, runLabel, PIPE_DESIGN_DEFAULTS, gasProperties, mergePipeDesign, type GasKind, type PipeDesign, pipeComponent as component, pipeNodeId as idOf, pipePositionOn as positionOn, pipeWalkTree as tree } from "@permitzip/bim-kernel";
+import { paramValue, partConnectionTypeLoad, resolveConnectors, connectionTypeOfLoadPoint, loadPointLabel, loadPointQuantities, runEndOf, resolveFitting, len3, sub3, isSource, type RunGraphNode, partLabelOf, runLabel, PIPE_DESIGN_DEFAULTS, gasProperties, mergePipeDesign, type GasKind, type PipeDesign, pipeComponent as component, pipeNodeId as idOf, pipePositionOn as positionOn, pipeWalkTree as tree } from "@permitzip/bim-kernel";
 import { REGULATOR_PARAMS } from "./families";
 import type { LoadPointElement, BimElement, ElementId, ModelState, PartInstance, MepSystem, PipeMaterial, RunFitting, RunSegment } from "@permitzip/bim-kernel";
 
@@ -199,18 +199,24 @@ export function isRegulatorPart(elements: Elements, part: PartInstance): boolean
   return /regulator/i.test(d.familyName) || paramValue(d, part.values, "outlet_in_wc") !== undefined;
 }
 
-/** A part's gas input at one connector (MBH): the connector's flow, the firm/project fixture table, else the type's input parameter. */
+/** A part's gas input at one connector (MBH): connector flow, explicit instance input, connection type (starter/catalog), firm/project fixture table, else type parameter. */
 export function gasInputOf(elements: Elements, part: PartInstance, connectorId: string, design: PipeDesign): { mbh: number; found: boolean } {
   const type = elements[part.typeId];
   if (type?.kind !== "part_type") return { mbh: 0, found: false };
   const c = resolveConnectors(type.definition, part.values).find((x) => x.id === connectorId);
   if (c?.flow !== undefined) return { mbh: c.flow, found: true };
+  for (const k of ["input_mbh", "gas_input_mbh", "mbh"]) {
+    const ownVal = part.values[k];
+    if (typeof ownVal === "number" && Number.isFinite(ownVal)) return { mbh: ownVal, found: true };
+  }
+  const fromType = partConnectionTypeLoad(elements, part, c?.systemKind ?? "natural_gas");
+  if (fromType !== null) return { mbh: fromType, found: true };
   const name = type.definition.familyName.trim().toLowerCase();
   const row = design.fixtureTable?.find((r) => r.fixture.trim().toLowerCase() === name);
   if (row?.mbh !== undefined) return { mbh: row.mbh, found: true };
   for (const k of ["input_mbh", "gas_input_mbh", "mbh"]) {
     const v = paramValue(type.definition, part.values, k);
-    if (typeof v === "number") return { mbh: v, found: true };
+    if (typeof v === "number" && Number.isFinite(v)) return { mbh: v, found: true };
   }
   return { mbh: 0, found: false };
 }
@@ -598,5 +604,62 @@ export function zonesByElement(network: GasNetwork): ReadonlyMap<ElementId, read
   const out = new Map<ElementId, string[]>();
   for (const z of network.zones) for (const s of z.segments) if (s.elementId) out.set(s.elementId, [...new Set([...(out.get(s.elementId) ?? []), z.id])]);
   return out;
+}
+
+/**
+ * Developed length from the zone's start (point of delivery / regulator) to the
+ * farthest downstream outlet reachable through each segment piece (IFGC 402.4.2
+ * branch length method). Sections on the longest run equal `zone.longestFt`.
+ */
+export function zoneBranchLengths(zone: GasZone): ReadonlyMap<string, number> {
+  const byId = new Map(zone.segments.map((s) => [s.id, s] as const));
+  const children = new Map<string, string[]>();
+  const roots: string[] = [];
+  for (const s of zone.segments) {
+    if (s.parent === null) roots.push(s.id);
+    else {
+      const list = children.get(s.parent);
+      if (list) list.push(s.id);
+      else children.set(s.parent, [s.id]);
+    }
+  }
+  const path = new Map<string, number>();
+  const visit = (id: string, upstream: number, seen: Set<string>): void => {
+    if (seen.has(id)) return;
+    seen.add(id);
+    const s = byId.get(id);
+    if (!s) return;
+    const here = upstream + s.lengthFt;
+    path.set(id, here);
+    for (const c of children.get(id) ?? []) visit(c, here, seen);
+  };
+  for (const root of roots) visit(root, 0, new Set());
+  const farthest = new Map<string, number>();
+  const solve = (id: string, seen: Set<string>): number => {
+    const cached = farthest.get(id);
+    if (cached !== undefined) return cached;
+    if (seen.has(id)) return path.get(id) ?? 0;
+    seen.add(id);
+    const s = byId.get(id);
+    const kids = children.get(id) ?? [];
+    let far = kids.length === 0 || (s?.loadMbh ?? 0) > 0 ? (path.get(id) ?? 0) : 0;
+    for (const c of kids) far = Math.max(far, solve(c, seen));
+    farthest.set(id, far);
+    return far;
+  };
+  for (const s of zone.segments) solve(s.id, new Set());
+  return farthest;
+}
+
+/** Branch-length sizing distance (ft) for one drawn pipe element within a zone, or null if absent. */
+export function segmentBranchLengthFt(zone: GasZone, elementId: ElementId): number | null {
+  const lengths = zoneBranchLengths(zone);
+  let best: number | null = null;
+  for (const s of zone.segments) {
+    if (s.elementId !== elementId) continue;
+    const d = lengths.get(s.id);
+    if (d !== undefined) best = Math.max(best ?? 0, d);
+  }
+  return best;
 }
 

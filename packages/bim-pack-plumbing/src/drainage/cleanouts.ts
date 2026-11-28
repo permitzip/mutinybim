@@ -26,6 +26,8 @@ import { builtinPartType, executeCommand } from "@permitzip/bim-kernel";
 import { isPackRefusal } from "@permitzip/bim-kernel/packs";
 import { sewerConnectionOf } from "./read";
 import { CLEANOUT_PROPOSAL_WORDS } from "../ui";
+import { projectPlumbingSettings } from "../routing/pipe/plumbing-catalog";
+import type { CleanoutSpacingBand } from "../routing/pipe/plumbing-settings";
 
 /**
  * Cleanouts proposed on a selected drain (round 14 P14). The drain is walked
@@ -55,6 +57,51 @@ const DEFAULT_SPACING_FT = 100;
 const NEAR_EXISTING_MM = 3 * FT;
 /** Clear distance from a bend or an end to the cleanout's near face. */
 const CLEAR_MM = 150;
+
+/**
+ * Default per-size horizontal drain cleanout spacing (IPC 708.1 / UPC 707.4):
+ * 50 ft for horizontal drains <= 3", 100 ft for >= 4". Overridable per-call
+ * (`options.spacingFt` or `options.spacingBySize`) or via project
+ * `plumbing_settings` (`cleanoutSpacingFt` / `cleanoutSpacingBySize`).
+ */
+export const DEFAULT_CLEANOUT_SPACING_BY_SIZE: readonly CleanoutSpacingBand[] = [
+  { maxNominalIn: 3, spacingFt: 50 },
+  { maxNominalIn: 1000, spacingFt: DEFAULT_SPACING_FT },
+];
+
+export interface CleanoutSpacingOptions {
+  /** Flat override (ft) for all drain sizes. */
+  readonly spacingFt?: number;
+  /** Per-size bands (`maxNominalIn` ascending -> `spacingFt`). */
+  readonly spacingBySize?: readonly CleanoutSpacingBand[];
+}
+
+/** Resolve maximum developed cleanout spacing (ft) for a horizontal drain of `nominalIn`. */
+export function cleanoutSpacingForSizeFt(nominalIn: number, options: CleanoutSpacingOptions = {}): number {
+  if (typeof options.spacingFt === "number" && Number.isFinite(options.spacingFt) && options.spacingFt > 0) {
+    return options.spacingFt;
+  }
+  const bands = options.spacingBySize && options.spacingBySize.length > 0 ? options.spacingBySize : DEFAULT_CLEANOUT_SPACING_BY_SIZE;
+  const sorted = [...bands]
+    .filter((b) => Number.isFinite(b.maxNominalIn) && b.maxNominalIn > 0 && Number.isFinite(b.spacingFt) && b.spacingFt > 0)
+    .sort((a, b) => a.maxNominalIn - b.maxNominalIn);
+  const matched = sorted.find((b) => nominalIn <= b.maxNominalIn + 1e-6);
+  return matched?.spacingFt ?? sorted[sorted.length - 1]?.spacingFt ?? DEFAULT_SPACING_FT;
+}
+
+function parseSpacingBands(raw: unknown): readonly CleanoutSpacingBand[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: CleanoutSpacingBand[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const maxNominalIn = (item as Record<string, unknown>).maxNominalIn;
+    const spacingFt = (item as Record<string, unknown>).spacingFt;
+    if (typeof maxNominalIn === "number" && Number.isFinite(maxNominalIn) && maxNominalIn > 0 && typeof spacingFt === "number" && Number.isFinite(spacingFt) && spacingFt > 0) {
+      out.push({ maxNominalIn, spacingFt });
+    }
+  }
+  return out.length > 0 ? out : undefined;
+}
 
 type Elements = Readonly<Record<string, BimElement>>;
 
@@ -194,7 +241,19 @@ export function proposeCleanouts(model: Pick<ModelState, "elements" | "settings"
   const elements = model.elements;
   const line = drainLine(elements, request.roomIds);
   if (line.length === 0) return { refused: "Select a level drain pipe to propose cleanouts on" };
-  const spacingFt = typeof request.options?.spacingFt === "number" && request.options.spacingFt > 0 ? request.options.spacingFt : DEFAULT_SPACING_FT;
+  const projectSettings = projectPlumbingSettings(elements);
+  const optSpacingFt = typeof request.options?.spacingFt === "number" && request.options.spacingFt > 0 ? request.options.spacingFt : undefined;
+  const optBands = parseSpacingBands(request.options?.spacingBySize);
+  const spacingOptions: CleanoutSpacingOptions =
+    optSpacingFt !== undefined
+      ? { spacingFt: optSpacingFt }
+      : optBands !== undefined
+        ? { spacingBySize: optBands }
+        : projectSettings?.cleanoutSpacingFt !== undefined
+          ? { spacingFt: projectSettings.cleanoutSpacingFt }
+          : projectSettings?.cleanoutSpacingBySize !== undefined
+            ? { spacingBySize: projectSettings.cleanoutSpacingBySize }
+            : {};
   const notes: string[] = [];
   const raw: Array<{ piece: Piece; fromHeadMm: number; spot: CleanoutSpot; reason: string }> = [];
   const lengths = line.map((p) => len3(sub3(p.seg.end, p.seg.start)));
@@ -205,17 +264,22 @@ export function proposeCleanouts(model: Pick<ModelState, "elements" | "settings"
   let sinceMm = 0;
   line.forEach((p, i) => {
     const total = lengths[i] ?? 0;
+    const pieceSpacingFt = cleanoutSpacingForSizeFt(nominalInOf(p.seg.size), spacingOptions);
+    const pieceSpacingMm = pieceSpacingFt * FT;
     if (i > 0 && p.via?.kind === "run_fitting" && p.via.fittingType === "elbow" && (p.via.angleDeg ?? 90) > 45 + 1e-6) {
       const prev = line[i - 1];
       if (prev) raw.push({ piece: prev, fromHeadMm: (lengths[i - 1] ?? 0) - CLEAR_MM, spot: "direction_change", reason: `a ${Math.round(p.via.angleDeg ?? 90)}° change of direction` });
     }
     if (i > 0 && isCleanoutPart(elements, p.via)) sinceMm = 0;
-    let at = spacingFt * FT - sinceMm;
+    let at = pieceSpacingMm - sinceMm;
+    if (at < CLEAR_MM && sinceMm >= pieceSpacingMm - 1e-6) at = CLEAR_MM;
+    let lastAt = -sinceMm;
     while (at < total) {
-      raw.push({ piece: p, fromHeadMm: at, spot: "spacing", reason: `${spacingFt} ft along the drain since the last cleanout` });
-      at += spacingFt * FT;
+      raw.push({ piece: p, fromHeadMm: at, spot: "spacing", reason: `${pieceSpacingFt} ft along the drain since the last cleanout` });
+      lastAt = at;
+      at += pieceSpacingMm;
     }
-    sinceMm = (sinceMm + total) % (spacingFt * FT);
+    sinceMm = total - lastAt;
   });
   const last = line[line.length - 1];
   if (last) {

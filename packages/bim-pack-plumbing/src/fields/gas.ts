@@ -1,6 +1,6 @@
 import type { TagStylePreset, MepSystem, PipeMaterial, RunSize, BimElement, ElementId, FieldPathInfo, FieldScalar } from "@permitzip/bim-kernel";
 import { gasFuelOf, GAS_FUEL_LABEL } from "../routing/pipe/gas-fuel";
-import { gasNetwork, pressureLabel, type GasNetwork } from "../routing/pipe/gas-zones";
+import { gasNetwork, pressureLabel, segmentBranchLengthFt, type GasNetwork } from "../routing/pipe/gas-zones";
 import { segmentLength3, pipeRow, pipeSpecLabel, inchSizeText, pipeSegmentOf } from "@permitzip/bim-kernel";
 
 /**
@@ -27,6 +27,8 @@ export const GAS_FIELD_PATHS: readonly FieldPathInfo[] = [
   { path: "gas.zone", label: "Gas pressure zone", on: "pipe", example: "11 in. w.c." },
   { path: "gas.fuel", label: "Gas (natural gas or propane)", on: "pipe", example: "Propane" },
   { path: "gas.zone_longest", label: "Longest developed length in this pipe's pressure zone (sizing length)", on: "pipe", example: "250" },
+  { path: "gas.branch_length", label: "Developed length from zone start to this pipe's farthest outlet (IFGC 402.4.2 branch length)", on: "pipe", example: "110" },
+  { path: "gas.sizing_length", label: "Active sizing length for this pipe (longest run or branch length per system setting)", on: "pipe", example: "250" },
   { path: "gas.carries_cfh", label: "Gas flow this pipe carries (CFH)", on: "pipe", example: "1,950" },
   { path: "gas.heating_value", label: "Heating value of the gas (Btu per cubic foot)", on: "pipe", example: "1,000" },
 ];
@@ -132,6 +134,15 @@ export function resolveGasField(elements: Elements, elementId: string, path: str
       const ft = zoneLongestFt(elements, system, seg.id);
       return ft === null ? out(null, "") : out(Math.round(ft * 10) / 10, `${lf(ft)} LF`);
     }
+    case "branch_length": {
+      const ft = branchLengthFt(elements, system, seg.id);
+      return ft === null ? out(null, "") : out(Math.round(ft * 10) / 10, `${lf(ft)} LF`);
+    }
+    case "sizing_length": {
+      const net = networkOf(elements, system.id);
+      const ft = net?.method === "branch_length" ? branchLengthFt(elements, system, seg.id) : zoneLongestFt(elements, system, seg.id);
+      return ft === null ? out(null, "") : out(Math.round(ft * 10) / 10, `${lf(ft)} LF`);
+    }
     case "carries_cfh": {
       const net = networkOf(elements, system.id);
       const mbh = carriedMbh(net, seg.id);
@@ -170,6 +181,20 @@ function zoneLongestFt(elements: Elements, system: MepSystem, segmentId: Element
   let best: { longest: number; from: number } | null = null;
   for (const z of net?.zones ?? []) for (const s of z.segments) if (s.elementId === segmentId && (best === null || s.fromSourceFt < best.from)) best = { longest: z.longestFt, from: s.fromSourceFt };
   return best?.longest ?? null;
+}
+
+/** The developed length from the pressure zone's start to this pipe's farthest downstream outlet (ft): what IFGC 402.4.2 branch length sizes on. */
+function branchLengthFt(elements: Elements, system: MepSystem, segmentId: ElementId): number | null {
+  const net = networkOf(elements, system.id);
+  let best: { branch: number; from: number } | null = null;
+  for (const z of net?.zones ?? []) {
+    const b = segmentBranchLengthFt(z, segmentId);
+    if (b === null) continue;
+    for (const s of z.segments) {
+      if (s.elementId === segmentId && (best === null || s.fromSourceFt < best.from)) best = { branch: b, from: s.fromSourceFt };
+    }
+  }
+  return best?.branch ?? null;
 }
 
 /** The gas input a drawn pipe carries (MBH): every length from its upstream end down, each length's load counted once. */

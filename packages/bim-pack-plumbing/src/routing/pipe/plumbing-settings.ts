@@ -71,6 +71,77 @@ export const pipeInsulationRowSchema = z
   .strict();
 export type PipeInsulationRow = z.infer<typeof pipeInsulationRowSchema>;
 
+/** Municipal hydrant or water-service flow test inputs (NFPA 291 / Hazen-Williams N^1.85 curve). */
+export const waterFlowTestSchema = z
+  .object({
+    /** Static pressure at 0 gpm (psi). */
+    staticPsi: z.number().finite().positive().max(300),
+    /** Residual pressure measured during the flow test (psi). */
+    residualPsi: z.number().finite().min(0).max(300),
+    /** Flow rate measured during the flow test (gpm). */
+    testGpm: z.number().finite().positive().max(100_000),
+    /** Elevation of the test hydrant / gauge relative to project zero datum (ft). */
+    elevationFt: z.number().finite().min(-1_000).max(20_000).optional(),
+    /** Optional safety margin subtracted from available pressure (psi). */
+    safetyMarginPsi: z.number().finite().min(0).max(100).optional(),
+    /** Optional test date / identifier metadata. */
+    testedAt: z.string().trim().min(1).max(80).optional(),
+    location: z.string().trim().min(1).max(160).optional(),
+  })
+  .strict();
+export type WaterFlowTest = z.infer<typeof waterFlowTestSchema>;
+
+/** Domestic hot water recirculation (DHWR) loop design inputs. */
+export const dhwrDesignSchema = z
+  .object({
+    /** Explicit recirculation loop flow (gpm). Overrides heat-loss / delta-T calculation when set. */
+    designFlowGpm: z.number().finite().positive().max(1_000).optional(),
+    /** Allowable loop temperature drop (°F), default 10 °F. */
+    deltaTF: z.number().finite().positive().max(60).optional(),
+    /** Explicit total loop heat loss (Btu/h), overrides per-segment pipe heat-loss calculation. */
+    heatLossBtuh: z.number().finite().min(0).max(10_000_000).optional(),
+    /** Override heat loss per linear foot of piping (Btu/h·ft). */
+    heatLossBtuhPerFt: z.number().finite().min(0).max(500).optional(),
+    /** Optional DHW supply loop length included in heat loss (ft). When omitted, DHW supply length is estimated from the return loop. */
+    supplyLoopLengthFt: z.number().finite().min(0).max(100_000).optional(),
+    /** Ambient air temperature around piping (°F), default 70 °F. */
+    ambientTempF: z.number().finite().min(0).max(130).optional(),
+    /** Fitting equivalent length allowance as a percent of developed loop length, default 30%. */
+    fittingAllowancePct: z.number().finite().min(0).max(200).optional(),
+    /** Velocity limit for DHWR sizing (ft/s), default 3 ft/s. */
+    maxVelocityFps: z.number().finite().positive().max(15).optional(),
+    /** Optional friction limit for DHWR sizing (psi per 100 ft). */
+    maxFrictionPsiPer100Ft: z.number().finite().positive().max(20).optional(),
+    /** Buffer / storage tank volume (gal), when separate from a modeled part. */
+    bufferTankGal: z.number().finite().min(0).max(50_000).optional(),
+    /** Buffer / storage tank standby heat loss (Btu/h). */
+    bufferTankLossBtuh: z.number().finite().min(0).max(500_000).optional(),
+    /** Whether the recirc pump is external to the water heater. */
+    externalPump: z.boolean().optional(),
+  })
+  .strict();
+export type DhwrDesign = z.infer<typeof dhwrDesignSchema>;
+
+/** Configurable horizontal drain cleanout spacing band, smallest maxNominalIn first. */
+export const cleanoutSpacingBandSchema = z
+  .object({
+    /** Applies to horizontal drains at or below this nominal diameter (inches). */
+    maxNominalIn: z.number().finite().positive().max(1000),
+    /** Maximum developed spacing between cleanouts (ft). */
+    spacingFt: z.number().finite().positive().max(1000),
+  })
+  .strict();
+export type CleanoutSpacingBand = z.infer<typeof cleanoutSpacingBandSchema>;
+
+declare module "@permitzip/bim-kernel" {
+  interface PipeDesign {
+    /** Hydrant or service flow-test curve inputs for domestic water systems. */
+    readonly flowTest?: WaterFlowTest;
+    /** Domestic hot water recirculation loop sizing inputs. */
+    readonly dhwr?: DhwrDesign;
+  }
+}
+
 export const plumbingSettingsEntrySchema = z
   .object({
     type: z.literal("plumbing_settings"),
@@ -82,6 +153,18 @@ export const plumbingSettingsEntrySchema = z
     pipeInsulation: z.array(pipeInsulationRowSchema).max(80).optional(),
     /** Where the schedule's values come from, in words ("IECC 2021 Table C403.12.3 via the firm's spec"). */
     pipeInsulationSource: z.string().trim().min(1).max(200).optional(),
+    /** Project-level hydrant/service flow test data (overridden by per-system flowTests or system design). */
+    flowTest: waterFlowTestSchema.optional(),
+    /** Per-system hydrant/service flow test data, keyed by system element id. */
+    flowTests: z.record(z.string().min(1).max(200), waterFlowTestSchema).optional(),
+    /** Project-level DHWR loop design defaults. */
+    dhwr: dhwrDesignSchema.optional(),
+    /** Per-system DHWR loop design overrides, keyed by system element id. */
+    dhwrBySystem: z.record(z.string().min(1).max(200), dhwrDesignSchema).optional(),
+    /** Flat cleanout spacing override (ft), overrides cleanoutSpacingBySize when set. */
+    cleanoutSpacingFt: z.number().finite().positive().max(1000).optional(),
+    /** Per-size horizontal drain cleanout spacing bands (default 50 ft <= 3", 100 ft >= 4"). */
+    cleanoutSpacingBySize: z.array(cleanoutSpacingBandSchema).min(1).max(20).optional(),
   })
   .strict();
 export type PlumbingSettingsEntry = z.infer<typeof plumbingSettingsEntrySchema>;

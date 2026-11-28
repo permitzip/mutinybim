@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { NOTE_FONT_FACES, NOTE_FONT_FILES, buildSheetSceneFor, documentIndex, setOrder, sheetViewports, type ModelState, type Sheet, type SheetDrawOptions, type SheetRevision, type ViewBackgrounds } from "@permitzip/bim-kernel";
-import { modelPrintOptions, renderSheetPdf, type NoteFontSource, type SheetImageSource } from "./pdf";
+import { modelPrintOptions, renderSheetPdf, type DocumentUrlResolver, type NoteFontSource, type SheetImageSource } from "./pdf";
 import { mergeSheetPdfs, stampSheetCode, type RenderedSet } from "./set-pdf";
 import { sheetPrintNotes } from "./print-notes";
 
@@ -71,6 +71,8 @@ export interface RenderSetOptions {
   readonly images?: SheetImageSource;
   /** V10: the Verify link to print as a QR code on each sheet, by sheet id. Sheets without one print no code. */
   readonly sheetCodes?: Readonly<Record<string, string>>;
+  /** Host-neutral resolver mapping logical cut-sheet / document refs carried on schedule cells to public `http(s)` PDF link URLs. */
+  readonly resolveDocumentUrl?: DocumentUrlResolver;
 }
 
 /** How every sheet of a set draws: the title-block fallbacks and the linked backgrounds. */
@@ -93,9 +95,13 @@ export async function renderDrawingSet(model: ModelState, opts: RenderSetOptions
   const entries: Omit<SetSheetEntry, "page">[] = [];
   const printNotes: string[] = [];
   const sheetPdfs: RenderedSheetPdf[] = [];
+  const printOpts = {
+    ...modelPrintOptions(model),
+    ...(opts.resolveDocumentUrl ? { resolveDocumentUrl: opts.resolveDocumentUrl } : {}),
+  };
   for (const sheet of sheets) {
     const scene = buildSheetSceneFor(model, sheet.id, setDrawOptions(opts));
-    const rendered = await renderSheetPdf(scene, { title: `${sheet.number} ${sheet.title}`, modelRevision: model.revision, snapshotSha256: opts.snapshotSha256, renderer: opts.renderer }, opts.noteFonts, opts.images ?? null, modelPrintOptions(model));
+    const rendered = await renderSheetPdf(scene, { title: `${sheet.number} ${sheet.title}`, modelRevision: model.revision, snapshotSha256: opts.snapshotSha256, renderer: opts.renderer }, opts.noteFonts, opts.images ?? null, printOpts);
     // V10: the sheet's Verify code is drawn into its own PDF before it joins the set.
     const code = opts.sheetCodes?.[String(sheet.id)];
     const bytes = code ? await stampSheetCode(rendered.bytes, code) : rendered.bytes;

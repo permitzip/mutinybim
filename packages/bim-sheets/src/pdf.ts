@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import type { SheetScene } from "@permitzip/bim-kernel";
 import { renderSheetPdfWith, type NoteFontSource, type PdfMetadata, type PdfPrintOptions, type RenderedPdf, type SceneFontSource, type SheetImageSource } from "./pdf-core";
 
-export { CODE_SLOT_KEYWORD, DetailHashMismatchError, NoteFontMismatchError, fetchSceneFonts, modelPrintOptions, renderSheetPdfWith, type DetailSource, type NoteFontSource, type PdfMetadata, type PdfPrintOptions, type RenderedPdf, type SceneFontSource, type SheetImageSource } from "./pdf-core";
+export { CODE_SLOT_KEYWORD, DetailHashMismatchError, NoteFontMismatchError, fetchSceneFonts, modelPrintOptions, renderSheetPdfWith, type DetailSource, type DocumentUrlResolver, type NoteFontSource, type PdfMetadata, type PdfPrintOptions, type RenderedPdf, type SceneFontSource, type SheetImageSource } from "./pdf-core";
 
 /** Standalone: pictures are files under `dir`, the figure's file id a path inside it. */
 export function fileImageSource(dir: string): SheetImageSource {
@@ -65,5 +65,9 @@ export function renderSheetPdf(scene: SheetScene, meta: PdfMetadata, noteFonts: 
   return renderSheetPdfWith(scene, meta, {
     load: (file) => readFile(path.join(DETAILS_DIR, path.basename(file))),
     sha256: async (bytes) => createHash("sha256").update(bytes).digest("hex"),
-  }, noteFonts, images, { sceneFonts: print.sceneFonts ?? nodeSceneFonts(), ...(print.monochrome ? { monochrome: true } : {}) });
+  }, noteFonts, images, {
+    sceneFonts: print.sceneFonts ?? nodeSceneFonts(),
+    ...(print.monochrome ? { monochrome: true } : {}),
+    ...(print.resolveDocumentUrl ? { resolveDocumentUrl: print.resolveDocumentUrl } : {}),
+  });
 }

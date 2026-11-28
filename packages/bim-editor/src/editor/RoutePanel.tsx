@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrig
 import { Separator } from '../ui/separator'
 import { ToggleGroup, ToggleGroupItem } from '../ui/toggle-group'
 import { MM_PER_IN } from './placement'
+import { SNAP_GRID_OPTIONS, setSnapGridMm, snapGridLabel, useSnapGridMm } from './snap-grid'
 import { DEFAULT_ROUTE_DUCT_DESIGN, type RouteDuctDesign } from './route-design'
 import { RouteSections } from './contributions/route-sections'
 import { RouteDefaultsControl } from './RouteDefaultsControl'
@@ -251,6 +252,7 @@ export interface RouteCheckLine {
 
 /** Left panel while the Route tool is on: what to route (duct or pipe), its system, size and height, on which level. */
 export function RoutePanel({ choices, onChange, systems, levels, levelId, onLevel, pointCount, finishBlocked, onFinish, onStop, myDefaults, checks, pipeTypes = null, inheritArmed = false, onInherit, onAddLevel, onUseArchitectLevels }: Props) {
+  const snapGridMm = useSnapGridMm()
   const set = (patch: Partial<RouteChoices>) => onChange({ ...choices, ...patch })
   const kinds = systemKindsFor(choices.kind)
   const kindNow = systemKindOfChoice(choices.system, systems, kinds)
@@ -500,6 +502,31 @@ export function RoutePanel({ choices, onChange, systems, levels, levelId, onLeve
           </Field>
         </FieldGroup>
       )}
+      <Field>
+        <FieldLabel htmlFor="bm-route-snap">Snap increment</FieldLabel>
+        <ToggleGroup
+          id="bm-route-snap"
+          type="single"
+          variant="outline"
+          size="sm"
+          className="flex flex-wrap justify-start"
+          value={snapGridLabel(snapGridMm)}
+          onValueChange={(val) => {
+            if (!val) return
+            const opt = SNAP_GRID_OPTIONS.find((o) => o.shortLabel === val)
+            if (opt) setSnapGridMm(opt.mm)
+          }}
+          aria-label="Route snap grid increment"
+          data-testid="route-snap-grid"
+        >
+          {SNAP_GRID_OPTIONS.map((opt) => (
+            <ToggleGroupItem key={opt.shortLabel} value={opt.shortLabel} className="px-2 text-xs" data-testid={`route-snap-${opt.shortLabel}`}>
+              {opt.shortLabel}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+        <FieldDescription>Hold Alt while dragging or routing to override temporarily to Free (1 mm).</FieldDescription>
+      </Field>
       {onInherit && (
         <Field>
           <Button size="sm" variant={inheritArmed ? 'default' : 'outline'} aria-pressed={inheritArmed} onClick={onInherit} data-testid="route-inherit">

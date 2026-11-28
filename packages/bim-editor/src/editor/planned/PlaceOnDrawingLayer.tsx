@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { asElementId, drawPartSymbol, localBounds, modelToPaperPoint, partToWorld, resolveGeometry, type Command, type ModelState, type PartInstance, type PartTypeDefinition, type PartTypeElement, type Vec2, type ViewOnPaper, type WorkFrame } from '@permitzip/bim-kernel'
 import { ALIGN_SNAP_MM, POINT_SNAP_MM, drawingPlacementCommand, drawingPlacementTarget, isWallFaceMountable, newElementId, type DrawingPlacementSpec, type DrawingPlacementTarget } from '../placement'
+import { useSnapGridMm } from '../snap-grid'
 import { linkedSnapNear } from '../linked-reference/linked-reference-store'
 
 /** How far round the pointer a linked model's ends and faces are read, mm (the farther of the two snap reaches). */
@@ -50,6 +51,7 @@ function nameOf(spec: DrawingPlacementSpec): string {
 export function PlaceOnDrawingLayer({ model, view, spec, paperOf, submit, hint, onPlaced, onCancel, workFrame }: Props) {
   const [rotationDeg, setRotationDeg] = useState(spec.rotationDeg)
   const [target, setTarget] = useState<DrawingPlacementTarget | null>(null)
+  const snapGridMm = useSnapGridMm()
   const definition = useMemo(() => definitionOf(model, spec), [model, spec])
   const box = useMemo(() => (definition ? localBounds(resolveGeometry(definition)) : null), [definition])
   const r = view.paperRect
@@ -73,7 +75,7 @@ export function PlaceOnDrawingLayer({ model, view, spec, paperOf, submit, hint, 
   const aim = (e: React.PointerEvent<SVGElement>): DrawingPlacementTarget | null => {
     const p = paperOf(e)
     if (!p) return null
-    const placed = drawingPlacementTarget(model, view, p, spec.heightMm, workFrame, { ignorePlanes: e.shiftKey, wallSnap: !e.shiftKey && isWallFaceMountable(definition), linked: (levelId, at) => linkedSnapNear(model, levelId, at, LINKED_PLACE_REACH_MM) })
+    const placed = drawingPlacementTarget(model, view, p, spec.heightMm, workFrame, { ignorePlanes: e.shiftKey, wallSnap: !e.shiftKey && isWallFaceMountable(definition), linked: (levelId, at) => linkedSnapNear(model, levelId, at, LINKED_PLACE_REACH_MM), gridMm: e.altKey ? 0 : snapGridMm })
     if (!placed.ok) {
       hint(placed.reason)
       setTarget(null)

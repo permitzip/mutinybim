@@ -7,6 +7,20 @@ import { isRelationshipField } from "../fields/resolver";
 import type { ScheduleCategory, ScheduleColumn, ScheduleDefinition } from "../documents";
 import { SCHEDULE_CATEGORY_LABELS } from "./definition";
 import { BASE_FIELDS, DUCT_FIELDS, elementRecord, isDeleted, lastRevision, PANEL_FIELDS, PIPE_FIELDS, POWERED_FIELDS, SHEET_FIELDS, withRelationshipFields, type Record_ } from "./records";
+import { formatScheduleCell, parseScheduleCellLink, type DocumentUrlResolver } from "./cell-links";
+
+export {
+  formatScheduleCell,
+  isCutSheetColumn,
+  isUnsafeUriScheme,
+  parseScheduleCellLink,
+  resolveScheduleHref,
+  sanitizeScheduleHref,
+  type DocumentUrlResolver,
+  type FormattedScheduleCell,
+  type ParsedScheduleCellLink,
+  type ScheduleCellLinkOptions,
+} from "./cell-links";
 
 /**
  * Model-driven schedules: a table of one category's elements (or the set's
@@ -42,6 +56,8 @@ export interface EvaluatedSchedule {
   readonly elementIds: readonly (readonly string[])[];
   /** Per row; absent: every row is an element row (v1 schedules). */
   readonly rowStyles?: readonly ScheduleRowStyle[];
+  /** Field path or column key per printed column (used to recognize explicit cut-sheet / document link columns). */
+  readonly columnKeys?: readonly (string | null)[];
 }
 
 /** What every schedule of an element record reads, each category listed from the kind index on first read. */
@@ -226,11 +242,13 @@ export function evaluateSchedule(model: Pick<ModelState, "elements">, def: Sched
     }
   }
   const headings = def.columns.map((c) => headingFor(c, fields));
+  const columnKeys: (string | null)[] = def.columns.map((c) => c.field);
   if (def.itemize === false && !def.columns.some((c) => c.field === "count")) {
     headings.push("COUNT");
+    columnKeys.push(null);
     rows.forEach((row, i) => row.push(String(ids[i]?.length ?? 0)));
   }
-  return { title: (def.title ?? SCHEDULE_CATEGORY_LABELS[def.category]).toUpperCase(), headings, rows, elementIds: ids };
+  return { title: (def.title ?? SCHEDULE_CATEGORY_LABELS[def.category]).toUpperCase(), headings, rows, elementIds: ids, columnKeys };
 }
 
 /** What an empty schedule prints under its headings: "NONE" unless the definition says otherwise ("" for nothing). */
@@ -254,6 +272,8 @@ export interface ScheduleTable {
   readonly rowHeights: readonly number[];
   /** Pre-wrapped lines per [row][column] so printed schedules never truncate text with an ellipsis. */
   readonly cellLines: readonly (readonly (readonly string[])[])[];
+  /** Sanitized URL or logical document ref per [row][column], resolved during layout. */
+  readonly cellHrefs?: readonly (readonly (string | undefined)[])[];
   readonly textSize: number;
   /** Paper mm. */
   readonly size: Vec2;
@@ -263,28 +283,13 @@ function measure(text: string, size: number, bold: boolean): number {
   return textWidth(bold ? "bold" : "regular", text, emForCapHeight(size)) * WIDTH_SAFETY;
 }
 
-/** Parse a schedule cell carrying a URL (`https://...` or `Label|https://...`) for clickable sheet links. */
-export function parseScheduleCellLink(raw: string): { readonly label: string; readonly href: string } | null {
-  const trimmed = raw.trim();
-  if (/^https?:\/\/\S+$/i.test(trimmed)) return { label: "CUT SHEET ↗", href: trimmed };
-  const bar = trimmed.indexOf("|");
-  if (bar > 0) {
-    const label = trimmed.slice(0, bar).trim();
-    const href = trimmed.slice(bar + 1).trim();
-    if (label && /^https?:\/\/\S+$/i.test(href)) return { label: `${label} ↗`, href };
-  }
-  return null;
-}
-
 /** Most lines a heading wraps to. */
 const HEADING_LINES = 2;
 /** Maximum lines a wrapped body cell expands to so every printed specification remains complete and readable. */
 const MAX_CELL_LINES = 5;
 
-/** Word-wrap text into lines fitting `width`, never truncating unless a single unbroken token exceeds the column. */
-function wrapCellText(text: string, width: number, size: number, bold: boolean, maxLines = MAX_CELL_LINES): string[] {
-  const link = parseScheduleCellLink(text);
-  const shown = link ? link.label : text;
+/** Word-wrap already-formatted cell text into lines fitting `width`, never truncating unless a single unbroken token exceeds the column. */
+function wrapCellText(shown: string, width: number, size: number, bold: boolean, maxLines = MAX_CELL_LINES): string[] {
   const room = width - PAD_MM * 2 + 0.01;
   if (!shown || measure(shown, size, bold) <= room) return [shown];
   const words = shown.split(/\s+/).filter(Boolean);
@@ -322,8 +327,13 @@ export function scheduleHeadingsCut(model: Pick<ModelState, "elements">, def: Sc
 }
 
 /** Column widths and the table's paper size (the smallest a viewport frame may be is 1 in a side). */
-export function scheduleTable(model: Pick<ModelState, "elements">, def: ScheduleDefinition): ScheduleTable {
-  return layoutScheduleTable(evaluateSchedule(model, def), { textSizeMm: def.textSizeMm, emptyText: def.emptyText, widthsMm: def.columns.map((c) => c.widthMm) });
+export function scheduleTable(model: Pick<ModelState, "elements">, def: ScheduleDefinition, opts?: Pick<ScheduleTableOptions, "resolveDocumentUrl">): ScheduleTable {
+  return layoutScheduleTable(evaluateSchedule(model, def), {
+    textSizeMm: def.textSizeMm,
+    emptyText: def.emptyText,
+    widthsMm: def.columns.map((c) => c.widthMm),
+    ...(opts?.resolveDocumentUrl ? { resolveDocumentUrl: opts.resolveDocumentUrl } : {}),
+  });
 }
 
 export interface ScheduleTableOptions {
@@ -333,6 +343,8 @@ export interface ScheduleTableOptions {
   readonly emptyText?: string;
   /** Fixed paper widths by printed column; absent entries size to their longest text. */
   readonly widthsMm?: readonly (number | undefined)[];
+  /** Host-neutral resolver for logical cut-sheet / document refs carried in schedule cells. */
+  readonly resolveDocumentUrl?: DocumentUrlResolver;
 }
 
 /** Lay out evaluated rows as a printed table (v1 and v2 schedules share it). */
@@ -340,23 +352,34 @@ export function layoutScheduleTable(evaluated: EvaluatedSchedule, opts: Schedule
   const textSize = opts.textSizeMm ?? ROW_TEXT_MM;
   const rowHeight = Math.max(4, textSize * 2.6);
   const titleHeight = rowHeight * 1.3;
+  const resolveDocumentUrl = opts.resolveDocumentUrl;
+  // Format each body cell once so column measurement, line wrapping, and link href emission stay in lockstep.
+  const formattedRows = evaluated.rows.map((cells, r) => {
+    const style = evaluated.rowStyles?.[r];
+    if (style === "group") return [{ text: cells.join(""), href: undefined }];
+    return cells.map((cell, j) =>
+      formatScheduleCell(cell, {
+        columnKey: evaluated.columnKeys?.[j],
+        heading: evaluated.headings[j],
+        resolveDocumentUrl,
+      }),
+    );
+  });
   const columnWidths = evaluated.headings.map((heading, i) => {
     const fixed = opts.widthsMm?.[i];
     if (fixed !== undefined) return fixed;
     // Most cells repeat (types, levels); measure each distinct value once.
     const seen = new Set<string>();
     let longest = measure(heading, textSize, true);
-    for (const [r, row] of evaluated.rows.entries()) {
+    for (const [r, formatted] of formattedRows.entries()) {
       const style = evaluated.rowStyles?.[r];
       if (style === "group") continue;
       const bold = style === "footer" || style === "total";
-      const cell = row[i] ?? "";
-      const link = parseScheduleCellLink(cell);
-      const display = link ? link.label : cell;
+      const display = formatted[i]?.text ?? "";
       const key = bold ? `\u0001${display}` : display;
       if (seen.has(key)) continue;
       seen.add(key);
-      longest = Math.max(longest, measure(display, textSize, bold) + (link ? 4.5 : 0));
+      longest = Math.max(longest, measure(display, textSize, bold));
     }
     return Math.min(MAX_COL_MM, Math.max(MIN_COL_MM, longest + PAD_MM * 2));
   });
@@ -371,24 +394,27 @@ export function layoutScheduleTable(evaluated: EvaluatedSchedule, opts: Schedule
   const headingHeight = rowHeight + (lineCount - 1) * textSize * 1.4;
   const lead = textSize * 1.38;
   const cellLines: string[][][] = [];
+  const cellHrefs: (string | undefined)[][] = [];
   const rowHeights: number[] = [];
-  evaluated.rows.forEach((cells, r) => {
+  formattedRows.forEach((formatted, r) => {
     const style = evaluated.rowStyles?.[r];
     if (style === "group") {
-      const wrapped = wrapCellText(cells.join(""), width, textSize, true);
+      const wrapped = wrapCellText(formatted[0]?.text ?? "", width, textSize, true);
       cellLines.push([wrapped]);
+      cellHrefs.push([undefined]);
       rowHeights.push(rowHeight + (wrapped.length - 1) * lead);
       return;
     }
     const bold = style === "footer" || style === "total";
-    const rowWrapped = cells.map((cell, j) => wrapCellText(cell, widths[j] ?? MIN_COL_MM, textSize, bold));
+    const rowWrapped = formatted.map((cell, j) => wrapCellText(cell.text, widths[j] ?? MIN_COL_MM, textSize, bold));
     const maxL = Math.max(1, ...rowWrapped.map((l) => l.length));
     cellLines.push(rowWrapped);
+    cellHrefs.push(formatted.map((cell) => cell.href));
     rowHeights.push(rowHeight + (maxL - 1) * lead);
   });
   const bodyH = rowHeights.length > 0 ? rowHeights.reduce((a, b) => a + b, 0) : placeholder ? rowHeight : 0;
   const height = Math.max(25.4, titleHeight + headingHeight + bodyH);
-  return { evaluated, placeholder, headingLines, headingHeight, columnWidths: widths, titleHeight, rowHeight, rowHeights, cellLines, textSize, size: { x: Math.round(width * 100) / 100, y: Math.round(height * 100) / 100 } };
+  return { evaluated, placeholder, headingLines, headingHeight, columnWidths: widths, titleHeight, rowHeight, rowHeights, cellLines, cellHrefs, textSize, size: { x: Math.round(width * 100) / 100, y: Math.round(height * 100) / 100 } };
 }
 
 /** Clip a single line to its column as a final guard for unbroken tokens. */
@@ -401,7 +427,7 @@ function fit(text: string, width: number, size: number, bold: boolean): string {
 
 /** Draw the table with its top-left corner at `topLeft` (paper mm). */
 export function drawScheduleTable(prims: Primitive[], table: ScheduleTable, topLeft: Vec2): void {
-  const { evaluated, placeholder, headingLines, headingHeight, columnWidths, titleHeight, rowHeight, rowHeights, cellLines, textSize } = table;
+  const { evaluated, placeholder, headingLines, headingHeight, columnWidths, titleHeight, rowHeight, rowHeights, cellLines, cellHrefs, textSize } = table;
   const width = columnWidths.reduce((a, b) => a + b, 0);
   const x0 = topLeft.x;
   const y0 = topLeft.y;
@@ -443,8 +469,8 @@ export function drawScheduleTable(prims: Primitive[], table: ScheduleTable, topL
     let x = x0;
     cells.forEach((cell, j) => {
       const w = columnWidths[j] ?? MIN_COL_MM;
-      const link = parseScheduleCellLink(cell);
-      const lines = cellLines[r]?.[j] ?? [link ? link.label : cell];
+      const href = cellHrefs ? cellHrefs[r]?.[j] : parseScheduleCellLink(cell, { columnKey: evaluated.columnKeys?.[j], heading: evaluated.headings[j] })?.href;
+      const lines = cellLines[r]?.[j] ?? [formatScheduleCell(cell, { columnKey: evaluated.columnKeys?.[j], heading: evaluated.headings[j] }).text];
       const first = y + rh / 2 + textSize / 2 - ((lines.length - 1) * lead) / 2;
       lines.forEach((line, k) => {
         if (!line) return;
@@ -455,7 +481,7 @@ export function drawScheduleTable(prims: Primitive[], table: ScheduleTable, topL
           size: textSize,
           anchor: "middle",
           bold,
-          ...(link ? { href: link.href } : {}),
+          ...(href ? { href } : {}),
         });
       });
       x += w;

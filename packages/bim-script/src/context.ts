@@ -1,10 +1,45 @@
 import { builtinCalcRegistry, type CalcDomain, type RunRequest, type RunResult } from "@permitzip/bim-calc";
-import { acceptGhostsCommand, commandIssueMessage, commandSchema, executeCommand, isEditBatchCommand, proposersFor, runProposer, withUpgradePolicy, type Command, type GhostPlacement, type ModelState, type PackCommand, type PartTypeDefinition, type ProposerAnswer, type ProposerRequest } from "@permitzip/bim-kernel";
+import {
+  acceptGhostsCommand,
+  commandIssueMessage,
+  commandSchema,
+  decisionImpactsFor,
+  elementsOfKind,
+  executeCommand,
+  isEditBatchCommand,
+  linkedDetailImpacts,
+  proposersFor,
+  runProposer,
+  withUpgradePolicy,
+  type Command,
+  type DecisionImpactSummary,
+  type GhostPlacement,
+  type InputRef,
+  type ModelState,
+  type PackCommand,
+  type PartTypeDefinition,
+  type ProposerAnswer,
+  type ProposerRequest,
+} from "@permitzip/bim-kernel";
 import { FIRST_PARTY_PACK_IDS, PACK_READ_POINT, activePackSet, firstPartyPackName, withPackSet, type PackSet } from "@permitzip/bim-kernel/packs";
 import { scriptSourceIssues, type ScriptKind, type ScriptValue } from "@permitzip/bim-library";
 import type { ScriptDefinition } from "./define";
 import { deterministicId, seededRandom, type RunSeed } from "./determinism";
-import { MAX_SCRIPT_RENDERS, MAX_SCRIPT_REPORT_BYTES, MAX_SCRIPT_REPORTS, chunkEdits, jsonBytes, stepRefusal, type EditStep, type ScriptOutput, type ScriptRenderRequest, type ScriptReport } from "./output";
+import {
+  MAX_SCRIPT_RENDERS,
+  MAX_SCRIPT_REPORT_BYTES,
+  MAX_SCRIPT_REPORTS,
+  chunkEdits,
+  jsonBytes,
+  stepRefusal,
+  type EditStep,
+  type ScriptDecisionImpact,
+  type ScriptDetailImpact,
+  type ScriptOutput,
+  type ScriptRenderRequest,
+  type ScriptReport,
+} from "./output";
+import type { WorkNotes } from "./provenance";
 import { sliceAsModel, sliceReader, type ModelSlice, type SliceReader } from "./slice";
 import { bindWorking } from "./working";
 
@@ -35,6 +70,65 @@ export interface ScriptProposerInfo {
   readonly hosts: string;
 }
 
+/** Input for `ctx.decisions.record(...)` wrapping kernel `record_determination`. */
+export interface RecordDecisionInput {
+  /** Optional explicit determination id; generated deterministically via `ctx.id("det")` when omitted. */
+  readonly determinationId?: string;
+  readonly subject: { readonly kind: "space" | "zone" | "element" | "model"; readonly id?: string };
+  readonly key: string;
+  readonly value: number | string | boolean;
+  readonly unit?: string;
+  readonly title?: string;
+  readonly inputs?: readonly InputRef[];
+  readonly reasoning: string;
+  /** Optional anonymized engineering rationale safe to share across teams/exports. */
+  readonly publicNote?: string;
+  /** Optional org/team-scoped context kept separate from public exports/snapshots. */
+  readonly privateNote?: string;
+  readonly decidedBy: string;
+  readonly decidedAt?: string;
+  readonly edition?: string;
+  readonly confidence?: "high" | "medium" | "low";
+  readonly status?: "draft" | "recorded";
+}
+
+/** Input for `ctx.decisions.supersede(...)` wrapping kernel `supersede_determination`. */
+export interface SupersedeDecisionInput {
+  readonly determinationId: string;
+  /** Optional explicit id for the replacement determination; generated via `ctx.id("det")` when omitted. */
+  readonly newDeterminationId?: string;
+  readonly value: number | string | boolean;
+  readonly unit?: string;
+  readonly title?: string;
+  readonly inputs?: readonly InputRef[];
+  readonly reasoning: string;
+  readonly publicNote?: string;
+  readonly privateNote?: string;
+  readonly decidedBy: string;
+  readonly decidedAt?: string;
+  readonly edition?: string;
+  readonly confidence?: "high" | "medium" | "low";
+}
+
+/** Filter for `ctx.decisions.query(...)` returning low-token decision impact summaries. */
+export interface DecisionQueryFilter {
+  readonly elementIds?: readonly string[];
+  readonly subjectId?: string;
+  readonly key?: string;
+  readonly includeModelWide?: boolean;
+  readonly limit?: number;
+}
+
+/** Typed decision-provenance helpers on `ScriptContext` (`ctx.decisions`). */
+export interface ScriptDecisions {
+  /** Records a determination via `record_determination` and returns its id. */
+  record(input: RecordDecisionInput): string;
+  /** Supersedes an existing determination via `supersede_determination` and returns the new id. */
+  supersede(input: SupersedeDecisionInput): string;
+  /** Queries active determinations, local rules, and review records (low-token summaries; no `privateNote`). */
+  query(filter?: DecisionQueryFilter): readonly DecisionImpactSummary[];
+}
+
 /** What a script's `run` works through. */
 export interface ScriptContext {
   readonly kind: ScriptKind;
@@ -54,6 +148,14 @@ export interface ScriptContext {
   editSteps(command: unknown): void;
   /** What the edits do, in words, for the approval card ("Receptacles every 12 ft, Level 2"). */
   label(text: string): void;
+  /**
+   * Attaches optional two-layer work notes to this run: `publicNote` rides on
+   * public outputs/snapshots; `privateNote` stays org-scoped and is never
+   * serialized into public `ScriptOutput`.
+   */
+  note(notes: WorkNotes): void;
+  /** Typed decision provenance helpers wrapping kernel `record_determination`, `supersede_determination`, and graph impact queries. */
+  readonly decisions: ScriptDecisions;
   /**
    * Shows a value the script read or worked out to the agent, beside the
    * preview (`report` in bim_run_script's answer): levels and their ids, a
@@ -129,6 +231,8 @@ function missingTradesWords(slice: ModelSlice): string {
   return `. This model's add-ons don't include ${missing.join(", ")}`;
 }
 
+const GRAPH_RECORD_KINDS: ReadonlySet<string> = new Set(["determination", "rule", "requirement_state"]);
+
 /**
  * Runs a defined script against a slice, in this process: the runner calls
  * this inside its sandbox, the CLI on a laptop, tests in Jest. Each edit is
@@ -141,12 +245,17 @@ export async function runScript(definition: ScriptDefinition, input: RunScriptIn
   const seed: RunSeed = { scriptHash: input.scriptHash, values: input.values, revision: input.slice.revision };
   const random = seededRandom(seed);
   let counter = 0;
-  let working: ModelState = sliceAsModel(input.slice);
+  const initialModel: ModelState = sliceAsModel(input.slice);
+  let working: ModelState = initialModel;
   const steps: EditStep[] = [];
   const touched = new Set<string>();
+  const modifiedOrDeleted = new Set<string>();
+  const deletedModelIds = new Set<string>();
+  const supersededInRun = new Map<string, string>();
   const types: { typeId: string; definition: PartTypeDefinition }[] = [];
   const typeIds = new Set<string>();
   let label = "";
+  let publicNote = definition.notes?.publicNote?.trim() ?? "";
   const reports: ScriptReport[] = [];
   const renders: ScriptRenderRequest[] = [];
   let reportBytes = 2;
@@ -160,6 +269,95 @@ export async function runScript(definition: ScriptDefinition, input: RunScriptIn
     random,
     label(text) {
       label = text.trim().slice(0, 160);
+    },
+    note(notes) {
+      if (notes.publicNote !== undefined) {
+        publicNote = notes.publicNote.trim().slice(0, 1000);
+      }
+      // `privateNote` is intentionally never attached to public `ScriptOutput`.
+    },
+    decisions: {
+      record(rec) {
+        const determinationId = rec.determinationId?.trim() || ctx.id("det");
+        ctx.edit({
+          type: "record_determination",
+          determinationId,
+          subject: rec.subject,
+          key: rec.key,
+          value: rec.value,
+          ...(rec.unit ? { unit: rec.unit } : {}),
+          ...(rec.title ? { title: rec.title } : {}),
+          ...(rec.inputs ? { inputs: [...rec.inputs] } : {}),
+          reasoning: rec.reasoning,
+          ...(rec.publicNote ? { publicNote: rec.publicNote } : {}),
+          ...(rec.privateNote ? { privateNote: rec.privateNote } : {}),
+          decidedBy: rec.decidedBy,
+          ...(rec.decidedAt ? { decidedAt: rec.decidedAt } : {}),
+          ...(rec.edition ? { edition: rec.edition } : {}),
+          confidence: rec.confidence ?? "medium",
+          ...(rec.status ? { status: rec.status } : {}),
+        });
+        return determinationId;
+      },
+      supersede(sup) {
+        const newDeterminationId = sup.newDeterminationId?.trim() || ctx.id("det");
+        ctx.edit({
+          type: "supersede_determination",
+          determinationId: sup.determinationId,
+          newDeterminationId,
+          value: sup.value,
+          ...(sup.unit ? { unit: sup.unit } : {}),
+          ...(sup.title ? { title: sup.title } : {}),
+          ...(sup.inputs ? { inputs: [...sup.inputs] } : {}),
+          reasoning: sup.reasoning,
+          ...(sup.publicNote ? { publicNote: sup.publicNote } : {}),
+          ...(sup.privateNote ? { privateNote: sup.privateNote } : {}),
+          decidedBy: sup.decidedBy,
+          ...(sup.decidedAt ? { decidedAt: sup.decidedAt } : {}),
+          ...(sup.edition ? { edition: sup.edition } : {}),
+          confidence: sup.confidence ?? "medium",
+        });
+        return newDeterminationId;
+      },
+      query(filter = {}) {
+        const limit = filter.limit ?? 50;
+        let ids: string[];
+        let includeModelWide = filter.includeModelWide ?? false;
+        if (filter.elementIds && filter.elementIds.length > 0) {
+          ids = [...filter.elementIds];
+        } else if (filter.subjectId !== undefined) {
+          if (filter.subjectId === "model") {
+            ids = [];
+            includeModelWide = true;
+          } else {
+            ids = [filter.subjectId];
+          }
+        } else {
+          // Query across every active anchored subject in the working copy, plus model-wide records.
+          const subjects = new Set<string>();
+          for (const d of elementsOfKind(working.elements, "determination")) {
+            if (d.determination.subject.id) subjects.add(d.determination.subject.id);
+          }
+          for (const r of elementsOfKind(working.elements, "rule")) {
+            for (const a of r.rule.appliesAt?.anchors ?? []) {
+              if (a.id) subjects.add(a.id);
+            }
+          }
+          for (const s of elementsOfKind(working.elements, "requirement_state")) {
+            const parts = s.state.requirementId.split(":");
+            const anchor = parts[parts.length - 1];
+            if (anchor && anchor !== "model") subjects.add(anchor);
+          }
+          ids = [...subjects];
+          includeModelWide = filter.includeModelWide ?? true;
+        }
+        const results = withPackSet(input.packs, () => decisionImpactsFor(working, ids, { includeModelWide, limit }));
+        return results.filter((item) => {
+          if (filter.subjectId !== undefined && item.subjectId !== filter.subjectId) return false;
+          if (filter.key !== undefined && item.key !== filter.key) return false;
+          return true;
+        });
+      },
     },
     report(text, value) {
       const words = typeof text === "string" ? text.trim().slice(0, 120) : "";
@@ -235,8 +433,28 @@ export async function runScript(definition: ScriptDefinition, input: RunScriptIn
       const result = withPackSet(input.packs, () => withUpgradePolicy(serverReads, () => executeCommand(working, step)));
       if (!result.ok) throw new ScriptRunError(`Step ${n} (${command.type}) was refused: ${result.error.message}${missingTradesWords(input.slice)}`);
       working = result.model;
-      for (const id of result.changedIds) touched.add(id);
-      for (const id of result.removedIds) touched.delete(id);
+      if (step.type === "supersede_determination") {
+        supersededInRun.set(step.determinationId, step.newDeterminationId);
+      }
+      for (const id of result.changedIds) {
+        touched.add(id);
+        const before = initialModel.elements[id];
+        if (before && !GRAPH_RECORD_KINDS.has(before.kind)) {
+          modifiedOrDeleted.add(id);
+          const after = working.elements[id];
+          const wasDeleted = "deleted" in before && before.deleted === true;
+          const nowDeleted = after === undefined || ("deleted" in after && after.deleted === true);
+          if (!wasDeleted && nowDeleted) deletedModelIds.add(id);
+        }
+      }
+      for (const id of result.removedIds) {
+        touched.delete(id);
+        const before = initialModel.elements[id];
+        if (before && !GRAPH_RECORD_KINDS.has(before.kind)) {
+          modifiedOrDeleted.add(id);
+          deletedModelIds.add(id);
+        }
+      }
       steps.push(step);
     },
     parts: {
@@ -256,16 +474,61 @@ export async function runScript(definition: ScriptDefinition, input: RunScriptIn
   }
   const report = reports.length > 0 ? { report: reports } : {};
   const renderPart = renders.length > 0 ? { renders } : {};
+  const publicNotePart = publicNote ? { publicNote } : {};
   if (kind === "part") {
     if (types.length === 0) throw withReports(new ScriptRunError("The part script defined no part types."), reports);
-    return { kind: "part_types", types, ...report, ...renderPart };
+    return { kind: "part_types", types, ...report, ...renderPart, ...publicNotePart };
   }
   if (steps.length === 0) {
     if (reports.length === 0 && renders.length === 0) throw new ScriptRunError("The script made no edits. To see values or images without editing, call ctx.report or markups.renderSheet.");
-    return { kind: "edits", label: label || (renders.length > 0 ? "Rendered sheet/view images" : "Nothing changed: reports only"), steps: 0, batches: [], ...report, ...renderPart };
+    return { kind: "edits", label: label || (renders.length > 0 ? "Rendered sheet/view images" : "Nothing changed: reports only"), steps: 0, batches: [], ...report, ...renderPart, ...publicNotePart };
   }
+  const impactedIds = [...modifiedOrDeleted];
+  const decisionImpacts: ScriptDecisionImpact[] =
+    impactedIds.length > 0
+      ? withPackSet(input.packs, () => decisionImpactsFor(initialModel, impactedIds)).map((d) => {
+          const supersededBy = supersededInRun.get(d.id);
+          return {
+            id: d.id,
+            kind: d.kind,
+            subjectId: d.subjectId,
+            key: d.key,
+            title: d.title,
+            status: d.status,
+            ...(d.publicNote ? { publicNote: d.publicNote } : {}),
+            superseded: supersededBy !== undefined,
+            ...(supersededBy !== undefined ? { supersededBy } : {}),
+          };
+        })
+      : [];
+  const detailImpacts: ScriptDetailImpact[] =
+    impactedIds.length > 0
+      ? linkedDetailImpacts(initialModel, impactedIds, {
+          deletedElementIds: [...deletedModelIds],
+          afterElements: working.elements,
+        }).map((v) => ({
+          viewId: v.viewId,
+          viewName: v.viewName,
+          matchedElementIds: [...v.matchedElementIds],
+          matchedSystemIds: [...v.matchedSystemIds],
+          deletedElementIds: [...v.deletedElementIds],
+          notice: v.notice,
+        }))
+      : [];
+  const decisionImpactsPart = decisionImpacts.length > 0 ? { decisionImpacts } : {};
+  const detailImpactsPart = detailImpacts.length > 0 ? { detailImpacts } : {};
   const words = label || `${steps.length} edit${steps.length === 1 ? "" : "s"} by script`;
-  return { kind: "edits", label: words, steps: steps.length, batches: chunkEdits(words, steps), ...report, ...renderPart };
+  return {
+    kind: "edits",
+    label: words,
+    steps: steps.length,
+    batches: chunkEdits(words, steps),
+    ...report,
+    ...renderPart,
+    ...decisionImpactsPart,
+    ...detailImpactsPart,
+    ...publicNotePart,
+  };
 }
 
 /** The report that stands in for those past the run's limit. */

@@ -1,16 +1,19 @@
 import { oneLineItemsExtent, oneLineTextHeight } from "@permitzip/bim-kernel";
-import type { DiagramEdge, DiagramNode, ElementId, OneLineItem, OneLineTextLine, RiserLevel, Vec2 } from "@permitzip/bim-kernel";
+import type { DiagramEdge, DiagramNode, ElementId, OneLineItem, OneLineTextLine, Pen, RiserLevel, Vec2 } from "@permitzip/bim-kernel";
+import { classifyPlumbingDevice, classifyPlumbingFixture, type PlumbingDeviceKind } from "./plumbing-topology";
 import type { PipeRef, PipingLayout, PipingLayoutOptions } from "./piping-layout";
 
 /**
- * ASPE-standard Domestic Water Riser Diagram layout (Cold Water + Hot Water + HWR):
+ * ASPE-standard Domestic Water Riser Diagram layout (Cold Water + Hot Water + DHWR):
  * - Merges shared fixtures by `elementId` per floor so every lavatory/sink is drawn ONCE
  *   with its SOLID cold-water drop on the left and its DASHED hot-water drop on the right.
- * - Separates CW-only fixtures (left) from CW+HW fixtures (right) and gives multi-story
- *   CW and HW risers dedicated vertical shaft lanes — eliminating line tangles and text collisions.
- * - Uses unmistakable ASPE symbols: circular Water Meter (M), double-check Backflow/RPZ bowtie,
- *   domed cylindrical Water Heater tank, inline shut-off valve bowtie (SOV), and end caps (CAP) —
- *   never mystery diamonds for pipe reducers.
+ * - Renders a distinct **DHWR (Hot Water Return)** loop (thin dashed line with return-flow
+ *   chevrons, `HWR` tags, recirc pump symbol, check valve, balancing valve) returning to the heater.
+ * - Renders **Expansion Tanks** (`ET-1`) and **Buffer Tanks** (`BT-1`) cleanly off the cold/hot
+ *   headers beside the water heater with zero pipe gaps.
+ * - Renders ASPE schematic symbols for the full backflow prevention taxonomy (RPZ with relief drop
+ *   & funnel, DCVA double check, PVB/AVB vacuum breakers, Air Gap) plus PRV, water meter (M),
+ *   recirculation pump, check valve, balancing valve, shut-off valve (SOV), and domed water heater tank.
  * - Keeps every pipe piece clickable via `pipes` and every node/label draggable via `ranges`/`entries`.
  */
 
@@ -23,6 +26,10 @@ const SYMBOL_W = 10;
 const SYMBOL_H = 5.5;
 const TANK_W = 12;
 const TANK_H = 13;
+const EXP_TANK_W = 7.6;
+const EXP_TANK_H = 9.6;
+const BUF_TANK_W = 11;
+const BUF_TANK_H = 12;
 /** A pipe up to 4 ft under a floor belongs to that floor. */
 const TOLERANCE_MM = 1219;
 
@@ -59,23 +66,65 @@ function isCapOrOpen(n: DiagramNode): boolean {
 
 function isHeaterNode(n: DiagramNode): boolean {
   if (n.children.some((c) => c.service === "domestic_hot_water" || c.service === "domestic_hot_water_return")) return true;
+  const dk = classifyPlumbingDevice(n);
+  if (dk === "water_heater") return true;
+  if (classifyPlumbingFixture(n) === "water_heater") return true;
   const u = n.name.toUpperCase();
   return /^G?WH\b|^WH-|^EWH\b|^DWH\b/.test(u) || u.includes("WATER HEATER");
 }
 
-function deviceKindOf(name: string): "meter" | "rpz" | "valve" | "generic" {
-  const n = name.toLowerCase();
-  if (n.includes("mtr") || n.includes("meter") || /^wm\b|^wm-/.test(n)) return "meter";
-  if (n.includes("rpz") || n.includes("backflow") || n.includes("bfp")) return "rpz";
-  if (n.includes("valve") || n.includes("sov") || n.includes("prv") || n.includes("regulator") || n.includes("cock")) return "valve";
-  return "generic";
+function auxiliaryTankKindOf(n: DiagramNode): "expansion_tank" | "buffer_tank" | null {
+  const dk = classifyPlumbingDevice(n);
+  if (dk === "expansion_tank" || dk === "buffer_tank") return dk;
+  const fc = classifyPlumbingFixture(n);
+  if (fc === "expansion_tank" || fc === "buffer_tank") return fc;
+  return null;
 }
 
-function deviceLabelText(name: string): string {
-  const n = name.toLowerCase();
-  if (n.includes("regulator") || n === "prv" || n.includes("pressure reducing")) return "PRV";
-  if ((n.includes("valve") || n.includes("cock")) && !n.includes("rpz") && !n.includes("backflow")) return "SOV";
-  return name.toUpperCase().slice(0, 12);
+function waterDeviceKindOf(s: DiagramNode): PlumbingDeviceKind {
+  return classifyPlumbingDevice(s);
+}
+
+function deviceHalfSpan(dk: PlumbingDeviceKind): number {
+  switch (dk) {
+    case "water_meter":
+    case "gas_meter":
+      return 3.2;
+    case "rpz":
+    case "dcva":
+      return 4.2;
+    case "pvb":
+      return 3.4;
+    case "avb":
+      return 2.8;
+    case "air_gap":
+      return 3.2;
+    case "prv":
+    case "gas_regulator":
+      return 3.0;
+    case "recirc_pump":
+      return 3.0;
+    case "check_valve":
+    case "balancing_valve":
+    case "shutoff_valve":
+    default:
+      return 2.6;
+  }
+}
+
+function deviceLabelText(s: DiagramNode, dk: PlumbingDeviceKind): string {
+  const n = s.name.toLowerCase();
+  if (dk === "prv") return /^prv\b|^prv-/i.test(s.name) ? s.name.toUpperCase().slice(0, 12) : "PRV";
+  if (dk === "rpz") return s.name.toUpperCase().slice(0, 12);
+  if (dk === "dcva") return /dcva|dc-/i.test(s.name) ? s.name.toUpperCase().slice(0, 12) : "DCVA";
+  if (dk === "pvb") return /pvb|svb/i.test(s.name) ? s.name.toUpperCase().slice(0, 12) : "PVB";
+  if (dk === "avb") return /avb/i.test(s.name) ? s.name.toUpperCase().slice(0, 12) : "AVB";
+  if (dk === "air_gap") return /^ag\b|^ag-|air/i.test(s.name) ? s.name.toUpperCase().slice(0, 12) : "AIR GAP";
+  if (dk === "recirc_pump") return /^rp\b|^rp-|^cp\b|^cp-/i.test(s.name) ? s.name.toUpperCase().slice(0, 12) : "RP";
+  if (dk === "check_valve") return /^cv\b|^cv-/i.test(s.name) ? s.name.toUpperCase().slice(0, 12) : "CV";
+  if (dk === "balancing_valve") return /^bv\b|^bv-|^cs\b|^cs-/i.test(s.name) ? s.name.toUpperCase().slice(0, 12) : "BV";
+  if (dk === "shutoff_valve" && (n.includes("valve") || n.includes("cock")) && !n.includes("rpz") && !n.includes("backflow")) return "SOV";
+  return s.name.toUpperCase().slice(0, 12);
 }
 
 interface FixtureDrop {
@@ -92,6 +141,15 @@ interface MergedFixture {
   cw?: FixtureDrop;
   hw?: FixtureDrop;
   readonly order: number;
+}
+
+interface AuxiliaryTank {
+  readonly kind: "expansion_tank" | "buffer_tank";
+  readonly node: DiagramNode;
+  readonly band: number;
+  readonly service: "cw" | "hw";
+  readonly edge: DiagramEdge | undefined;
+  readonly devices: readonly DiagramNode[];
 }
 
 interface FloorBranchInfo {
@@ -114,14 +172,21 @@ interface ExtractedWaterNetwork {
   readonly hwTotalLoad: string | undefined;
   readonly hwTotalSize: string | undefined;
   readonly heaters: Array<{ readonly node: DiagramNode; readonly band: number; readonly cwEdge: DiagramEdge | undefined; readonly hwRootEdge: DiagramEdge | undefined; readonly cwDevices: readonly DiagramNode[] }>;
+  readonly auxiliaryTanks: AuxiliaryTank[];
   readonly fixturesByBand: Map<number, MergedFixture[]>;
   readonly cwFloorInfo: Map<number, FloorBranchInfo>;
   readonly hwFloorInfo: Map<number, FloorBranchInfo>;
+  readonly hwrFloorInfo: Map<number, FloorBranchInfo>;
+  readonly hwrDevices: DiagramNode[];
+  readonly hwrMainEdge: DiagramEdge | undefined;
+  readonly hwrSize: string | undefined;
+  readonly hwrLoad: string | undefined;
   readonly hasHot: boolean;
+  readonly hasHwr: boolean;
   readonly usedUnknown: boolean;
 }
 
-function extractWaterNetwork(root: DiagramNode, levels: readonly RiserLevel[]): ExtractedWaterNetwork {
+function extractWaterNetwork(root: DiagramNode, levels: readonly RiserLevel[], extraHwrRoots: readonly DiagramNode[] = []): ExtractedWaterNetwork {
   let usedUnknown = false;
   const band = (n: DiagramNode): number => {
     const b = bandOf(levels, n.at?.z, n.levelId);
@@ -139,11 +204,21 @@ function extractWaterNetwork(root: DiagramNode, levels: readonly RiserLevel[]): 
   let hwTotalSize: string | undefined;
   let hwTotalNum = 0;
   const heaters: ExtractedWaterNetwork["heaters"] = [];
+  const auxiliaryTanks: AuxiliaryTank[] = [];
+  const seenAuxTankIds = new Set<string>();
   const mergedMap = new Map<string, MergedFixture>();
   const cwFloorInfo = new Map<number, FloorBranchInfo>();
   const hwFloorInfo = new Map<number, FloorBranchInfo>();
+  const hwrFloorInfo = new Map<number, FloorBranchInfo>();
+  const hwrDevices: DiagramNode[] = [];
+  const seenHwrDeviceIds = new Set<string>();
+  let hwrMainEdge: DiagramEdge | undefined;
+  let hwrSize: string | undefined;
+  let hwrLoad: string | undefined;
+  let hwrLoadNum = 0;
   let orderSeq = 0;
-  let hasHot = root.service === "domestic_hot_water" || root.service === "domestic_hot_water_return";
+  let hasHot = root.service === "domestic_hot_water";
+  let hasHwr = root.service === "domestic_hot_water_return" || extraHwrRoots.length > 0;
 
   const ensureFloor = (map: Map<number, FloorBranchInfo>, b: number): FloorBranchInfo => {
     let info = map.get(b);
@@ -172,6 +247,54 @@ function extractWaterNetwork(root: DiagramNode, levels: readonly RiserLevel[]): 
     }
   };
 
+  const addAuxTank = (kind: "expansion_tank" | "buffer_tank", n: DiagramNode, edge: DiagramEdge | undefined, dropDevices: readonly DiagramNode[], isHot: boolean) => {
+    const key = n.elementId ?? n.id;
+    if (seenAuxTankIds.has(key)) return;
+    seenAuxTankIds.add(key);
+    auxiliaryTanks.push({ kind, node: n, band: band(n), service: isHot ? "hw" : "cw", edge, devices: dropDevices });
+  };
+
+  const addHwrDevice = (s: DiagramNode) => {
+    const key = s.elementId ?? s.id;
+    if (seenHwrDeviceIds.has(key)) return;
+    seenHwrDeviceIds.add(key);
+    hwrDevices.push(s);
+  };
+
+  const walkHwrSubtree = (nodes: readonly DiagramNode[]) => {
+    hasHwr = true;
+    for (const s of nodes) {
+      const b = band(s);
+      if (s.feed) {
+        if (!hwrMainEdge) hwrMainEdge = s.feed;
+        if (!hwrSize && s.feed.label) hwrSize = s.feed.label;
+        const n = parseLoadNumber(s.feed.load);
+        if (n > hwrLoadNum) {
+          hwrLoadNum = n;
+          hwrLoad = s.feed.load;
+          if (s.feed.label) hwrSize = s.feed.label;
+          hwrMainEdge = s.feed;
+        }
+        recordFloorPipe(hwrFloorInfo, b, s.feed);
+      } else {
+        ensureFloor(hwrFloorInfo, b);
+      }
+      if (s.role === "device") {
+        if (s.lines.length > 0) addHwrDevice(s);
+      } else if (s.role === "terminal") {
+        const dk = waterDeviceKindOf(s);
+        if (!isCapOrOpen(s) && (dk === "recirc_pump" || dk === "check_valve" || dk === "balancing_valve" || dk === "shutoff_valve")) {
+          addHwrDevice(s);
+        } else if (s.name.toUpperCase() === "CAP") {
+          const info = ensureFloor(hwrFloorInfo, b);
+          info.hasCap = true;
+          info.capNode = s;
+        }
+      }
+      if (s.children.length > 0) walkHwrSubtree(s.children);
+    }
+  };
+
   const addFixture = (n: DiagramNode, edge: DiagramEdge | undefined, dropDevices: readonly DiagramNode[], isHot: boolean) => {
     const b = band(n);
     const floorMap = isHot ? hwFloorInfo : cwFloorInfo;
@@ -181,6 +304,11 @@ function extractWaterNetwork(root: DiagramNode, levels: readonly RiserLevel[]): 
         info.hasCap = true;
         info.capNode = n;
       }
+      return;
+    }
+    const tankKind = auxiliaryTankKindOf(n);
+    if (tankKind) {
+      addAuxTank(tankKind, n, edge, dropDevices, isHot);
       return;
     }
     // Merge by elementId first, or by matching fixture mark on the same floor band when a model uses separate CW/HW load-point parts for one fixture.
@@ -216,8 +344,14 @@ function extractWaterNetwork(root: DiagramNode, levels: readonly RiserLevel[]): 
     let lastTransitionEdge: DiagramEdge | undefined;
 
     for (const s of nodes) {
+      // Dedicated DHWR branch or child: route to HWR loop instead of collapsing into HW!
+      if (s.service === "domestic_hot_water_return") {
+        walkHwrSubtree([s]);
+        continue;
+      }
+
       const b = band(s);
-      const nodeIsHot = isHot || s.service === "domestic_hot_water" || s.service === "domestic_hot_water_return";
+      const nodeIsHot = isHot || s.service === "domestic_hot_water";
       if (nodeIsHot) hasHot = true;
 
       // Capture service size/load at entry, and main interior header size right after entry devices!
@@ -251,6 +385,11 @@ function extractWaterNetwork(root: DiagramNode, levels: readonly RiserLevel[]): 
           }
           continue;
         }
+        const tankKind = auxiliaryTankKindOf(s);
+        if (tankKind) {
+          addAuxTank(tankKind, s, s.feed, [], nodeIsHot);
+          continue;
+        }
         if (!seenNonDevice && topLevel && !nodeIsHot) {
           entryDevices.push(s);
         } else {
@@ -265,13 +404,17 @@ function extractWaterNetwork(root: DiagramNode, levels: readonly RiserLevel[]): 
 
       if (s.role === "terminal") {
         if (!nodeIsHot && isHeaterNode(s)) {
-          const hwKids = s.children.filter((c) => c.service === "domestic_hot_water" || c.service === "domestic_hot_water_return");
+          const hwKids = s.children.filter((c) => c.service === "domestic_hot_water");
+          const hwrKids = s.children.filter((c) => c.service === "domestic_hot_water_return");
           const hwFirstEdge = hwKids[0]?.feed;
           heaters.push({ node: s, band: b, cwEdge: effectiveFeed, hwRootEdge: hwFirstEdge, cwDevices: pendingDropDevices });
           pendingDropDevices = [];
           if (hwKids.length > 0) {
             hasHot = true;
             walkSubtree(hwKids, true, false);
+          }
+          if (hwrKids.length > 0) {
+            walkHwrSubtree(hwrKids);
           }
         } else {
           addFixture(s, effectiveFeed, pendingDropDevices, nodeIsHot);
@@ -308,7 +451,20 @@ function extractWaterNetwork(root: DiagramNode, levels: readonly RiserLevel[]): 
     }
   };
 
-  walkSubtree(root.children, root.service === "domestic_hot_water" || root.service === "domestic_hot_water_return", true);
+  if (root.service === "domestic_hot_water_return") {
+    walkHwrSubtree(root.children);
+  } else {
+    walkSubtree(root.children, root.service === "domestic_hot_water", true);
+  }
+  for (const hwrRoot of extraHwrRoots) {
+    if (hwrRoot.role === "source") {
+      const rootDk = waterDeviceKindOf(hwrRoot);
+      if (rootDk === "recirc_pump" || rootDk === "check_valve" || rootDk === "balancing_valve") {
+        addHwrDevice(hwrRoot);
+      }
+    }
+    walkHwrSubtree(hwrRoot.children);
+  }
 
   // Organize unique fixtures by floor band and compute EXACT cumulative floor/riser WFU loads from bottom to top!
   const fixturesByBand = new Map<number, MergedFixture[]>();
@@ -377,44 +533,244 @@ function extractWaterNetwork(root: DiagramNode, levels: readonly RiserLevel[]): 
     hwTotalLoad,
     hwTotalSize,
     heaters,
+    auxiliaryTanks,
     fixturesByBand,
     cwFloorInfo,
     hwFloorInfo,
+    hwrFloorInfo,
+    hwrDevices,
+    hwrMainEdge,
+    hwrSize,
+    hwrLoad,
     hasHot,
+    hasHwr,
     usedUnknown,
   };
 }
 
-/** Draws a crisp ASPE inline device symbol (Water Meter circle 'M', RPZ double-check bowtie, Valve bowtie) at `c`. */
-function drawInlineDevice(items: OneLineItem[], s: DiagramNode, c: Vec2, below = true): void {
-  const dk = deviceKindOf(s.name);
-  const label = deviceLabelText(s.name);
-  if (dk === "meter") {
+function circlePts(c: Vec2, r: number, steps = 16): Vec2[] {
+  const pts: Vec2[] = [];
+  for (let i = 0; i < steps; i++) {
+    const a = (i / steps) * Math.PI * 2;
+    pts.push(round({ x: c.x + Math.cos(a) * r, y: c.y + Math.sin(a) * r }));
+  }
+  return pts;
+}
+
+/** Directional flow chevron on DHWR lines (`dir`: -1 left, +1 right, or vertical down). */
+function drawReturnChevron(items: OneLineItem[], tip: Vec2, dir: "left" | "right" | "down", nodeId: string): void {
+  const len = 2.2;
+  const half = 1.1;
+  const pts: Vec2[] =
+    dir === "left"
+      ? [round({ x: tip.x + len, y: tip.y + half }), round(tip), round({ x: tip.x + len, y: tip.y - half })]
+      : dir === "right"
+        ? [round({ x: tip.x - len, y: tip.y + half }), round(tip), round({ x: tip.x - len, y: tip.y - half })]
+        : [round({ x: tip.x - half, y: tip.y + len }), round(tip), round({ x: tip.x + half, y: tip.y + len })];
+  items.push({ shape: "polyline", points: pts, weight: "thin", nodeId });
+}
+
+/** Draws crisp ASPE inline device symbols for full backflow taxonomy (RPZ/DCVA/PVB/AVB/Air Gap), PRV, Meter, Recirc Pump, Check/Balancing/Shutoff Valves. */
+function drawInlineDevice(items: OneLineItem[], s: DiagramNode, c: Vec2, below = true, flowDir: 1 | -1 = 1): void {
+  const dk = waterDeviceKindOf(s);
+  const label = deviceLabelText(s, dk);
+  if (dk === "water_meter" || dk === "gas_meter") {
     const r = 3.2;
-    const steps = 16;
-    const pts: Vec2[] = [];
-    for (let i = 0; i < steps; i++) {
-      const a = (i / steps) * Math.PI * 2;
-      pts.push(round({ x: c.x + Math.cos(a) * r, y: c.y + Math.sin(a) * r }));
-    }
-    items.push({ shape: "polyline", points: pts, closed: true, weight: "medium", nodeId: s.id });
+    items.push({ shape: "polyline", points: circlePts(c, r), closed: true, weight: "medium", nodeId: s.id });
     items.push({ shape: "text", at: round({ x: c.x - 2.6, y: c.y + 1.55 }), widthMm: 5.2, lines: [{ text: "M", bold: true }], nodeId: s.id, role: "note", align: "center" });
     const h = oneLineTextHeight([{ text: label }], 18);
     items.push({ shape: "text", at: round({ x: c.x - 9, y: below ? c.y - r - 1.2 : c.y + r + 1.0 + h }), widthMm: 18, lines: [{ text: label, bold: true }], nodeId: s.id, role: "note", align: "center" });
     return;
   }
   if (dk === "rpz") {
+    // ASPE RPZ: double opposing check triangles + vertical differential relief drop + open drain funnel
     const hw = 4.2;
     const hh = 2.4;
+    const dropBot = c.y - hh - 2.0;
     items.push(
       { shape: "polyline", points: [round({ x: c.x - hw, y: c.y + hh }), round({ x: c.x - hw, y: c.y - hh }), round({ x: c.x, y: c.y })], closed: true, weight: "medium", nodeId: s.id },
       { shape: "polyline", points: [round({ x: c.x + hw, y: c.y + hh }), round({ x: c.x + hw, y: c.y - hh }), round({ x: c.x, y: c.y })], closed: true, weight: "medium", nodeId: s.id },
-      { shape: "line", points: [round({ x: c.x, y: c.y }), round({ x: c.x, y: c.y - hh - 1.4 })], weight: "thin", nodeId: s.id },
+      { shape: "line", points: [round({ x: c.x, y: c.y }), round({ x: c.x, y: dropBot })], weight: "thin", nodeId: s.id },
+      // Relief air-gap drain funnel below relief port
+      { shape: "polyline", points: [round({ x: c.x - 1.4, y: dropBot - 0.6 }), round({ x: c.x, y: dropBot - 2.0 }), round({ x: c.x + 1.4, y: dropBot - 0.6 })], weight: "thin", nodeId: s.id },
     );
     const h = oneLineTextHeight([{ text: label }], 18);
-    items.push({ shape: "text", at: round({ x: c.x - 9, y: below ? c.y - hh - 2.2 : c.y + hh + 1.2 + h }), widthMm: 18, lines: [{ text: label, bold: true }], nodeId: s.id, role: "note", align: "center" });
+    items.push({ shape: "text", at: round({ x: c.x - 9, y: below ? dropBot - 2.6 : c.y + hh + 1.2 + h }), widthMm: 18, lines: [{ text: label, bold: true }], nodeId: s.id, role: "note", align: "center" });
     return;
   }
+  if (dk === "dcva") {
+    // ASPE DCVA: double check valve assembly (two check triangles + center bar, NO relief drop)
+    const hw = 4.2;
+    const hh = 2.2;
+    items.push(
+      { shape: "polyline", points: [round({ x: c.x - hw, y: c.y + hh }), round({ x: c.x - hw, y: c.y - hh }), round({ x: c.x, y: c.y })], closed: true, weight: "medium", nodeId: s.id },
+      { shape: "polyline", points: [round({ x: c.x, y: c.y + hh }), round({ x: c.x, y: c.y - hh }), round({ x: c.x + hw, y: c.y })], closed: true, weight: "medium", nodeId: s.id },
+      { shape: "line", points: [round({ x: c.x + hw, y: c.y - hh }), round({ x: c.x + hw, y: c.y + hh })], weight: "medium", nodeId: s.id },
+    );
+    const h = oneLineTextHeight([{ text: label }], 18);
+    items.push({ shape: "text", at: round({ x: c.x - 9, y: below ? c.y - hh - 1.6 : c.y + hh + 1.2 + h }), widthMm: 18, lines: [{ text: label, bold: true }], nodeId: s.id, role: "note", align: "center" });
+    return;
+  }
+  if (dk === "pvb") {
+    // ASPE PVB: pressure vacuum breaker — inlet/outlet isolation ticks + vertical bonnet stem + domed air-inlet umbrella hood
+    const hw = 3.4;
+    const stemTop = c.y + 3.4;
+    items.push(
+      { shape: "line", points: [round({ x: c.x - hw, y: c.y }), round({ x: c.x + hw, y: c.y })], weight: "medium", nodeId: s.id },
+      { shape: "line", points: [round({ x: c.x - hw, y: c.y - 1.5 }), round({ x: c.x - hw, y: c.y + 1.5 })], weight: "medium", nodeId: s.id },
+      { shape: "line", points: [round({ x: c.x + hw, y: c.y - 1.5 }), round({ x: c.x + hw, y: c.y + 1.5 })], weight: "medium", nodeId: s.id },
+      { shape: "line", points: [round({ x: c.x, y: c.y }), round({ x: c.x, y: stemTop })], weight: "medium", nodeId: s.id },
+      {
+        shape: "polyline",
+        points: [
+          round({ x: c.x - 2.6, y: stemTop - 0.6 }),
+          round({ x: c.x - 1.8, y: stemTop + 1.2 }),
+          round({ x: c.x, y: stemTop + 1.8 }),
+          round({ x: c.x + 1.8, y: stemTop + 1.2 }),
+          round({ x: c.x + 2.6, y: stemTop - 0.6 }),
+        ],
+        weight: "medium",
+        nodeId: s.id,
+      },
+      { shape: "line", points: [round({ x: c.x - 1.8, y: stemTop - 0.6 }), round({ x: c.x + 1.8, y: stemTop - 0.6 })], weight: "thin", nodeId: s.id },
+    );
+    const h = oneLineTextHeight([{ text: label }], 16);
+    items.push({ shape: "text", at: round({ x: c.x - 8, y: below ? c.y - 2.6 : stemTop + 2.6 + h }), widthMm: 16, lines: [{ text: label, bold: true }], nodeId: s.id, role: "note", align: "center" });
+    return;
+  }
+  if (dk === "avb") {
+    // ASPE AVB: atmospheric vacuum breaker — compact hood/bell cap over vertical neck
+    const hw = 2.8;
+    const hoodY = c.y + 2.6;
+    items.push(
+      { shape: "line", points: [round({ x: c.x - hw, y: c.y }), round({ x: c.x + hw, y: c.y })], weight: "medium", nodeId: s.id },
+      { shape: "line", points: [round({ x: c.x, y: c.y }), round({ x: c.x, y: hoodY })], weight: "medium", nodeId: s.id },
+      {
+        shape: "polyline",
+        points: [round({ x: c.x - 2.2, y: hoodY - 0.5 }), round({ x: c.x, y: hoodY + 1.6 }), round({ x: c.x + 2.2, y: hoodY - 0.5 })],
+        weight: "medium",
+        nodeId: s.id,
+      },
+    );
+    const h = oneLineTextHeight([{ text: label }], 16);
+    items.push({ shape: "text", at: round({ x: c.x - 8, y: below ? c.y - 2.0 : hoodY + 2.2 + h }), widthMm: 16, lines: [{ text: label, bold: true }], nodeId: s.id, role: "note", align: "center" });
+    return;
+  }
+  if (dk === "air_gap") {
+    // ASPE Air Gap: upper discharge nozzle ending cleanly above a visible air gap over an open receptor funnel
+    const hw = 3.2;
+    items.push(
+      // Incoming elbow dropping to discharge nozzle
+      { shape: "polyline", points: [round({ x: c.x - hw, y: c.y }), round({ x: c.x, y: c.y }), round({ x: c.x, y: c.y - 1.2 })], weight: "medium", nodeId: s.id },
+      { shape: "line", points: [round({ x: c.x - 0.9, y: c.y - 1.2 }), round({ x: c.x + 0.9, y: c.y - 1.2 })], weight: "heavy", nodeId: s.id },
+      // Visible 1.8 mm vertical air gap (NO line bridging!) above open receptor cup + outgoing stub
+      { shape: "polyline", points: [round({ x: c.x - 1.6, y: c.y - 3.0 }), round({ x: c.x, y: c.y - 4.4 }), round({ x: c.x + 1.6, y: c.y - 3.0 })], weight: "medium", nodeId: s.id },
+      { shape: "polyline", points: [round({ x: c.x, y: c.y - 4.4 }), round({ x: c.x + hw, y: c.y - 4.4 }), round({ x: c.x + hw, y: c.y })], weight: "thin", nodeId: s.id },
+    );
+    const h = oneLineTextHeight([{ text: label }], 18);
+    items.push({ shape: "text", at: round({ x: c.x - 9, y: below ? c.y - 5.2 : c.y + 1.6 + h }), widthMm: 18, lines: [{ text: label, bold: true }], nodeId: s.id, role: "note", align: "center" });
+    return;
+  }
+  if (dk === "prv" || dk === "gas_regulator") {
+    // ASPE Pressure Reducing Valve (PRV): bowtie + vertical stem + domed spring bonnet
+    const hw = 3.0;
+    const hh = 1.8;
+    const stemTop = c.y + 3.2;
+    const domeR = 2.0;
+    items.push(
+      {
+        shape: "polyline",
+        points: [
+          round({ x: c.x - hw, y: c.y + hh }),
+          round({ x: c.x - hw, y: c.y - hh }),
+          round({ x: c.x + hw, y: c.y + hh }),
+          round({ x: c.x + hw, y: c.y - hh }),
+        ],
+        closed: true,
+        weight: "medium",
+        nodeId: s.id,
+      },
+      { shape: "line", points: [round({ x: c.x, y: c.y }), round({ x: c.x, y: stemTop })], weight: "medium", nodeId: s.id },
+      { shape: "line", points: [round({ x: c.x - domeR, y: stemTop }), round({ x: c.x + domeR, y: stemTop })], weight: "medium", nodeId: s.id },
+      {
+        shape: "polyline",
+        points: [
+          round({ x: c.x - domeR, y: stemTop }),
+          round({ x: c.x - domeR * 0.7, y: stemTop + domeR * 0.75 }),
+          round({ x: c.x, y: stemTop + domeR }),
+          round({ x: c.x + domeR * 0.7, y: stemTop + domeR * 0.75 }),
+          round({ x: c.x + domeR, y: stemTop }),
+        ],
+        weight: "medium",
+        nodeId: s.id,
+      },
+    );
+    const h = oneLineTextHeight([{ text: label }], 16);
+    items.push({ shape: "text", at: round({ x: c.x - 8, y: below ? c.y - hh - 1.4 : stemTop + domeR + 1.2 + h }), widthMm: 16, lines: [{ text: label, bold: true }], nodeId: s.id, role: "note", align: "center" });
+    return;
+  }
+  if (dk === "recirc_pump") {
+    // ASPE Inline Recirculation Pump: circle + inscribed directional triangle pointing in flow direction
+    const r = 3.0;
+    items.push(
+      { shape: "polyline", points: circlePts(c, r), closed: true, weight: "medium", nodeId: s.id },
+      {
+        shape: "polyline",
+        points: [
+          round({ x: c.x + flowDir * r * 0.85, y: c.y }),
+          round({ x: c.x - flowDir * r * 0.65, y: c.y + r * 0.7 }),
+          round({ x: c.x - flowDir * r * 0.65, y: c.y - r * 0.7 }),
+        ],
+        closed: true,
+        weight: "medium",
+        nodeId: s.id,
+      },
+    );
+    const h = oneLineTextHeight([{ text: label }], 16);
+    items.push({ shape: "text", at: round({ x: c.x - 8, y: below ? c.y - r - 1.2 : c.y + r + 1.0 + h }), widthMm: 16, lines: [{ text: label, bold: true }], nodeId: s.id, role: "note", align: "center" });
+    return;
+  }
+  if (dk === "check_valve") {
+    // ASPE Check Valve (CV): end vertical bars + diagonal swing-check slash + flow dot
+    const hw = 2.6;
+    const hh = 1.8;
+    const tipX = c.x + flowDir * hw;
+    const tailX = c.x - flowDir * hw;
+    items.push(
+      { shape: "line", points: [round({ x: c.x - hw, y: c.y - hh }), round({ x: c.x - hw, y: c.y + hh })], weight: "medium", nodeId: s.id },
+      { shape: "line", points: [round({ x: c.x + hw, y: c.y - hh }), round({ x: c.x + hw, y: c.y + hh })], weight: "medium", nodeId: s.id },
+      { shape: "line", points: [round({ x: tailX, y: c.y + hh }), round({ x: tipX, y: c.y - hh })], weight: "medium", nodeId: s.id },
+      { shape: "polyline", points: [round({ x: tipX - flowDir * 1.4, y: c.y - hh + 0.9 }), round({ x: tipX, y: c.y - hh }), round({ x: tipX - flowDir * 0.6, y: c.y - hh + 1.6 })], weight: "thin", nodeId: s.id },
+    );
+    const h = oneLineTextHeight([{ text: label }], 14);
+    items.push({ shape: "text", at: round({ x: c.x - 7, y: below ? c.y - hh - 1.2 : c.y + hh + 1.0 + h }), widthMm: 14, lines: [{ text: label, bold: true }], nodeId: s.id, role: "note", align: "center" });
+    return;
+  }
+  if (dk === "balancing_valve") {
+    // ASPE Balancing Valve / Circuit Setter (BV): bowtie + perpendicular stem + circular dial/ring
+    const hw = 2.6;
+    const hh = 1.8;
+    items.push(
+      {
+        shape: "polyline",
+        points: [
+          round({ x: c.x - hw, y: c.y + hh }),
+          round({ x: c.x - hw, y: c.y - hh }),
+          round({ x: c.x + hw, y: c.y + hh }),
+          round({ x: c.x + hw, y: c.y - hh }),
+        ],
+        closed: true,
+        weight: "medium",
+        nodeId: s.id,
+      },
+      { shape: "line", points: [round({ x: c.x, y: c.y }), round({ x: c.x, y: c.y + hh + 2.2 })], weight: "thin", nodeId: s.id },
+      { shape: "polyline", points: circlePts({ x: c.x, y: c.y + hh + 3.2 }, 1.0, 10), closed: true, weight: "thin", nodeId: s.id },
+    );
+    const h = oneLineTextHeight([{ text: label }], 14);
+    items.push({ shape: "text", at: round({ x: c.x - 7, y: below ? c.y - hh - 1.2 : c.y + hh + 4.8 + h }), widthMm: 14, lines: [{ text: label, bold: true }], nodeId: s.id, role: "note", align: "center" });
+    return;
+  }
+  // Standard Shutoff Valve (SOV) bowtie
   const hw = 2.6;
   const hh = 1.8;
   items.push({
@@ -426,6 +782,106 @@ function drawInlineDevice(items: OneLineItem[], s: DiagramNode, c: Vec2, below =
   });
   const h = oneLineTextHeight([{ text: label }], 14);
   items.push({ shape: "text", at: round({ x: c.x - 7, y: below ? c.y - hh - 1.2 : c.y + hh + 1.0 + h }), widthMm: 14, lines: [{ text: label }], nodeId: s.id, role: "note", align: "center" });
+}
+
+/** Draws an ASPE Thermal Expansion Tank (`ET-1`): vertical domed vessel with dashed internal diaphragm/bladder line. */
+function drawExpansionTank(items: OneLineItem[], n: DiagramNode, cx: number, bottomY: number): void {
+  const hw = EXP_TANK_W / 2;
+  const dome = 1.8;
+  const topY = bottomY + EXP_TANK_H;
+  const midY = bottomY + EXP_TANK_H * 0.5;
+  items.push(
+    {
+      shape: "polyline",
+      points: [
+        round({ x: cx - hw, y: bottomY + dome }),
+        round({ x: cx - hw * 0.55, y: bottomY }),
+        round({ x: cx + hw * 0.55, y: bottomY }),
+        round({ x: cx + hw, y: bottomY + dome }),
+        round({ x: cx + hw, y: topY - dome }),
+        round({ x: cx + hw * 0.55, y: topY }),
+        round({ x: cx - hw * 0.55, y: topY }),
+        round({ x: cx - hw, y: topY - dome }),
+      ],
+      closed: true,
+      weight: "medium",
+      nodeId: n.id,
+    },
+    // Internal pre-charge bladder/diaphragm dashed curve
+    {
+      shape: "polyline",
+      points: [
+        round({ x: cx - hw, y: midY }),
+        round({ x: cx - hw * 0.4, y: midY - 0.9 }),
+        round({ x: cx + hw * 0.4, y: midY - 0.9 }),
+        round({ x: cx + hw, y: midY }),
+      ],
+      weight: "thin",
+      dashed: true,
+      nodeId: n.id,
+    },
+  );
+  const mark = n.lines[0]?.text ?? n.name.toUpperCase();
+  items.push({
+    shape: "text",
+    at: round({ x: cx - 9, y: bottomY - 1.4 }),
+    widthMm: 18,
+    lines: [{ text: mark, bold: true }],
+    nodeId: n.id,
+    role: "equipment",
+    align: "center",
+  });
+}
+
+/** Draws an ASPE Buffer / Hot Water Storage Tank (`BT-1`): wide insulated domed vessel with top/bottom seams & stratification ticks. */
+function drawBufferTank(items: OneLineItem[], n: DiagramNode, cx: number, bottomY: number): void {
+  const hw = BUF_TANK_W / 2;
+  const dome = 1.8;
+  const topY = bottomY + BUF_TANK_H;
+  items.push(
+    {
+      shape: "polyline",
+      points: [
+        round({ x: cx - hw, y: bottomY + dome }),
+        round({ x: cx - hw * 0.6, y: bottomY }),
+        round({ x: cx + hw * 0.6, y: bottomY }),
+        round({ x: cx + hw, y: bottomY + dome }),
+        round({ x: cx + hw, y: topY - dome }),
+        round({ x: cx + hw * 0.6, y: topY }),
+        round({ x: cx - hw * 0.6, y: topY }),
+        round({ x: cx - hw, y: topY - dome }),
+      ],
+      closed: true,
+      weight: "medium",
+      nodeId: n.id,
+    },
+    { shape: "line", points: [round({ x: cx - hw, y: topY - dome }), round({ x: cx + hw, y: topY - dome })], weight: "thin", nodeId: n.id },
+    { shape: "line", points: [round({ x: cx - hw, y: bottomY + dome }), round({ x: cx + hw, y: bottomY + dome })], weight: "thin", nodeId: n.id },
+    // Subtle internal baffle/stratification ticks
+    { shape: "line", points: [round({ x: cx - hw + 1.2, y: bottomY + BUF_TANK_H * 0.35 }), round({ x: cx - hw + 3.0, y: bottomY + BUF_TANK_H * 0.35 })], weight: "thin", nodeId: n.id },
+    { shape: "line", points: [round({ x: cx + hw - 3.0, y: bottomY + BUF_TANK_H * 0.65 }), round({ x: cx + hw - 1.2, y: bottomY + BUF_TANK_H * 0.65 })], weight: "thin", nodeId: n.id },
+  );
+  const mark = n.lines[0]?.text ?? n.name.toUpperCase();
+  items.push({
+    shape: "text",
+    at: round({ x: cx - hw + 0.5, y: bottomY + BUF_TANK_H / 2 + 1.5 }),
+    widthMm: BUF_TANK_W - 1,
+    lines: [{ text: mark, bold: true }],
+    nodeId: n.id,
+    role: "equipment",
+    align: "center",
+  });
+  if (n.lines.length > 1) {
+    items.push({
+      shape: "text",
+      at: round({ x: cx - 10, y: bottomY - 1.4 }),
+      widthMm: 20,
+      lines: n.lines.slice(1, 2),
+      nodeId: n.id,
+      role: "equipment",
+      align: "center",
+    });
+  }
 }
 
 /** Draws an unmistakable ASPE cylindrical water heater tank (`WH-1` / `GWH`) with domed top/bottom caps. */
@@ -500,16 +956,18 @@ export function layoutWaterRiser(roots: readonly DiagramNode[], levels: readonly
   const floorY = (b: number) => -(b + 1) * ROW;
   const cwHeaderY = (b: number) => floorY(b) + 52; // 24 mm cleanly below next floor datum line!
   const hwHeaderY = (b: number) => floorY(b) + 37; // 15 mm cleanly below CW header!
+  const hwrHeaderY = (b: number) => floorY(b) + 27; // 10 mm cleanly below HW header, 7.5 mm above fixtures!
   const fixtureY = (b: number) => floorY(b) + 14;
 
-  const pipeSeg = (ownerId: string, ownerName: string, edge: DiagramEdge | undefined, a: Vec2, b: Vec2, dashed: boolean): { pa: Vec2; pb: Vec2 } | null => {
+  const pipeSeg = (ownerId: string, ownerName: string, edge: DiagramEdge | undefined, a: Vec2, b: Vec2, dashed: boolean, weight: Pen = "medium", sysCode?: string): { pa: Vec2; pb: Vec2 } | null => {
     const pa = round(a);
     const pb = round(b);
     if (Math.abs(pa.x - pb.x) < 0.01 && Math.abs(pa.y - pb.y) < 0.01) return null;
     const id = `pipe:${ownerId}:${pieceNo++}`;
     const ids = edge?.elementIds ?? (edge?.linkId ? [edge.linkId] : []);
-    if (ids[0]) pipes[id] = { elementId: ids[0], elementIds: ids, name: `${edge?.label ? `${edge.label} ` : ""}${dashed ? "HW" : "CW"} pipe${ownerName ? ` to ${ownerName}` : ""}` };
-    items.push({ shape: "line", points: [pa, pb], weight: "medium", nodeId: id, ...(dashed ? { dashed: true } : {}) });
+    const code = sysCode ?? (dashed ? "HW" : "CW");
+    if (ids[0]) pipes[id] = { elementId: ids[0], elementIds: ids, name: `${edge?.label ? `${edge.label} ` : ""}${code} pipe${ownerName ? ` to ${ownerName}` : ""}` };
+    items.push({ shape: "line", points: [pa, pb], weight, nodeId: id, ...(dashed ? { dashed: true } : {}) });
     return { pa, pb };
   };
 
@@ -541,21 +999,35 @@ export function layoutWaterRiser(roots: readonly DiagramNode[], levels: readonly
   const showSize = labels.includes("size");
   const showLoad = labels.includes("load");
 
+  // Group sibling DHWR roots onto the primary CW/HW water root when present so the recirculation loop returns to the heater cleanly.
+  const primaryRoots = roots.filter((r) => r.service !== "domestic_hot_water_return");
+  const siblingHwrRoots = roots.filter((r) => r.service === "domestic_hot_water_return");
+  const effectiveRoots: Array<{ readonly root: DiagramNode; readonly extraHwr: readonly DiagramNode[] }> =
+    primaryRoots.length > 0
+      ? primaryRoots.map((root, idx) => ({ root, extraHwr: idx === 0 ? siblingHwrRoots : [] }))
+      : siblingHwrRoots.map((root) => ({ root, extraHwr: [] }));
+
   let originX = LEFT + 6;
   let anyHot = false;
+  let anyHwr = false;
 
-  for (const root of roots) {
-    const net = extractWaterNetwork(root, levels);
+  for (const { root, extraHwr } of effectiveRoots) {
+    const net = extractWaterNetwork(root, levels, extraHwr);
     if (net.usedUnknown) usedUnknown = true;
     if (net.hasHot) anyHot = true;
-    const rootIsHotOnly = root.service === "domestic_hot_water" || root.service === "domestic_hot_water_return";
+    if (net.hasHwr) anyHwr = true;
+    const rootIsHotOnly = root.service === "domestic_hot_water";
+    const rootIsHwrOnly = root.service === "domestic_hot_water_return";
 
     const activeBands = new Set<number>([net.rootBand]);
     Array.from(net.fixturesByBand.keys()).forEach((b) => activeBands.add(b));
     for (const h of net.heaters) activeBands.add(h.band);
+    for (const t of net.auxiliaryTanks) activeBands.add(t.band);
+    Array.from(net.hwrFloorInfo.keys()).forEach((b) => activeBands.add(b));
     const sortedBands = Array.from(activeBands).sort((a, b) => b - a);
     const hasUpperCw = Array.from(net.fixturesByBand.entries()).some(([b, list]) => b !== net.rootBand && list.some((f) => f.cw));
     const hasUpperHw = Array.from(net.fixturesByBand.entries()).some(([b, list]) => b !== net.rootBand && list.some((f) => f.hw));
+    const hasUpperHwr = net.hasHwr && (hasUpperHw || Array.from(net.hwrFloorInfo.keys()).some((b) => b !== net.rootBand));
 
     let maxCwOnly = 0;
     let maxHotGroup = 0;
@@ -583,6 +1055,12 @@ export function layoutWaterRiser(roots: readonly DiagramNode[], levels: readonly
       cursorX += 26;
     }
 
+    const auxTankXs: number[] = [];
+    for (let i = 0; i < net.auxiliaryTanks.length; i++) {
+      auxTankXs.push(cursorX + 10);
+      cursorX += 22;
+    }
+
     const cwRiserX = hasUpperCw ? cursorX + 4 : null;
     if (hasUpperCw) cursorX += SHAFT_W + 4;
 
@@ -592,12 +1070,17 @@ export function layoutWaterRiser(roots: readonly DiagramNode[], levels: readonly
     const hwRiserX = hasUpperHw ? cursorX + 4 : null;
     if (hasUpperHw) cursorX += SHAFT_W + 6;
 
+    const hwrRiserX = hasUpperHwr ? cursorX + 2 : null;
+    if (hasUpperHwr) cursorX += 18;
+
     const hotGroupStartX = cursorX + COL / 2;
     cursorX += maxHotGroup * COL;
-    const rightEndX = Math.max(cursorX + 12, originX + 54);
+    // Reserve room for inline HWR loop devices (RP, CV, BV) when returning on a single-floor or narrow riser
+    const minHwrSpan = net.hasHwr ? Math.max(net.hwrDevices.length * 22 + 24, 54) : 54;
+    const rightEndX = Math.max(cursorX + 12, originX + minHwrSpan);
 
     // 1. Source entry node & label on rootBand
-    const rootY = rootIsHotOnly ? hwHeaderY(net.rootBand) : cwHeaderY(net.rootBand);
+    const rootY = rootIsHwrOnly ? hwrHeaderY(net.rootBand) : rootIsHotOnly ? hwHeaderY(net.rootBand) : cwHeaderY(net.rootBand);
     const rootStart = items.length;
     items.push({
       shape: "polyline",
@@ -619,10 +1102,11 @@ export function layoutWaterRiser(roots: readonly DiagramNode[], levels: readonly
     nodes.push({ id: root.id, kind: root.kind, name: root.name, center: round({ x: serviceX, y: rootY }), depth: 0 });
     ranges[root.id] = [rootStart, items.length];
 
-    // 2. Entry pipe through inline service devices (MTR-1, RPZ-1, SOV...)
+    // 2. Entry pipe through inline service devices (MTR-1, RPZ-1, DCVA, PVB, AVB, Air Gap, PRV, SOV...)
     let prevX = serviceX;
+    const entryCode = rootIsHwrOnly ? "HWR" : rootIsHotOnly ? "HW" : "CW";
     const entryTag = [
-      showSize && net.serviceSize ? `${net.serviceSize} ${rootIsHotOnly ? "HW" : "CW"}` : showSize && net.entryEdge?.label ? net.entryEdge.label : "",
+      showSize && net.serviceSize ? `${net.serviceSize} ${entryCode}` : showSize && net.entryEdge?.label ? net.entryEdge.label : "",
       showLoad && net.cwTotalLoad ? net.cwTotalLoad : "",
     ]
       .filter(Boolean)
@@ -633,13 +1117,14 @@ export function layoutWaterRiser(roots: readonly DiagramNode[], levels: readonly
         const dx = deviceXs[i]!;
         const t0 = items.length;
         entries[dev.id] = round({ x: prevX, y: rootY });
-        const gap = deviceKindOf(dev.name) === "rpz" ? 4.2 : deviceKindOf(dev.name) === "meter" ? 3.2 : 2.6;
-        pipeSeg(dev.id, dev.name, dev.feed ?? net.entryEdge, { x: prevX, y: rootY }, { x: dx - gap, y: rootY }, rootIsHotOnly);
+        const dk = waterDeviceKindOf(dev);
+        const gap = deviceHalfSpan(dk);
+        pipeSeg(dev.id, dev.name, dev.feed ?? net.entryEdge, { x: prevX, y: rootY }, { x: dx - gap, y: rootY }, rootIsHotOnly || rootIsHwrOnly, rootIsHwrOnly ? "thin" : "medium", entryCode);
         if (i === 0 && entryTag) {
-          // Lift cleanly above the circular Meter symbol (extraGap = 4.6 mm)
+          // Lift cleanly above the circular Meter / PRV / PVB symbol (extraGap = 4.6 mm)
           labelAbove(root.id, entryTag, serviceX + 1, rootY, Math.max(40, (deviceXs[net.entryDevices.length - 1] ?? dx) - serviceX + 14), 4.6);
         }
-        drawInlineDevice(items, dev, { x: dx, y: rootY }, true);
+        drawInlineDevice(items, dev, { x: dx, y: rootY }, true, 1);
         nodes.push({ id: dev.id, kind: dev.kind, name: dev.name, center: round({ x: dx, y: rootY }), depth: 0 });
         ranges[dev.id] = [t0, items.length];
         prevX = dx + gap;
@@ -651,6 +1136,7 @@ export function layoutWaterRiser(roots: readonly DiagramNode[], levels: readonly
     // 3. Draw Water Heater(s) (WH-1 / GWH)
     let hwStartPt: Vec2 | null = null;
     let hwMainEdge: DiagramEdge | undefined;
+    let heaterReturnPt: Vec2 | null = null;
     for (let i = 0; i < net.heaters.length; i++) {
       const h = net.heaters[i]!;
       const hx = heaterXs[i]!;
@@ -681,7 +1167,63 @@ export function layoutWaterRiser(roots: readonly DiagramNode[], levels: readonly
         hwStartPt = hwJoin;
         hwMainEdge = h.hwRootEdge;
       }
+      if (net.hasHwr && !heaterReturnPt) {
+        heaterReturnPt = { x: hx + TANK_W / 2, y: hy + TANK_H * 0.45 };
+      }
       ranges[h.node.id] = [t0, items.length];
+    }
+
+    // 3b. Draw Expansion Tanks (ET-1) & Buffer Tanks (BT-1) cleanly off CW/HW headers with zero pipe gaps!
+    let maxAuxCwX = prevX;
+    let maxAuxHwX = hwStartPt?.x ?? prevX;
+    for (let i = 0; i < net.auxiliaryTanks.length; i++) {
+      const t = net.auxiliaryTanks[i]!;
+      const tx = auxTankXs[i]!;
+      const ty = fixtureY(t.band) - 1;
+      const isHwTank = t.service === "hw";
+      const headerY = isHwTank ? hwHeaderY(t.band) : cwHeaderY(t.band);
+      const tankH = t.kind === "expansion_tank" ? EXP_TANK_H : BUF_TANK_H;
+      const tankTopY = ty + tankH;
+      const t0 = items.length;
+      entries[t.node.id] = round({ x: tx, y: headerY });
+
+      // Ensure continuous header reaches this tank on rootBand
+      if (t.band === net.rootBand) {
+        if (!isHwTank && tx > prevX) {
+          pipeSeg(`${t.node.id}:hdr`, t.node.name, t.edge ?? net.entryEdge, { x: prevX, y: headerY }, { x: tx, y: headerY }, false);
+          prevX = tx;
+        }
+        if (!isHwTank) maxAuxCwX = Math.max(maxAuxCwX, tx);
+        else maxAuxHwX = Math.max(maxAuxHwX, tx);
+      }
+
+      teeDot(items, { x: tx, y: headerY }, t.node.id);
+      if (t.devices.length > 0) {
+        const step = (tankTopY - headerY) / (t.devices.length + 1);
+        let curY = headerY;
+        t.devices.forEach((d, di) => {
+          const dy = headerY + step * (di + 1);
+          const dk = waterDeviceKindOf(d);
+          const span = Math.min(2.4, deviceHalfSpan(dk));
+          pipeSeg(d.id, d.name, t.edge, { x: tx, y: curY }, { x: tx, y: dy + span }, isHwTank);
+          drawInlineDevice(items, d, { x: tx, y: dy }, false);
+          curY = dy - span;
+        });
+        pipeSeg(t.node.id, t.node.name, t.edge, { x: tx, y: curY }, { x: tx, y: tankTopY }, isHwTank);
+      } else {
+        pipeSeg(t.node.id, t.node.name, t.edge, { x: tx, y: headerY }, { x: tx, y: tankTopY }, isHwTank);
+      }
+      if (showSize && t.edge?.label) {
+        labelSide(t.node.id, [t.edge.label], tx, (headerY + tankTopY) / 2, "right", 10);
+      }
+
+      if (t.kind === "expansion_tank") {
+        drawExpansionTank(items, t.node, tx, ty);
+      } else {
+        drawBufferTank(items, t.node, tx, ty);
+      }
+      nodes.push({ id: t.node.id, kind: t.node.kind, name: t.node.name, center: round({ x: tx, y: ty + tankH / 2 }), depth: 0 });
+      ranges[t.node.id] = [t0, items.length];
     }
 
     // 4. Draw each floor band's CW header, HW header (dashed), and merged unique fixtures
@@ -706,7 +1248,7 @@ export function layoutWaterRiser(roots: readonly DiagramNode[], levels: readonly
       const hwFixtures = list.filter((f) => f.hw);
 
       // CW Horizontal Header on floor `b`
-      if (!rootIsHotOnly && (cwFixtures.length > 0 || (b === net.rootBand && (cwRiserX !== null || cwInfo?.hasCap)))) {
+      if (!rootIsHotOnly && !rootIsHwrOnly && (cwFixtures.length > 0 || (b === net.rootBand && (cwRiserX !== null || cwInfo?.hasCap || maxAuxCwX > prevX)))) {
         const startX = b === net.rootBand ? prevX : (cwRiserX ?? cwOnlyStartX - 10);
         const lastCwFix = cwFixtures[cwFixtures.length - 1];
         let endX = lastCwFix ? (posOf.get(lastCwFix)! - (lastCwFix.hw ? 2.4 : 0)) : startX;
@@ -731,7 +1273,7 @@ export function layoutWaterRiser(roots: readonly DiagramNode[], levels: readonly
       }
 
       // HW Horizontal Header (DASHED!) on floor `b`
-      if (hwFixtures.length > 0 || (b === net.rootBand && hwStartPt && hwRiserX !== null)) {
+      if (hwFixtures.length > 0 || (b === net.rootBand && hwStartPt && (hwRiserX !== null || maxAuxHwX > hwStartPt.x || net.hasHwr))) {
         const startX =
           b === net.rootBand
             ? (hwStartPt?.x ?? (rootIsHotOnly ? prevX : hotGroupStartX - 10))
@@ -739,6 +1281,7 @@ export function layoutWaterRiser(roots: readonly DiagramNode[], levels: readonly
         const lastHwFix = hwFixtures[hwFixtures.length - 1];
         let endX = lastHwFix ? (posOf.get(lastHwFix)! + (lastHwFix.cw ? 2.4 : 0)) : startX;
         if (b === net.rootBand && hwRiserX !== null) endX = Math.max(endX, hwRiserX);
+        if (b === net.rootBand) endX = Math.max(endX, maxAuxHwX);
         if (hwInfo?.hasCap) endX += 10;
         if (endX > startX) {
           pipeSeg(`hw-hdr:${b}`, `L${b} HW header`, hwInfo?.edge ?? hwMainEdge, { x: startX, y: hy }, { x: endX, y: hy }, true);
@@ -884,20 +1427,105 @@ export function layoutWaterRiser(roots: readonly DiagramNode[], levels: readonly
       }
     }
 
+    // 6. Draw distinct DHWR (Hot Water Return) loop: thin dashed line + return chevrons + RP/CV/BV symbols returning to Water Heater!
+    if (net.hasHwr) {
+      const hwrY = hwrHeaderY(net.rootBand);
+      const hwBands = Array.from(hwBandHeaderXs.keys()).sort((a, b) => b - a);
+      const topHwBand = hwBands[hwBands.length - 1] ?? net.rootBand;
+      const topHwHdr = hwBandHeaderXs.get(topHwBand);
+      const hwrTag = [showSize && net.hwrSize ? `${net.hwrSize} HWR` : "HWR", showLoad && net.hwrLoad ? net.hwrLoad : ""].filter(Boolean).join(" · ");
+
+      // Return start point (either top of multi-story HW loop dropping down hwrRiserX, or far right of rootBand HW header)
+      let returnRightX: number;
+      if (hwrRiserX !== null && hwBands.length > 1) {
+        const yTopHw = hwHeaderY(topHwBand);
+        const yTopHwr = hwrHeaderY(topHwBand);
+        const topTapX = topHwHdr ? topHwHdr.endX : hwrRiserX + 12;
+        if (topTapX > hwrRiserX) {
+          teeDot(items, { x: topTapX, y: yTopHw }, "hwr-tap");
+          pipeSeg("hwr-drop-top", "HWR Loop Return", net.hwrMainEdge, { x: topTapX, y: yTopHw }, { x: topTapX, y: yTopHwr }, true, "thin", "HWR");
+          pipeSeg("hwr-top", "HWR Return Branch", net.hwrMainEdge, { x: topTapX, y: yTopHwr }, { x: hwrRiserX, y: yTopHwr }, true, "thin", "HWR");
+          drawReturnChevron(items, { x: (topTapX + hwrRiserX) / 2, y: yTopHwr }, "left", "hwr-top");
+        }
+        pipeSeg("hwr-riser", "HWR Return Riser", net.hwrMainEdge, { x: hwrRiserX, y: yTopHwr }, { x: hwrRiserX, y: hwrY }, true, "thin", "HWR");
+        drawReturnChevron(items, { x: hwrRiserX, y: (yTopHwr + hwrY) / 2 }, "down", "hwr-riser");
+        labelSide("hwr-riser", [hwrTag], hwrRiserX, (yTopHwr + hwrY) / 2 + 4, "right", 18);
+        returnRightX = hwrRiserX;
+      } else if (topHwHdr) {
+        const tapX = topHwHdr.endX + 4;
+        pipeSeg("hwr-tap-h", "HWR Tap", net.hwrMainEdge, { x: topHwHdr.endX, y: hwHeaderY(net.rootBand) }, { x: tapX, y: hwHeaderY(net.rootBand) }, true, "thin", "HWR");
+        pipeSeg("hwr-tap-v", "HWR Drop", net.hwrMainEdge, { x: tapX, y: hwHeaderY(net.rootBand) }, { x: tapX, y: hwrY }, true, "thin", "HWR");
+        drawReturnChevron(items, { x: tapX, y: (hwHeaderY(net.rootBand) + hwrY) / 2 }, "down", "hwr-tap-v");
+        returnRightX = tapX;
+      } else {
+        // Standalone HWR-only diagram
+        returnRightX = Math.max(rightEndX - 10, serviceX + Math.max(net.hwrDevices.length * 22 + 24, 54));
+      }
+
+      // Target return entry on left (Water Heater return connection or source entry)
+      const returnLeftX = heaterReturnPt ? heaterReturnPt.x + 2.0 : prevX;
+      const runRightX = Math.max(returnRightX, returnLeftX + Math.max(net.hwrDevices.length * 20 + 18, 30));
+
+      // Place HWR inline devices (BV -> CV -> RP-1 flowing right-to-left back into the water heater!)
+      const orderedDevs = [...net.hwrDevices];
+      let curX = runRightX;
+      if (orderedDevs.length > 0) {
+        const usableSpan = Math.max(16, runRightX - returnLeftX);
+        const step = usableSpan / (orderedDevs.length + 1);
+        orderedDevs.forEach((dev, di) => {
+          const dx = runRightX - step * (di + 1);
+          const dk = waterDeviceKindOf(dev);
+          const span = deviceHalfSpan(dk);
+          const t0 = items.length;
+          entries[dev.id] = round({ x: curX, y: hwrY });
+          pipeSeg(dev.id, dev.name, dev.feed ?? net.hwrMainEdge, { x: curX, y: hwrY }, { x: dx + span, y: hwrY }, true, "thin", "HWR");
+          if (di === 0 && curX - (dx + span) > 6) {
+            drawReturnChevron(items, { x: (curX + dx + span) / 2, y: hwrY }, "left", dev.id);
+          }
+          drawInlineDevice(items, dev, { x: dx, y: hwrY }, true, -1);
+          nodes.push({ id: dev.id, kind: dev.kind, name: dev.name, center: round({ x: dx, y: hwrY }), depth: 0 });
+          ranges[dev.id] = [t0, items.length];
+          curX = dx - span;
+        });
+      }
+
+      if (curX > returnLeftX) {
+        pipeSeg("hwr-ret", "HWR Return Main", net.hwrMainEdge, { x: curX, y: hwrY }, { x: returnLeftX, y: hwrY }, true, "thin", "HWR");
+        if (curX - returnLeftX > 8) {
+          drawReturnChevron(items, { x: (curX + returnLeftX) / 2, y: hwrY }, "left", "hwr-ret");
+        }
+      }
+      labelAbove("hwr-ret", hwrTag, returnLeftX + 2, hwrY, Math.max(32, runRightX - returnLeftX - 4), 1.4);
+
+      // Connect horizontally + vertically straight into the Water Heater return inlet with ZERO pipe gaps!
+      if (heaterReturnPt) {
+        pipeSeg("hwr-wh-v", "HWR to Water Heater", net.hwrMainEdge, { x: returnLeftX, y: hwrY }, { x: returnLeftX, y: heaterReturnPt.y }, true, "thin", "HWR");
+        pipeSeg("hwr-wh-h", "HWR to Water Heater", net.hwrMainEdge, { x: returnLeftX, y: heaterReturnPt.y }, heaterReturnPt, true, "thin", "HWR");
+      }
+    }
+
     originX = rightEndX + COL;
   }
 
   const extentX = Math.max(originX, LEFT + 80);
 
-  if (anyHot) {
-    const legX = extentX - 58;
+  if (anyHot || anyHwr) {
+    const legX = anyHwr ? extentX - 62 : extentX - 58;
+    const legW = anyHwr ? 46 : 42;
     const legY = floorY(0) + 12;
     items.push(
       { shape: "line", points: [round({ x: legX, y: legY }), round({ x: legX + 12, y: legY })], weight: "medium", nodeId: "legend:cw" },
-      { shape: "text", at: round({ x: legX + 14, y: legY + 1.5 }), widthMm: 42, lines: [{ text: "COLD WATER (CW)" }], nodeId: "legend:cw", role: "note" },
+      { shape: "text", at: round({ x: legX + 14, y: legY + 1.5 }), widthMm: legW, lines: [{ text: "COLD WATER (CW)" }], nodeId: "legend:cw", role: "note" },
       { shape: "line", points: [round({ x: legX, y: legY - 6 }), round({ x: legX + 12, y: legY - 6 })], weight: "medium", dashed: true, nodeId: "legend:hw" },
-      { shape: "text", at: round({ x: legX + 14, y: legY - 4.5 }), widthMm: 42, lines: [{ text: "HOT WATER (HW)" }], nodeId: "legend:hw", role: "note" },
+      { shape: "text", at: round({ x: legX + 14, y: legY - 4.5 }), widthMm: legW, lines: [{ text: "HOT WATER (HW)" }], nodeId: "legend:hw", role: "note" },
     );
+    if (anyHwr) {
+      items.push(
+        { shape: "line", points: [round({ x: legX, y: legY - 12 }), round({ x: legX + 12, y: legY - 12 })], weight: "thin", dashed: true, nodeId: "legend:hwr" },
+        { shape: "text", at: round({ x: legX + 14, y: legY - 10.5 }), widthMm: 48, lines: [{ text: "HOT WATER RETURN (HWR)" }], nodeId: "legend:hwr", role: "note" },
+      );
+      drawReturnChevron(items, { x: legX + 5, y: legY - 12 }, "left", "legend:hwr");
+    }
   }
 
   const rows = [...levels.map((l) => l.name), ...(usedUnknown ? ["No level"] : [])];

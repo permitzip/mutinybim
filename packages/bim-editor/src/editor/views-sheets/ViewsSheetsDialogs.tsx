@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { STANDARD_SCALES, TITLE_BLOCK_TYPES, formatParameterValue, sheetPaperSize, standardProjectParameter, type ProjectParameterDef, type Sheet, type TitleBlockRow, type TitleBlockType, type ViewElement } from '@permitzip/bim-kernel'
+import { STANDARD_SCALES, TITLE_BLOCK_TYPES, disciplineLabel, formatParameterValue, listDisciplines, sheetPaperSize, standardProjectParameter, type ProjectParameterDef, type Sheet, type TitleBlockRow, type TitleBlockType, type ViewElement } from '@permitzip/bim-kernel'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -127,6 +127,17 @@ function ScaleSelect({ id, value, onChange }: { id: string; value: number; onCha
   )
 }
 
+const ALL_DISCIPLINES = '__all__'
+
+function newViewDisciplineChoices(): ReadonlyArray<{ readonly value: string; readonly label: string }> {
+  return [
+    { value: ALL_DISCIPLINES, label: 'Coordination / All' },
+    ...listDisciplines()
+      .filter((d) => d.id !== 'documentation' && d.id !== 'general')
+      .map((d) => ({ value: d.id, label: d.parent ? `${disciplineLabel(d.parent)} › ${d.label}` : d.label })),
+  ]
+}
+
 export function NewViewDialog({
   viewType,
   levels,
@@ -136,20 +147,34 @@ export function NewViewDialog({
   viewType: Exclude<CreatableViewType, 'section' | 'elevation'>
   levels: readonly string[]
   onCancel: () => void
-  onCreate: (input: { name: string; level: string | null; scale: number }) => string | null | Promise<string | null>
+  onCreate: (input: { name: string; level: string | null; scale: number; discipline: string | null }) => string | null | Promise<string | null>
 }) {
   const needsLevel = viewType === 'floor_plan' || viewType === 'ceiling_plan'
+  const disciplines = newViewDisciplineChoices()
   const [level, setLevel] = useState(levels[0] ?? '')
-  const suggested = (lvl: string) =>
-    viewType === 'floor_plan' ? `${lvl || 'Level'} Mechanical plan` : viewType === 'ceiling_plan' ? `${lvl || 'Level'} Ceiling plan` : viewType === 'three_d' ? '3D - Mechanical' : 'Detail'
-  const [name, setName] = useState(suggested(levels[0] ?? ''))
+  const [discipline, setDiscipline] = useState<string>(ALL_DISCIPLINES)
+  const suggested = (lvl: string, disc: string) => {
+    const discWord = disc !== ALL_DISCIPLINES ? disciplineLabel(disc) : null
+    if (viewType === 'floor_plan') return `${lvl || 'Level'} ${discWord ?? 'Mechanical'} plan`
+    if (viewType === 'ceiling_plan') return `${lvl || 'Level'} ${discWord ? `${discWord} ` : ''}Ceiling plan`
+    if (viewType === 'three_d') return discWord ? `3D - ${discWord}` : '3D - Coordination'
+    return discWord ? `${discWord} Detail` : 'Detail'
+  }
+  const [name, setName] = useState(suggested(levels[0] ?? '', ALL_DISCIPLINES))
   const [nameTouched, setNameTouched] = useState(false)
   const [scale, setScale] = useState(viewType === 'detail' ? 8 : 48)
   const { error, busy, run } = useSave(onCancel)
   const submit = (e: React.FormEvent) => {
     e.preventDefault()
     if (needsLevel && !level.trim()) return
-    void run(() => onCreate({ name: name.trim(), level: needsLevel ? level.trim() : null, scale }))
+    void run(() =>
+      onCreate({
+        name: name.trim(),
+        level: needsLevel ? level.trim() : null,
+        scale,
+        discipline: discipline === ALL_DISCIPLINES ? null : discipline,
+      }),
+    )
   }
   return (
     <Dialog open onOpenChange={(open) => !open && onCancel()}>
@@ -174,7 +199,7 @@ export function NewViewDialog({
                     value={level}
                     onValueChange={(v) => {
                       setLevel(v)
-                      if (!nameTouched) setName(suggested(v))
+                      if (!nameTouched) setName(suggested(v, discipline))
                     }}
                   >
                     <SelectTrigger id="nv-level">
@@ -196,6 +221,30 @@ export function NewViewDialog({
                 <FieldDescription>{levels.length > 0 ? "Levels come from the linked architect's model." : 'No linked model levels yet; type the level name your ductwork uses (L1).'}</FieldDescription>
               </Field>
             )}
+            <Field>
+              <FieldLabel htmlFor="nv-discipline">Discipline</FieldLabel>
+              <Select
+                value={discipline}
+                onValueChange={(v) => {
+                  setDiscipline(v)
+                  if (!nameTouched) setName(suggested(level, v))
+                }}
+              >
+                <SelectTrigger id="nv-discipline" data-testid="new-view-discipline">
+                  <SelectValue placeholder="Pick a discipline" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    {disciplines.map((d) => (
+                      <SelectItem key={d.value} value={d.value} data-testid={`new-view-discipline-${d.value}`}>
+                        {d.label}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+              <FieldDescription>Organizes the view in the browser and highlights this discipline in ink.</FieldDescription>
+            </Field>
             <Field>
               <FieldLabel htmlFor="nv-name">Name</FieldLabel>
               <Input

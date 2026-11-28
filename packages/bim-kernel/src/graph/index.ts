@@ -19,7 +19,7 @@ export {
 } from "./engine";
 export { anchorKeyOf, type AnchorRef as RequirementAnchorRef } from "./inputs";
 export { anchorKindTable, BUILTIN_ANCHOR_KIND_ROWS, GRAPH_ANCHOR_POINT, GRAPH_OWN_ANCHOR_KINDS, type AnchorKindTable, type GraphAnchorKindRow } from "./anchors";
-export { dependsOn, why, type DependsOnTarget, type ProposedEdit } from "./queries";
+export { decisionImpactsFor, dependsOn, why, type DependsOnTarget, type ProposedEdit } from "./queries";
 export { editPreviewFingerprint, previewEdit, type EditPreview, type EditPreviewChecked, type EditPreviewItem, type EditPreviewRefused, type PreviewEditOptions } from "./preview-edit";
 export { checkRequirementsSnapshot, checkRequirementsSourceRow, checkRules, checkRuleWords, looksVerbatim, verbatimSignals, type RuleFinding, type VerbatimSignals } from "./conformance";
 export {
@@ -30,11 +30,13 @@ export {
   observationsWritable,
   readObservationBody,
   isRuleRecordElement,
+  publicDeterminationElement,
   readDeterminationBody,
   readRequirementStateBody,
   readRuleRecord,
   requirementStatesWritable,
   rulesWritable,
+  stripPrivateNotes,
   DETERMINATION_RECORD_STEP,
   REQUIREMENT_STATE_RECORD_STEP,
   RULE_RECORD_STEP,

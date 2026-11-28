@@ -3,7 +3,13 @@ import type { Primitive } from "../../drawing/sheet";
 import type { ModelState, Vec2 } from "../../types";
 import { evaluateFormSchedule, type EvaluatedForm, type FormAlign, type FormGrid } from "./evaluate";
 import type { FormScheduleDefinition } from "./types";
-import { parseScheduleCellLink, scheduleEmptyRow } from "../schedule";
+import { formatScheduleCell, type DocumentUrlResolver } from "../cell-links";
+import { scheduleEmptyRow } from "../schedule";
+
+export interface FormTableOptions {
+  /** Host-neutral resolver for logical cut-sheet / document refs carried in form schedule cells. */
+  readonly resolveDocumentUrl?: DocumentUrlResolver;
+}
 
 /**
  * A form schedule on paper: stacked sections the full width of the widest
@@ -34,14 +40,33 @@ function fit(text: string, width: number, size: number, bold: boolean): string {
   return `${out}…`;
 }
 
-function widthsFor(headings: readonly string[], rows: readonly (readonly string[])[], fixed: readonly (number | undefined)[], size: number): number[] {
+const SINGLE_PLACEHOLDER_RE = /^\{\s*([A-Za-z0-9_.-]+)\s*\}$/;
+
+function templateColumnKeys(def: FormScheduleDefinition): readonly (string | null)[] {
+  if (def.template.body.layout !== "rows") return [];
+  return def.template.body.columns.map((col) => {
+    const m = SINGLE_PLACEHOLDER_RE.exec(col.value.trim());
+    return m?.[1] ?? null;
+  });
+}
+
+function widthsFor(
+  headings: readonly string[],
+  rows: readonly (readonly string[])[],
+  fixed: readonly (number | undefined)[],
+  size: number,
+  columnKeys?: readonly (string | null)[],
+  resolveDocumentUrl?: DocumentUrlResolver,
+): number[] {
   return headings.map((h, i) => {
     const f = fixed[i];
     if (f !== undefined) return f;
     const seen = new Set<string>();
+    const columnKey = columnKeys?.[i];
     let longest = measure(h, size, true);
     for (const r of rows) {
-      const c = r[i] ?? "";
+      const raw = r[i] ?? "";
+      const c = raw ? formatScheduleCell(raw, { columnKey, heading: h, resolveDocumentUrl }).text : "";
       if (seen.has(c)) continue;
       seen.add(c);
       longest = Math.max(longest, measure(c, size, false));
@@ -53,11 +78,14 @@ function widthsFor(headings: readonly string[], rows: readonly (readonly string[
 /** A panel's grid is reused while its circuits are unchanged (evaluate.ts), and so are its measured widths. */
 const measuredGrids = new WeakMap<FormGrid, { readonly size: number; readonly widths: readonly number[] }>();
 
-function measuredGridWidths(grid: FormGrid, size: number): readonly number[] {
-  const known = measuredGrids.get(grid);
-  if (known && known.size === size) return known.widths;
-  const widths = widthsFor(grid.headings, grid.rows, grid.widths, size);
-  measuredGrids.set(grid, { size, widths });
+function measuredGridWidths(grid: FormGrid, size: number, columnKeys?: readonly (string | null)[], resolveDocumentUrl?: DocumentUrlResolver): readonly number[] {
+  const canCache = !resolveDocumentUrl && !(columnKeys && columnKeys.some(Boolean));
+  if (canCache) {
+    const known = measuredGrids.get(grid);
+    if (known && known.size === size) return known.widths;
+  }
+  const widths = widthsFor(grid.headings, grid.rows, grid.widths, size, columnKeys, resolveDocumentUrl);
+  if (canCache) measuredGrids.set(grid, { size, widths });
   return widths;
 }
 
@@ -69,9 +97,7 @@ function stretch(widths: readonly number[], to: number): number[] {
 }
 
 /** Word-wrap form cell text to fit column width without ellipsis truncation (up to 4 lines). */
-function wrapFormCell(text: string, width: number, size: number, bold: boolean): string[] {
-  const link = parseScheduleCellLink(text);
-  const shown = link ? link.label : text;
+function wrapFormCell(shown: string, width: number, size: number, bold: boolean): string[] {
   const room = width - PAD_MM * 2 + FIT_SLACK_MM;
   if (!shown || measure(shown, size, bold) <= room) return [shown];
   const words = shown.split(/\s+/).filter(Boolean);
@@ -89,7 +115,15 @@ function wrapFormCell(text: string, width: number, size: number, bold: boolean):
   return lines;
 }
 
-function rowHeightsFor(headings: readonly string[], rows: readonly (readonly string[])[], widths: readonly number[], rowH: number, t: number): readonly number[] {
+function rowHeightsFor(
+  headings: readonly string[],
+  rows: readonly (readonly string[])[],
+  widths: readonly number[],
+  rowH: number,
+  t: number,
+  columnKeys?: readonly (string | null)[],
+  resolveDocumentUrl?: DocumentUrlResolver,
+): readonly number[] {
   const lead = t * 1.38;
   const all = [headings, ...rows];
   return all.map((cells, i) => {
@@ -97,7 +131,9 @@ function rowHeightsFor(headings: readonly string[], rows: readonly (readonly str
     let maxL = 1;
     cells.forEach((c, j) => {
       if (!c) return;
-      const lines = wrapFormCell(c, widths[j] ?? MIN_COL_MM, t, bold);
+      const shown = i === 0 ? c : formatScheduleCell(c, { columnKey: columnKeys?.[j], heading: headings[j], resolveDocumentUrl }).text;
+      if (!shown) return;
+      const lines = wrapFormCell(shown, widths[j] ?? MIN_COL_MM, t, bold);
       if (lines.length > maxL) maxL = lines.length;
     });
     return rowH + (maxL - 1) * lead;
@@ -121,18 +157,27 @@ export interface FormTable {
   readonly heights: { readonly title: number; readonly problem: number; readonly header: number; readonly grid: number; readonly summary: number; readonly notes: number; readonly footer: number };
   /** Paper mm. */
   readonly size: Vec2;
+  /** Field path keys extracted from row-template columns, for link/cut-sheet detection. */
+  readonly gridColumnKeys?: readonly (string | null)[];
+  /** Optional host document URL resolver carried from `formTable` to `drawFormTable`. */
+  readonly resolveDocumentUrl?: DocumentUrlResolver;
 }
 
-export function formTable(model: Pick<ModelState, "elements">, def: FormScheduleDefinition): FormTable {
+export function formTable(model: Pick<ModelState, "elements">, def: FormScheduleDefinition, opts?: FormTableOptions): FormTable {
   const form = evaluateFormSchedule(model, def);
   const t = def.textSizeMm ?? DEFAULT_TEXT_MM;
   const rowHeight = Math.max(3.2, t * 2.2);
   const titleHeight = rowHeight * 1.5;
   const cols = Math.max(1, form.headerColumns);
-  const headerCellWidths = form.header.map((f) => measure(`${f.label}:`, t, true) + measure(f.value, t, false) + PAD_MM * 3);
+  const resolveDocumentUrl = opts?.resolveDocumentUrl;
+  const gridColumnKeys = templateColumnKeys(def);
+  const headerCellWidths = form.header.map((f) => {
+    const shown = f.value ? formatScheduleCell(f.value, { heading: f.label, resolveDocumentUrl }).text : "";
+    return measure(`${f.label}:`, t, true) + measure(shown, t, false) + PAD_MM * 3;
+  });
   const headerWidth = cols * Math.max(0, ...headerCellWidths);
-  const gridNatural = measuredGridWidths(form.grid, t);
-  const summaryNatural = form.summary ? widthsFor(form.summary.headings, form.summary.rows, [], t) : [];
+  const gridNatural = measuredGridWidths(form.grid, t, gridColumnKeys, resolveDocumentUrl);
+  const summaryNatural = form.summary ? widthsFor(form.summary.headings, form.summary.rows, [], t, undefined, resolveDocumentUrl) : [];
   const totalsLabelWidth = Math.max(0, ...form.totals.map((x) => measure(x.label, t, true))) + PAD_MM * 2;
   const totalsValueWidth = Math.max(0, ...form.totals.map((x) => measure(x.value, t, false))) + PAD_MM * 2;
   const totalsWidth = form.totals.length > 0 ? totalsLabelWidth + totalsValueWidth : 0;
@@ -148,8 +193,8 @@ export function formTable(model: Pick<ModelState, "elements">, def: FormSchedule
   // A list with nothing to list says so; a panel's slot grid always has its slots.
   const placeholder = def.template.body.layout === "rows" && form.grid.headings.length > 0 && form.grid.rows.length === 0 && !form.problem ? scheduleEmptyRow(def.emptyText) : null;
   const totalsRows = form.totals.length;
-  const gridRowHeights = form.grid.headings.length > 0 ? rowHeightsFor(form.grid.headings, form.grid.rows, gridWidths, rowHeight, t) : [];
-  const summaryRowHeights = form.summary ? rowHeightsFor(form.summary.headings, form.summary.rows, summaryWidths, rowHeight, t) : [];
+  const gridRowHeights = form.grid.headings.length > 0 ? rowHeightsFor(form.grid.headings, form.grid.rows, gridWidths, rowHeight, t, gridColumnKeys, resolveDocumentUrl) : [];
+  const summaryRowHeights = form.summary ? rowHeightsFor(form.summary.headings, form.summary.rows, summaryWidths, rowHeight, t, undefined, resolveDocumentUrl) : [];
   const summaryH = sum(summaryRowHeights);
   const totalsH = totalsRows * rowHeight;
   const heights = {
@@ -175,6 +220,8 @@ export function formTable(model: Pick<ModelState, "elements">, def: FormSchedule
     sideBySide,
     heights,
     size: { x: Math.round(width * 100) / 100, y: Math.round(height * 100) / 100 },
+    ...(gridColumnKeys.some(Boolean) ? { gridColumnKeys } : {}),
+    ...(resolveDocumentUrl ? { resolveDocumentUrl } : {}),
   };
 }
 
@@ -184,10 +231,23 @@ function textAt(prims: Primitive[], text: string, x: number, w: number, y: numbe
   prims.push({ kind: "text", at, text: shown, size, anchor: align === "left" ? "start" : align === "right" ? "end" : "middle", bold });
 }
 
-function table(prims: Primitive[], x0: number, y0: number, widths: readonly number[], headings: readonly string[], rows: readonly (readonly string[])[], aligns: readonly FormAlign[], rowH: number, t: number, splitAt: number | null): number {
+function table(
+  prims: Primitive[],
+  x0: number,
+  y0: number,
+  widths: readonly number[],
+  headings: readonly string[],
+  rows: readonly (readonly string[])[],
+  aligns: readonly FormAlign[],
+  rowH: number,
+  t: number,
+  splitAt: number | null,
+  columnKeys?: readonly (string | null)[],
+  resolveDocumentUrl?: DocumentUrlResolver,
+): number {
   const w = sum(widths);
   const lines = [headings, ...rows];
-  const rowHs = rowHeightsFor(headings, rows, widths, rowH, t);
+  const rowHs = rowHeightsFor(headings, rows, widths, rowH, t, columnKeys, resolveDocumentUrl);
   const lead = t * 1.38;
   let y = y0;
   lines.forEach((cells, i) => {
@@ -199,8 +259,8 @@ function table(prims: Primitive[], x0: number, y0: number, widths: readonly numb
       if (c) {
         const align: FormAlign = i === 0 ? "center" : (aligns[j] ?? "center");
         const bold = i === 0;
-        const link = parseScheduleCellLink(c);
-        const wrapped = wrapFormCell(c, cw, t, bold);
+        const formatted = i === 0 ? { text: c } : formatScheduleCell(c, { columnKey: columnKeys?.[j], heading: headings[j], resolveDocumentUrl });
+        const wrapped = formatted.text ? wrapFormCell(formatted.text, cw, t, bold) : [];
         const firstY = y + rh / 2 + t / 2 - ((wrapped.length - 1) * lead) / 2;
         const anchor = align === "left" ? "start" : align === "right" ? "end" : "middle";
         const tx = align === "left" ? x + PAD_MM : align === "right" ? x + cw - PAD_MM : x + cw / 2;
@@ -213,7 +273,7 @@ function table(prims: Primitive[], x0: number, y0: number, widths: readonly numb
             size: t,
             anchor,
             bold,
-            ...(link ? { href: link.href } : {}),
+            ...(formatted.href ? { href: formatted.href } : {}),
           });
         });
       }
@@ -254,13 +314,25 @@ export function drawFormTable(prims: Primitive[], ft: FormTable, topLeft: Vec2):
       const label = `${f.label}:`;
       const lw = measure(label, t, true);
       prims.push({ kind: "text", at: { x: cx + PAD_MM, y: cy }, text: label, size: t, anchor: "start", bold: true });
-      if (f.value) prims.push({ kind: "text", at: { x: cx + PAD_MM * 2 + lw, y: cy }, text: fit(f.value, cw - lw - PAD_MM, t, false), size: t, anchor: "start" });
+      if (f.value) {
+        const formatted = formatScheduleCell(f.value, { heading: f.label, resolveDocumentUrl: ft.resolveDocumentUrl });
+        if (formatted.text) {
+          prims.push({
+            kind: "text",
+            at: { x: cx + PAD_MM * 2 + lw, y: cy },
+            text: fit(formatted.text, cw - lw - PAD_MM, t, false),
+            size: t,
+            anchor: "start",
+            ...(formatted.href ? { href: formatted.href } : {}),
+          });
+        }
+      }
     });
     y += heights.header;
     prims.push({ kind: "line", a: { x: x0, y }, b: { x: x0 + W, y }, pen: "medium" });
   }
   if (heights.grid > 0) {
-    y = table(prims, x0, y, ft.gridWidths, form.grid.headings, form.grid.rows, form.grid.aligns, rowH, t, form.grid.splitAt);
+    y = table(prims, x0, y, ft.gridWidths, form.grid.headings, form.grid.rows, form.grid.aligns, rowH, t, form.grid.splitAt, ft.gridColumnKeys, ft.resolveDocumentUrl);
     if (ft.placeholder) {
       prims.push({ kind: "line", a: { x: x0, y }, b: { x: x0 + W, y }, pen: "medium" });
       textAt(prims, ft.placeholder, x0, W, y + rowH / 2 + t / 2, t, "center", false);
@@ -273,7 +345,7 @@ export function drawFormTable(prims: Primitive[], ft: FormTable, topLeft: Vec2):
     let summaryBottom = sy;
     if (form.summary) {
       const aligns: FormAlign[] = form.summary.headings.map((_h, i) => (i === 0 ? "left" : "right"));
-      summaryBottom = table(prims, x0, sy, ft.summaryWidths, form.summary.headings, form.summary.rows, aligns, rowH, t, null);
+      summaryBottom = table(prims, x0, sy, ft.summaryWidths, form.summary.headings, form.summary.rows, aligns, rowH, t, null, undefined, ft.resolveDocumentUrl);
     }
     const tx = ft.sideBySide && form.summary ? x0 + sum(ft.summaryWidths) : x0;
     const ty = ft.sideBySide ? sy : summaryBottom;

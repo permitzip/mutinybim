@@ -14,7 +14,7 @@ import { viewScheduleDefinition } from './schedule-planner'
 import { documentIndex, type Command, type ModelState, type ScheduleDefinitionV2, type ViewElement } from '@permitzip/bim-kernel'
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '../../ui/empty'
 import { Button } from '../../ui/button'
-import { ArrowLeft, FileText } from 'lucide-react'
+import { ArrowLeft, FileText, Printer } from 'lucide-react'
 import { Spinner } from '../../ui/spinner'
 import type { ModelSession } from '../model-session'
 import { KernelCellPlanner } from './schedule-planner'
@@ -22,6 +22,7 @@ import { useSchedulePrefsFrom } from './use-schedule-prefs'
 import { isTakeoffSchedule, PriceWith } from './PriceWith'
 import { ShowMainBeside } from '../branches/ShowMainBeside'
 import type { BranchChannel } from '../branches/useBranches'
+import { FormScheduleViewer } from './FormScheduleViewer'
 
 const PRESENCE_COLORS = ['#2563eb', '#db2777', '#16a34a', '#ea580c', '#7c3aed', '#0891b2', '#ca8a04', '#dc2626'] as const
 
@@ -55,6 +56,8 @@ interface Props {
   readonly onOpenSheet?: (sheetId: string) => void
   /** Open the interactive editor for a form schedule whose add-on provides one. */
   readonly onOpenFormEditor?: (kind: string, elementId: string) => boolean
+  /** One-click toggle into the printed drawing preview of this schedule. */
+  readonly onTogglePrintPreview?: () => void
   /** Return button when the schedule was opened from a sheet (rendered inline above the grid so it never overlaps the title). */
   readonly backSheet?: { readonly number: string; readonly onBack: () => void } | null
 }
@@ -64,7 +67,7 @@ interface Props {
  * Rows come from the model server for the whole building; a cell edit goes
  * through the kernel's field writer and saves as one undoable change.
  */
-export function ModelSchedulePane({ projectId, session, connected, view, actor, model, onShowInModel, onUndo, onRedo, submit, editBlocked, branchChannel = null, onOpenSheet, onOpenFormEditor, backSheet = null }: Props) {
+export function ModelSchedulePane({ projectId, session, connected, view, actor, model, onShowInModel, onUndo, onRedo, submit, editBlocked, branchChannel = null, onOpenSheet, onOpenFormEditor, onTogglePrintPreview, backSheet = null }: Props) {
   const client = connected ? session?.scheduleClient() ?? null : null
   const modelRef = useLatest(model)
   const undoRef = useLatest({ onUndo, onRedo })
@@ -97,6 +100,35 @@ export function ModelSchedulePane({ projectId, session, connected, view, actor, 
   // Every column change is the kernel's edit_schedule: the same step the agent and scripts send, one undo each.
   const sendSteps = (steps: readonly ScheduleColumnStep[], label: string): string | null => submit(editScheduleCommand(view.id, steps), label)
 
+  // Unified interactive schedule viewer: form schedules (panel, gas equipment/connections, lighting controls, etc.)
+  // render directly in the center pane from the live model with inline editing + print preview toggle, never forcing
+  // users out to a sheet first.
+  const formSchedule = view.props?.formSchedule
+  if (formSchedule && !view.props?.schedule && !view.props?.scheduleV2) {
+    if (!model) {
+      return (
+        <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground" data-testid="model-schedule-connecting">
+          <Spinner />
+          Loading {view.name}…
+        </div>
+      )
+    }
+    return (
+      <FormScheduleViewer
+        view={view}
+        form={formSchedule}
+        model={model}
+        submit={submit}
+        editBlocked={editBlocked}
+        onShowInModel={onShowInModel}
+        onOpenSheet={onOpenSheet}
+        onOpenFormEditor={onOpenFormEditor}
+        onTogglePrintPreview={onTogglePrintPreview}
+        backSheet={backSheet}
+      />
+    )
+  }
+
   if (!gridConnection) {
     return (
       <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground" data-testid="model-schedule-connecting">
@@ -108,12 +140,22 @@ export function ModelSchedulePane({ projectId, session, connected, view, actor, 
   if (!view.props?.schedule && !view.props?.scheduleV2) return <FormScheduleOpens view={view} model={model} onOpenSheet={onOpenSheet} onOpenFormEditor={onOpenFormEditor} />
   return (
     <div className="h-full overflow-auto p-3" data-testid="model-schedule-grid">
-      {backSheet && (
-        <div className="mb-2">
-          <Button size="sm" variant="secondary" onClick={backSheet.onBack} data-testid="back-to-sheet">
-            <ArrowLeft data-icon="inline-start" />
-            Back to {backSheet.number}
-          </Button>
+      {(backSheet || onTogglePrintPreview) && (
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <div>
+            {backSheet && (
+              <Button size="sm" variant="secondary" onClick={backSheet.onBack} data-testid="back-to-sheet">
+                <ArrowLeft data-icon="inline-start" />
+                Back to {backSheet.number}
+              </Button>
+            )}
+          </div>
+          {onTogglePrintPreview && (
+            <Button size="sm" variant="outline" onClick={onTogglePrintPreview} data-testid="schedule-print-preview-toggle">
+              <Printer data-icon="inline-start" />
+              Print preview
+            </Button>
+          )}
         </div>
       )}
       {isTakeoffSchedule(definition) && <PriceWith projectId={projectId} model={model} />}

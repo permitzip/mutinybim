@@ -16,6 +16,7 @@ import {
   DropdownMenuTrigger,
 } from '../../ui/dropdown-menu'
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '../../ui/empty'
+import { Input } from '../../ui/input'
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from '../../ui/item'
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/tooltip'
 import { VIEW_DRAG_TYPE, VIEW_TYPE_LABEL, sameOpen, type CreatableViewType, type OpenItem } from './types'
@@ -49,6 +50,8 @@ interface Props {
   readonly open: OpenItem
   readonly onOpen: (item: OpenItem) => void
   readonly onRequest: (request: PanelRequest) => void
+  /** Inline rename on double-click of a view row; returns refusal reason or null. Falls back to `rename_view` dialog when omitted. */
+  readonly onRenameView?: (view: ViewElement, name: string) => string | null
   /** Who is looking: their own working 3D view is listed, other people's are not. */
   readonly userId?: string
   /** The rail draws the title and the New button in its section header. */
@@ -193,7 +196,7 @@ const VIEW_CATEGORY_ORDER: Readonly<Record<string, number>> = {
   '3D views': 80,
 }
 
-export function ViewsSheetsPanel({ model, canEdit, blockedReason, open, onOpen, onRequest, userId, headerless = false }: Props) {
+export function ViewsSheetsPanel({ model, canEdit, blockedReason, open, onOpen, onRequest, onRenameView, userId, headerless = false }: Props) {
   const [viewGroupChoice, setViewGroupChoice] = useState<ViewGroupMode | null>(null)
   const [viewSortBy, setViewSortBy] = useState<ViewSortMode>('default')
   const index = useMemo(() => (model ? documentIndex(model) : null), [model])
@@ -405,6 +408,7 @@ export function ViewsSheetsPanel({ model, canEdit, blockedReason, open, onOpen, 
                               blockedReason={blockedReason}
                               onOpen={() => onOpen({ kind: 'view', id: view.id })}
                               onRequest={onRequest}
+                              onRenameView={onRenameView}
                             />
                           ))}
                         </div>
@@ -420,6 +424,7 @@ export function ViewsSheetsPanel({ model, canEdit, blockedReason, open, onOpen, 
                           blockedReason={blockedReason}
                           onOpen={() => onOpen({ kind: 'view', id: view.id })}
                           onRequest={onRequest}
+                          onRenameView={onRenameView}
                         />
                       ))}
                 </Group>
@@ -440,6 +445,7 @@ export function ViewsSheetsPanel({ model, canEdit, blockedReason, open, onOpen, 
                         blockedReason={blockedReason}
                         onOpen={() => onOpen({ kind: 'view', id: view.id })}
                         onRequest={onRequest}
+                        onRenameView={onRenameView}
                       />
                     ))}
                   </Group>
@@ -575,6 +581,7 @@ function ViewRow({
   blockedReason,
   onOpen,
   onRequest,
+  onRenameView,
 }: {
   view: ViewElement
   levelName: string | null
@@ -584,32 +591,85 @@ function ViewRow({
   blockedReason: string
   onOpen: () => void
   onRequest: (request: PanelRequest) => void
+  onRenameView?: (view: ViewElement, name: string) => string | null
 }) {
-  const draggable = canEdit && onSheet === null
+  const [renaming, setRenaming] = useState(false)
+  const [draftName, setDraftName] = useState(view.name)
+  const draggable = canEdit && onSheet === null && !renaming
+
+  const beginInlineRename = () => {
+    if (!canEdit) return
+    if (!onRenameView) {
+      onRequest({ kind: 'rename_view', view })
+      return
+    }
+    setDraftName(view.name)
+    setRenaming(true)
+  }
+
+  const commitInlineRename = () => {
+    const trimmed = draftName.trim()
+    setRenaming(false)
+    if (!trimmed || trimmed === view.name || !onRenameView) return
+    onRenameView(view, trimmed)
+  }
+
   return (
     <Item size="xs" variant={active ? 'muted' : 'default'} className="flex-nowrap gap-1 py-0.5 pl-2 pr-0.5" data-testid={`view-row-${view.id}`}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="min-w-0 flex-1 justify-start px-1 font-normal"
-            aria-current={active ? 'page' : undefined}
-            onClick={onOpen}
-            draggable={draggable}
-            onDragStart={(e) => {
-              e.dataTransfer.setData(VIEW_DRAG_TYPE, view.id)
-              e.dataTransfer.effectAllowed = 'copy'
-            }}
-          >
-            <span className="truncate">{view.name}</span>
-            {levelName && <span className="shrink-0 text-muted-foreground">{levelName}</span>}
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>
-          {onSheet ? `${VIEW_TYPE_LABEL[view.viewType]}. On sheet ${onSheet}.` : canEdit ? `${VIEW_TYPE_LABEL[view.viewType]}. Open it, or drag it onto an open sheet.` : VIEW_TYPE_LABEL[view.viewType]}
-        </TooltipContent>
-      </Tooltip>
+      {renaming ? (
+        <Input
+          value={draftName}
+          onChange={(e) => setDraftName(e.target.value)}
+          onBlur={commitInlineRename}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              commitInlineRename()
+            } else if (e.key === 'Escape') {
+              e.preventDefault()
+              setRenaming(false)
+              setDraftName(view.name)
+            }
+          }}
+          maxLength={120}
+          aria-label={`Rename view ${view.name}`}
+          className="h-7 min-w-0 flex-1 px-1.5 text-xs"
+          autoFocus
+          data-testid={`view-rename-input-${view.id}`}
+        />
+      ) : (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="min-w-0 flex-1 justify-start px-1 font-normal"
+              aria-current={active ? 'page' : undefined}
+              onClick={onOpen}
+              onDoubleClick={(e) => {
+                if (!canEdit) return
+                e.stopPropagation()
+                beginInlineRename()
+              }}
+              draggable={draggable}
+              onDragStart={(e) => {
+                e.dataTransfer.setData(VIEW_DRAG_TYPE, view.id)
+                e.dataTransfer.effectAllowed = 'copy'
+              }}
+            >
+              <span className="truncate">{view.name}</span>
+              {levelName && <span className="shrink-0 text-muted-foreground">{levelName}</span>}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>
+            {onSheet
+              ? `${VIEW_TYPE_LABEL[view.viewType]}. On sheet ${onSheet}.${canEdit ? ' Double-click to rename.' : ''}`
+              : canEdit
+                ? `${VIEW_TYPE_LABEL[view.viewType]}. Open it, double-click to rename, or drag it onto an open sheet.`
+                : VIEW_TYPE_LABEL[view.viewType]}
+          </TooltipContent>
+        </Tooltip>
+      )}
       {onSheet && (
         <Badge variant="outline" className="shrink-0 text-[10px]">
           {onSheet}

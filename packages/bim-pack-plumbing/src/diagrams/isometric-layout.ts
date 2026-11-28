@@ -1,15 +1,21 @@
 import { diagramNodes, drainSystemKinds, oneLineItemsExtent, oneLineTextHeight } from "@permitzip/bim-kernel";
-import type { DiagramNode, DiagramPipe, ElementId, OneLineItem, OneLineTextLine, PipeLabel, Vec2 } from "@permitzip/bim-kernel";
+import type { DiagramNode, DiagramPipe, ElementId, OneLineItem, OneLineTextLine, PipeLabel, RiserLevel, Vec2 } from "@permitzip/bim-kernel";
+import { classifyPlumbingDevice } from "./plumbing-topology";
 import { defaultPipeLabels, pipeLook, type PipeRef, type PipingLayout } from "./piping-layout";
 
 /**
  * The plumbing isometric: every pipe of the systems drawn, at its real place
- * in the model, projected at 30° (plan x to the lower right, plan y to the
- * upper right, height straight up), so stacks stand vertical and each floor's
- * branches lie on their own planes. Includes 3D over/under crossing break gaps,
- * isometric elbow/tee/wye fitting ticks, and non-overlapping equipment/pipe
- * callouts.
+ * in the model, projected at 30° from a configurable viewing azimuth
+ * (`sw` | `se` | `nw` | `ne`, default `sw`) so stacks stand vertical and each
+ * floor's branches lie on their own planes. Includes 3D over/under crossing
+ * break gaps, isometric elbow/tee/wye fitting ticks, non-overlapping fixture
+ * AND inline device callouts (meters, RPZs, gas regulators, shutoff valves,
+ * cleanouts) with thin displaced leaders, and optional light floor datum
+ * reference lines with elevations.
  */
+
+export const ISOMETRIC_AZIMUTHS = ["sw", "se", "nw", "ne"] as const;
+export type IsometricAzimuth = (typeof ISOMETRIC_AZIMUTHS)[number];
 
 const COS30 = Math.cos(Math.PI / 6);
 const SIN30 = 0.5;
@@ -28,9 +34,82 @@ const TICK_HALF_MM = 0.85;
 const TICK_OFFSET_MM = 1.1;
 
 const round = (p: Vec2): Vec2 => ({ x: Math.round(p.x * 100) / 100, y: Math.round(p.y * 100) / 100 });
-const project = (p: { x: number; y: number; z: number }): Vec2 => ({ x: (p.x - p.y) * COS30, y: (p.x + p.y) * SIN30 + p.z });
-/** Isometric camera depth (larger is closer to the viewer looking from south-west, above). */
-const isoDepth = (p: { x: number; y: number; z: number }): number => -p.x - p.y + p.z;
+
+function formatElevationFtIn(mm: number): string {
+  const neg = mm < -0.5;
+  const totalIn = Math.round(Math.abs(mm) / 25.4);
+  const ft = Math.floor(totalIn / 12);
+  const inc = totalIn % 12;
+  return `${neg ? "-" : ""}${ft}'-${inc}"`;
+}
+
+/** Right-handed 30° isometric projection for any viewing azimuth (`sw` default). Vertical Z always maps straight up. */
+export function projectIsometric(p: { readonly x: number; readonly y: number; readonly z: number }, azimuth: IsometricAzimuth = "sw"): Vec2 {
+  let u: number;
+  let v: number;
+  switch (azimuth) {
+    case "se":
+      u = p.y;
+      v = -p.x;
+      break;
+    case "ne":
+      u = -p.x;
+      v = -p.y;
+      break;
+    case "nw":
+      u = -p.y;
+      v = p.x;
+      break;
+    case "sw":
+    default:
+      u = p.x;
+      v = p.y;
+      break;
+  }
+  return { x: (u - v) * COS30, y: (u + v) * SIN30 + p.z };
+}
+
+/** Isometric camera depth for the chosen viewing azimuth (larger is closer to the viewer). */
+export function isometricDepth(p: { readonly x: number; readonly y: number; readonly z: number }, azimuth: IsometricAzimuth = "sw"): number {
+  switch (azimuth) {
+    case "se":
+      return p.x - p.y + p.z;
+    case "ne":
+      return p.x + p.y + p.z;
+    case "nw":
+      return -p.x + p.y + p.z;
+    case "sw":
+    default:
+      return -p.x - p.y + p.z;
+  }
+}
+
+function isoDeviceLabel(n: DiagramNode): string {
+  const dk = classifyPlumbingDevice(n);
+  const raw = (n.lines[0]?.text ?? n.name).trim().toUpperCase();
+  if (dk === "cleanout") {
+    return /^(F|W)?CO(-\w+)?$/.test(raw) ? raw : "CO";
+  }
+  if (dk === "shutoff_valve") {
+    return /^(SOV|V|BV)(-\w+)?$/.test(raw) ? raw : "SOV";
+  }
+  if (dk === "check_valve") {
+    return /^CV(-\w+)?$/.test(raw) ? raw : "CV";
+  }
+  if (dk === "balancing_valve") {
+    return /^(BV|CS)(-\w+)?$/.test(raw) ? raw : "BV";
+  }
+  if (dk === "drip_leg") {
+    return /^(ST|DRIP)(-\w+)?$/.test(raw) ? raw : "DRIP";
+  }
+  if (dk === "backwater_valve") {
+    return /^BWV(-\w+)?$/.test(raw) ? raw : "BWV";
+  }
+  if (dk === "prv" && !/^PRV(-\w+)?$/.test(raw)) {
+    return "PRV";
+  }
+  return raw;
+}
 
 interface Seg2D {
   readonly pipe: DiagramPipe;
@@ -95,9 +174,19 @@ function splitByGaps(a: Vec2, b: Vec2, len: number, cuts: ReadonlyArray<readonly
 
 export interface IsometricOptions {
   readonly labels?: readonly PipeLabel[];
+  /** Viewing azimuth quadrant (`"sw"` default, `"se"`, `"nw"`, `"ne"`). */
+  readonly azimuth?: IsometricAzimuth;
+  /** Optional floor levels for light elevation datum reference lines. */
+  readonly levels?: readonly RiserLevel[];
+  /** Draw light horizontal floor datum reference lines & elevations when `levels` are provided. */
+  readonly showFloorDatums?: boolean;
 }
 
 export function layoutPipingIsometric(roots: readonly DiagramNode[], pipes: readonly DiagramPipe[], opts: IsometricOptions = {}): PipingLayout & { readonly scale: number } {
+  const azimuth: IsometricAzimuth = opts.azimuth ?? "sw";
+  const project = (p: { readonly x: number; readonly y: number; readonly z: number }): Vec2 => projectIsometric(p, azimuth);
+  const isoDepth = (p: { readonly x: number; readonly y: number; readonly z: number }): number => isometricDepth(p, azimuth);
+
   const items: OneLineItem[] = [];
   const refs: Record<string, PipeRef> = {};
   const nodesOut: Array<{ id: string; kind: DiagramNode["kind"]; name: string; center: Vec2; depth: number }> = [];
@@ -106,23 +195,56 @@ export function layoutPipingIsometric(roots: readonly DiagramNode[], pipes: read
   let minY = Infinity;
   let maxX = -Infinity;
   let maxY = -Infinity;
-  const grow = (p: Vec2) => {
+  let sumPlanX = 0;
+  let sumPlanY = 0;
+  let planCount = 0;
+  const grow = (pt3: { readonly x: number; readonly y: number; readonly z: number }) => {
+    const p = project(pt3);
     minX = Math.min(minX, p.x);
     minY = Math.min(minY, p.y);
     maxX = Math.max(maxX, p.x);
     maxY = Math.max(maxY, p.y);
+    sumPlanX += pt3.x;
+    sumPlanY += pt3.y;
+    planCount += 1;
   };
   for (const p of pipes) {
-    grow(project(p.a));
-    grow(project(p.b));
+    grow(p.a);
+    grow(p.b);
   }
-  for (const n of all) if (n.at) grow(project(n.at));
+  for (const n of all) if (n.at) grow(n.at);
   if (!Number.isFinite(minX)) return { items, extent: { min: { x: 0, y: 0 }, max: { x: 0, y: 0 } }, nodes: [], pipes: {}, scale: SMALLEST };
   const scale = SCALES.find((k) => (maxX - minX) * k <= MAX_W && (maxY - minY) * k <= MAX_H) ?? SMALLEST;
-  const P = (p: { x: number; y: number; z: number }): Vec2 => {
+  const P = (p: { readonly x: number; readonly y: number; readonly z: number }): Vec2 => {
     const q = project(p);
     return round({ x: (q.x - minX) * scale, y: (q.y - minY) * scale });
   };
+
+  // Optional light floor datum reference lines & elevations drawn behind piping so dense cores stay legible.
+  const drawDatums = Boolean(opts.levels && opts.levels.length > 0 && (opts.showFloorDatums === true || opts.showFloorDatums !== false));
+  if (drawDatums && opts.levels && opts.levels.length > 0) {
+    const refX = planCount > 0 ? sumPlanX / planCount : 0;
+    const refY = planCount > 0 ? sumPlanY / planCount : 0;
+    const spanX = Math.max(40, (maxX - minX) * scale);
+    const leftX = -4;
+    const rightX = spanX + 6;
+    const sortedLevels = [...opts.levels].sort((a, b) => a.elevationMm - b.elevationMm);
+    for (const lvl of sortedLevels) {
+      const datumY = P({ x: refX, y: refY, z: lvl.elevationMm }).y;
+      const elevText = `${lvl.name.toUpperCase()} (${formatElevationFtIn(lvl.elevationMm)})`;
+      items.push(
+        { shape: "line", points: [round({ x: leftX, y: datumY }), round({ x: rightX, y: datumY })], weight: "thin", dashed: true, nodeId: "levels" },
+        {
+          shape: "text",
+          at: round({ x: leftX - 32, y: datumY + oneLineTextHeight([{ text: elevText }], 30) / 2 }),
+          widthMm: 30,
+          lines: [{ text: elevText, bold: true }],
+          nodeId: "levels",
+          role: "note",
+        },
+      );
+    }
+  }
 
   // Build projected 2D segments with camera depth for over/under crossing break gaps.
   const segs: Seg2D[] = [];
@@ -249,31 +371,37 @@ export function layoutPipingIsometric(roots: readonly DiagramNode[], pipes: read
     return fallback;
   };
 
-  // Fixtures, devices and the source placed first so pipe size/load labels route cleanly around fixture names.
-  // Deduplicate shared physical fixtures (`elementId`) across systems (e.g. sanitary + vent, or CW + HW) so each fixture is labeled ONCE on the isometric.
+  // Fixtures, inline devices (meters, RPZs, gas regulators, shutoff valves, cleanouts), and sources placed first so pipe callouts route cleanly around them.
+  // Deduplicate shared physical fixtures & inline devices (`elementId`) across systems so each is labeled ONCE on the isometric.
   const seenIsoElements = new Set<string>();
   for (const n of all) {
     if (!n.at || n.role === "branch" || n.elementId === null) continue;
-    // Suppress generic "OPEN END" and "CAP" noise on connected stubs/vents when other named terminals exist.
     const upperName = n.name.toUpperCase();
     if (upperName === "OPEN END" || upperName === "CAP") continue;
-    if (n.role === "terminal") {
+    if (n.role === "terminal" || n.role === "device") {
       if (seenIsoElements.has(n.elementId)) continue;
       seenIsoElements.add(n.elementId);
     }
     const c = P(n.at);
     const r = n.role === "device" ? 1.1 : 1.5;
     items.push({ shape: "polyline", points: [round({ x: c.x - r, y: c.y }), round({ x: c.x, y: c.y + r }), round({ x: c.x + r, y: c.y }), round({ x: c.x, y: c.y - r })], closed: true, weight: "medium", nodeId: n.id });
-    const lines = n.lines.slice(0, 1);
-    if (lines.length > 0 && n.role !== "device") {
-      const w = n.role === "source" ? 36 : 14;
+
+    // Label sources, fixtures, AND named inline devices (meters, RPZs, regulators, SOVs, cleanouts). Anonymous reducers (lines.length === 0) stay unlabeled.
+    const lines: OneLineTextLine[] =
+      n.role === "device"
+        ? n.lines.length > 0
+          ? [{ text: isoDeviceLabel(n), bold: true }]
+          : []
+        : [...n.lines.slice(0, 1)];
+    if (lines.length > 0) {
+      const w = n.role === "source" ? 36 : n.role === "device" ? Math.max(10, Math.min(24, (lines[0]?.text.length ?? 4) * 2.1 + 2)) : 14;
       const h = oneLineTextHeight(lines, w);
       const base = { x: c.x + r + 1.0, y: c.y + h / 2 };
       const at = placeLabel(base, w, h);
       if (Math.hypot(at.x - base.x, at.y - base.y) > 3.0) {
         items.push({ shape: "line", points: [round({ x: c.x + r, y: c.y }), round({ x: at.x - 0.5, y: at.y - h / 2 })], weight: "thin", nodeId: n.id });
       }
-      items.push({ shape: "text", at, widthMm: w, lines, nodeId: n.id, role: "equipment", mask: true });
+      items.push({ shape: "text", at, widthMm: w, lines, nodeId: n.id, role: n.role === "device" ? "device" : "equipment", mask: true });
     }
     nodesOut.push({ id: n.id, kind: n.kind, name: n.name, center: c, depth: 0 });
   }

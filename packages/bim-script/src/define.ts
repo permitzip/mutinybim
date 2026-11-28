@@ -2,6 +2,7 @@ import { scriptManifestSchema, valueIssues, type ScriptKind, type ScriptManifest
 import { measure, measureIn, type Kind, type Measure, type UnitCode } from "@permitzip/bim-units";
 import type { ScriptContext } from "./context";
 import type { ScriptResult } from "./output";
+import type { WorkNotes } from "./provenance";
 
 /**
  * `defineScript` (round 11 X11; SCRIPTING-PROPOSAL §5.1): a script's
@@ -40,12 +41,15 @@ export interface ScriptSpec<P extends ParameterDecls> {
   readonly reads: ScriptReads;
   readonly parameters: P;
   readonly presets?: readonly ScriptPreset[];
+  /** Optional default two-layer provenance notes for runs of this script (`privateNote` is never included in public exports). */
+  readonly notes?: WorkNotes;
   run(ctx: ScriptContext, values: ValuesOf<P>): ScriptResult | Promise<ScriptResult>;
 }
 
 /** A defined script: its stored manifest and its run over stored (SI) values. */
 export interface ScriptDefinition {
   readonly manifest: ScriptManifest;
+  readonly notes?: WorkNotes;
   /** `values` as stored (quantities in SI), already checked against the manifest. */
   runWith(ctx: ScriptContext, values: Readonly<Record<string, ScriptValue>>): ScriptResult | Promise<ScriptResult>;
 }
@@ -81,6 +85,7 @@ export function defineScript<P extends ParameterDecls>(spec: ScriptSpec<P>): Scr
   const manifest = parsed.data;
   return {
     manifest,
+    ...(spec.notes ? { notes: spec.notes } : {}),
     runWith(ctx, values) {
       const typed: Record<string, ScriptValue | Measure> = {};
       for (const [name, p] of Object.entries(manifest.parameters)) {

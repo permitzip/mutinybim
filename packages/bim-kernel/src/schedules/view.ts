@@ -2,7 +2,7 @@ import type { Primitive } from "../drawing/sheet";
 import type { ViewProps } from "../documents";
 import type { ModelState, Vec2 } from "../types";
 import { drawFormTable, formTable } from "./forms/layout";
-import { drawScheduleV2, scheduleV2Paper } from "./paper";
+import { drawScheduleV2, scheduleV2Paper, type SchedulePaperOptions } from "./paper";
 import { drawScheduleTable, scheduleTable, type ScheduleTable } from "./schedule";
 import { scheduleV1ToV2 } from "./engine/v1";
 
@@ -14,18 +14,18 @@ import { scheduleV1ToV2 } from "./engine/v1";
  */
 
 /** The table's paper size, or null when the view has no schedule yet. */
-export function scheduleViewSize(model: Pick<ModelState, "elements">, props: ViewProps | undefined): Vec2 | null {
-  if (props?.formSchedule) return formTable(model, props.formSchedule).size;
-  if (props?.schedule) return scheduleTable(model, props.schedule).size;
-  if (props?.scheduleV2) return scheduleV2Paper(model, props.scheduleV2).table.size;
+export function scheduleViewSize(model: Pick<ModelState, "elements">, props: ViewProps | undefined, opts?: SchedulePaperOptions): Vec2 | null {
+  if (props?.formSchedule) return formTable(model, props.formSchedule, opts).size;
+  if (props?.schedule) return scheduleTable(model, props.schedule, opts).size;
+  if (props?.scheduleV2) return scheduleV2Paper(model, props.scheduleV2, undefined, opts).table.size;
   return null;
 }
 
 /** Draw the schedule with its top-left corner at `topLeft` (paper mm). */
-export function drawScheduleView(prims: Primitive[], model: Pick<ModelState, "elements">, props: ViewProps | undefined, topLeft: Vec2): void {
-  if (props?.formSchedule) drawFormTable(prims, formTable(model, props.formSchedule), topLeft);
-  else if (props?.schedule) drawScheduleTable(prims, scheduleTable(model, props.schedule), topLeft);
-  else if (props?.scheduleV2) drawScheduleV2(prims, scheduleV2Paper(model, props.scheduleV2), topLeft);
+export function drawScheduleView(prims: Primitive[], model: Pick<ModelState, "elements">, props: ViewProps | undefined, topLeft: Vec2, opts?: SchedulePaperOptions): void {
+  if (props?.formSchedule) drawFormTable(prims, formTable(model, props.formSchedule, opts), topLeft);
+  else if (props?.schedule) drawScheduleTable(prims, scheduleTable(model, props.schedule, opts), topLeft);
+  else if (props?.scheduleV2) drawScheduleV2(prims, scheduleV2Paper(model, props.scheduleV2, undefined, opts), topLeft);
 }
 
 /** One printed column of a list schedule on paper: the definition column it comes from (null: not sized by hand) and its edges from the table's left, mm. */

@@ -46,14 +46,24 @@ export interface RunSide {
 }
 
 /**
- * The straight run under a paper point the Route tool can tap off (level, or
- * a pitched pipe such as a sloped drain), and the point on it; null over
- * anything else (a riser, an elbow, empty paper).
+ * The straight run under a paper point the Route tool can tap off (level, a
+ * pitched pipe such as a sloped drain, or a round/pipe vertical riser), and the
+ * point on it; null over anything else (an elbow, flat-sided riser, empty paper).
  */
 export function runSideUnder(model: ModelState, vop: ViewOnPaper, ids: readonly string[], paper: Vec2): RunSide | null {
   for (const id of ids) {
     const el = model.elements[id]
-    if (el?.kind !== 'run_segment' || Math.hypot(el.end.x - el.start.x, el.end.y - el.start.y) < 1) continue
+    if (el?.kind !== 'run_segment') continue
+    const planLen = Math.hypot(el.end.x - el.start.x, el.end.y - el.start.y)
+    const vertical = planLen < 1 && Math.abs(el.end.z - el.start.z) >= 1
+    if (vertical) {
+      // Round and pipe vertical risers take level side branches (auto-tee).
+      if (el.size.shape === 'rect' || el.size.shape === 'oval') continue
+      const at = runPointUnder(model, vop, id, paper)
+      if (at) return { segmentId: id, at }
+      continue
+    }
+    if (planLen < 1) continue
     if (Math.abs(el.start.z - el.end.z) > 0.5 && !(el.domain === 'pipe' && isPitchedOrLevel(el))) continue
     const at = runPointUnder(model, vop, id, paper)
     if (at) return { segmentId: id, at }

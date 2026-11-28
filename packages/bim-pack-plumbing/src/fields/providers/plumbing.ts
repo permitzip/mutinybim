@@ -145,6 +145,7 @@ const waterFields: ProviderField[] = [
   ...([
     ["water.supply_psi", "Street (supply) pressure", "Set on the water system."],
     ["water.fixed_losses_psi", "Losses before the first drawn pipe", "Set on the water system."],
+    ["water.device_losses_psi", "Modeled inline device pressure drops along critical path", SOLVED],
     ["water.elevation_psi", "Static head up to the most remote fixture", SOLVED],
     ["water.friction_psi", "Friction to the most remote fixture", SOLVED],
     ["water.residual_psi", "Pressure left at the most remote fixture", SOLVED],

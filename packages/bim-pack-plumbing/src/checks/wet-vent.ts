@@ -17,6 +17,29 @@ import { lookupTable, type LookupTable } from "@permitzip/bim-kernel/policy";
 /** The library slot the check asks for: column `size_in` (nominal inches) and `max_dfu`. */
 export const WET_VENT_TABLE_SLOT = "plumbing.wet_vent_size";
 
+/** Built-in IPC Table 912.3 wet-vent sizing fallback when no firm or project lookup table is uploaded. */
+export const IPC_912_3_WET_VENT_TABLE: LookupTable = {
+  id: "builtin-ipc-912-3-wet-vent",
+  slot: WET_VENT_TABLE_SLOT,
+  name: "IPC Table 912.3 (Wet Vent Size)",
+  columns: [
+    { key: "size_in", label: "Wet vent size", unit: "in" },
+    { key: "max_dfu", label: "Most drainage units", unit: "DFU" },
+  ],
+  rows: [
+    [1.5, 1],
+    [2, 4],
+    [2.5, 6],
+    [3, 12],
+  ],
+  citation: { source: "IPC", section: "Table 912.3" },
+};
+
+export interface WetVentCheckOptions {
+  /** Use built-in IPC Table 912.3 fallback when neither project nor firm library supplies `plumbing.wet_vent_size`. Default true. */
+  readonly useBuiltinFallback?: boolean;
+}
+
 type Elements = Readonly<Record<string, BimElement>>;
 type Sources = { readonly project?: readonly LookupTable[]; readonly firm?: readonly LookupTable[] };
 
@@ -96,14 +119,21 @@ const IN = 25.4;
 const n = (v: number) => v.toLocaleString("en-US", { maximumFractionDigits: 2 });
 
 /** The wet vent check for the stretch a vent pipe belongs to; null when it isn't a wet vent or it passes. */
-export function wetVentCheck(model: Pick<ModelState, "elements">, segmentId: string, sources: Sources, stage?: string): WetVentFinding | null {
+export function wetVentCheck(
+  model: Pick<ModelState, "elements">,
+  segmentId: string,
+  sources: Sources = {},
+  stage?: string,
+  options: WetVentCheckOptions = {},
+): WetVentFinding | null {
   const elements = model.elements;
   const stretch = wetVentStretch(elements, segmentId);
   if (!stretch) return null;
   const selectIds = [...stretch.segmentIds, ...stretch.loadIds];
   const seg = ventSegment(elements, segmentId);
   if (!seg) return null;
-  const table = lookupTable(WET_VENT_TABLE_SLOT, stage, sources);
+  const customTable = lookupTable(WET_VENT_TABLE_SLOT, stage, sources);
+  const table = customTable ?? (options.useBuiltinFallback === false ? null : IPC_912_3_WET_VENT_TABLE);
   if (!table) return { kind: "no_table", segmentId: seg.id, selectIds, dfu: stretch.dfu, words: `Can't check the wet vent for ${n(stretch.dfu)} DFU yet: add a wet vent table in Library › Lookup tables` };
   const rows = rowsOf(table);
   const nominalIn = Math.round(nominalInOf(seg.size) * 1000) / 1000;

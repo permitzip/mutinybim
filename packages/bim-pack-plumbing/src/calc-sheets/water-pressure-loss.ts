@@ -1,5 +1,6 @@
 import { pipeSegmentOf, pipeFamilyOf, type MepSystem, type ModelState } from "@permitzip/bim-kernel";
-import type { CalcSheetBuildRequest, CalcSheetSpec, CalcSheetTemplateRow } from "@permitzip/bim-kernel/calc-sheets";
+import type { CalcSheetBuildRequest, CalcSheetCitation, CalcSheetSpec, CalcSheetTemplateRow } from "@permitzip/bim-kernel/calc-sheets";
+import { waterReportOf } from "../fields/water";
 
 /**
  * Water pressure loss as a live sheet (round 12 P12): street pressure, the
@@ -25,6 +26,22 @@ export function waterPressureLossSpec(model: Pick<ModelState, "elements">, reque
   const system = systemOf(model, request.subjectId);
   if (!system || pipeFamilyOf(system.systemKind) !== "water") return { refused: "Water pressure loss needs a domestic water system: pick the system or one of its pipes" };
   const field = (path: string) => ({ from: "field" as const, subjectId: system.id, path });
+  const report = waterReportOf(model.elements, system.id);
+  const citations: CalcSheetCitation[] = [
+    { section: "Most remote fixture method", note: "Friction from the add-on's pressure solve along the path to the most remote fixture; static head relative to system root elevation at 0.433 psi per foot." },
+    {
+      section: "Hunter WSFU demand (main vs. branch)",
+      note: report
+        ? `Main-level demand applies the Hunter curve to cumulative WSFU (${report.totalFixtureUnits} WSFU → ${Math.round(report.peakGpm * 10) / 10} gpm at root); branch-level fixture sizing caps small branches at simultaneous connected fixture flow (Table 604.3) so individual branches are not oversized by the building-level curve.`
+        : "Main-level demand applies the Hunter curve to cumulative WSFU; branch-level fixture sizing caps small branches at simultaneous connected fixture flow (Table 604.3).",
+    },
+    ...(report?.flowTest
+      ? [{ section: "Hydrant / service flow test", note: `Supply pressure ${report.flowTest.availableAtDesignPsi} psi at design flow from ${report.flowTest.staticPsi} psi static / ${report.flowTest.residualPsi} psi @ ${report.flowTest.testGpm} gpm (N^1.85 curve).` }]
+      : []),
+    ...(report && report.deviceLosses.length > 0
+      ? [{ section: "Inline device losses", note: `Includes modeled inline part pressure drops: ${report.deviceLosses.map((d) => `${d.label} (${Math.round(d.lossPsi * 100) / 100} psi, ${d.basis})`).join(", ")}.` }]
+      : []),
+  ];
   return {
     template: WATER_PRESSURE_LOSS_TEMPLATE_ID,
     title: `Water pressure loss, ${system.name}`,
@@ -46,7 +63,7 @@ export function waterPressureLossSpec(model: Pick<ModelState, "elements">, reque
       { key: "velocity_check", label: "Velocity", value: "velocity", limit: { quantity: "velocity", system: system.systemKind } },
       { key: "friction_check", label: "Pressure loss", value: "friction", limit: { quantity: "pressure", system: system.systemKind } },
     ],
-    citations: [{ section: "Most remote fixture method", note: "Friction from the add-on's pressure solve along the path to the most remote fixture; static head at 0.433 psi per foot." }],
+    citations,
     result: { key: "available", label: "Pressure at the most remote fixture (psi)" },
   };
 }

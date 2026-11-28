@@ -78,6 +78,7 @@ export const SHOWCASE_RTU: { readonly id: string; readonly definition: PartTypeD
       txt("material_id", "Material"),
       num("cooling_tons", "Cooling capacity (tons)", "none"),
       num("heating_mbh", "Heating capacity (MBH)", "none"),
+      num("input_mbh", "Gas input (MBH)", "none"),
       num("supply_cfm", "Supply airflow", "cfm"),
       num("outdoor_cfm", "Outdoor airflow", "cfm"),
       num("hp", "Blower motor HP", "none"),
@@ -88,6 +89,7 @@ export const SHOWCASE_RTU: { readonly id: string; readonly definition: PartTypeD
       txt("curb_size", "Roof curb size"),
       len("service_clearance", "Service clearance"),
       txt("sequence_of_operation", "Sequence of operation"),
+      txt("cut_sheet", "Cut sheet URL"),
     ],
     typeValues: {
       manufacturer: "Carrier",
@@ -95,6 +97,7 @@ export const SHOWCASE_RTU: { readonly id: string; readonly definition: PartTypeD
       "material_id": "architecture.galvanized_steel",
       cooling_tons: 5,
       heating_mbh: 72,
+      input_mbh: 72,
       supply_cfm: 2000,
       outdoor_cfm: 400,
       hp: 2,
@@ -105,6 +108,7 @@ export const SHOWCASE_RTU: { readonly id: string; readonly definition: PartTypeD
       curb_size: "74 x 47 in",
       service_clearance: 36 * IN,
       sequence_of_operation: "Occupied 68F/74F w/ economizer, CO2 DCV & night setback",
+      cut_sheet: "[Carrier 50FC-A06](https://www.shareddocs.com/hvac/docs/1009/Public/0A/50FC-A06-03PD.pdf)",
     },
     instanceParams: [txt("circuit", "Circuit"), txt("serves", "Serves"), txt("room", "Location")],
     connectors: [
@@ -137,6 +141,18 @@ export const SHOWCASE_RTU: { readonly id: string; readonly definition: PartTypeD
         flow: 2000,
       },
       {
+        id: "g",
+        label: "Natural gas inlet",
+        domain: "pipe",
+        systemKind: "natural_gas",
+        position: [-550, -627, 560],
+        direction: [0, -1, 0],
+        shape: "round",
+        diameter: 0.75 * IN,
+        endType: "plumbing_gas.threaded",
+        flowDirection: "in",
+      },
+      {
         id: "power",
         label: "Power",
         domain: "electrical",
@@ -162,6 +178,8 @@ export const SHOWCASE_RTU: { readonly id: string; readonly definition: PartTypeD
       { kind: "box", center: [-1035, 0, 356 + 340], size: [190, 780, 480] },
       // Electrical disconnect / control vestibule on east-south corner
       { kind: "box", center: [970, -300, 356 + 380], size: [55, 280, 420] },
+      // 3/4" NPT gas heating train stub on south face (-Y, flush at -627)
+      { kind: "cylinder", center: [-550, -609.5, 560], radius: 18, height: 35, axis: "y" },
     ],
     clearances: [
       {
@@ -532,16 +550,18 @@ export const SHOWCASE_WATER_HEATER: { readonly id: string; readonly definition: 
       num("input_kw", "Input power (kW)", "none"),
       num("voltage", "Voltage", "v"),
       len("connection_size", "Water connection size"),
+      txt("cut_sheet", "Cut sheet URL"),
     ],
     typeValues: {
       manufacturer: "A.O. Smith",
       model: "DRE-52",
-      "material_id": "architecture.water_heater_enamel",
+      "material_id": "plumbing_gas.equipment_enamel_blue",
       heater_kind: "tank",
       capacity_gal: 50,
       input_kw: 18,
       voltage: 480,
       connection_size: 1.25 * IN,
+      cut_sheet: "[A.O. Smith DRE-52](https://www.hotwater.com/products/commercial-electric/dre-52.html)",
     },
     instanceParams: [txt("room", "Room"), txt("circuit", "Circuit")],
     connectors: [
@@ -570,6 +590,18 @@ export const SHOWCASE_WATER_HEATER: { readonly id: string; readonly definition: 
         flowDirection: "out",
       },
       {
+        id: "hwr",
+        label: "Hot water return inlet",
+        domain: "pipe",
+        systemKind: "domestic_hot_water_return",
+        position: [0, -311, 560],
+        direction: [0, -1, 0],
+        shape: "round",
+        diameter: 0.75 * IN,
+        endType: "plumbing_gas.threaded",
+        flowDirection: "in",
+      },
+      {
         id: "power",
         label: "Power",
         domain: "electrical",
@@ -592,6 +624,8 @@ export const SHOWCASE_WATER_HEATER: { readonly id: string; readonly definition: 
       // Cold inlet & hot outlet 1-1/4" NPT top nipples (8" OC)
       { kind: "cylinder", center: [-102, 0, 50 + 1450], radius: 22, height: 70, axis: "z" },
       { kind: "cylinder", center: [102, 0, 50 + 1450], radius: 22, height: 70, axis: "z" },
+      // Side 3/4" NPT hot-water recirculation return stub (-Y, flush at -311)
+      { kind: "cylinder", center: [0, -293.5, 560], radius: 18, height: 35, axis: "y" },
       // Front drain valve stub
       { kind: "box", center: [0, 290, 190], size: [38, 60, 38] },
     ],

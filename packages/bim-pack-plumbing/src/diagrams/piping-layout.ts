@@ -1,7 +1,12 @@
 import { drainSystemKinds, oneLineItemsExtent, oneLineTextHeight } from "@permitzip/bim-kernel";
 import type { DiagramEdge, DiagramNode, ElementId, LinePattern, OneLineItem, OneLineLayout, OneLineTextLine, Pen, PipeLabel, RiserLevel, Vec2 } from "@permitzip/bim-kernel";
 import { hasMergedDwvRoots, layoutDwvRiser } from "./dwv-riser-layout";
+import { isFuelGasKind, layoutGasRiser } from "./gas-riser-layout";
 import { isDomesticWaterKind, layoutWaterRiser } from "./water-riser-layout";
+
+export { isFuelGasKind, layoutGasRiser } from "./gas-riser-layout";
+export { isDomesticWaterKind, layoutWaterRiser } from "./water-riser-layout";
+export { hasMergedDwvRoots, layoutDwvRiser } from "./dwv-riser-layout";
 
 /**
  * The plumbing riser as plumbers draw it (the issued 7492 P2 / P3 / GR sheets):
@@ -24,9 +29,10 @@ export function defaultPipeLabels(systemKind: string): readonly PipeLabel[] {
   return ["size", "load"];
 }
 
-/** How a system's pipe prints on a diagram: vent & domestic hot water dashed, grease heavier, the rest solid. */
+/** How a system's pipe prints on a diagram: vent & domestic hot water dashed, DHWR thin dashed, grease heavier, the rest solid. */
 export function pipeLook(systemKind: string): { readonly pattern: LinePattern; readonly weight: Pen } {
-  if (systemKind === "vent" || systemKind === "domestic_hot_water" || systemKind === "domestic_hot_water_return") return { pattern: "dashed", weight: "medium" };
+  if (systemKind === "domestic_hot_water_return") return { pattern: "dashed", weight: "thin" };
+  if (systemKind === "vent" || systemKind === "domestic_hot_water") return { pattern: "dashed", weight: "medium" };
   if (systemKind === "grease_waste") return { pattern: "solid", weight: "heavy" };
   return { pattern: "solid", weight: "medium" };
 }
@@ -99,6 +105,9 @@ interface Printed {
 export function layoutPipingRiser(roots: readonly DiagramNode[], levels: readonly RiserLevel[], opts: PipingLayoutOptions = {}): PipingLayout {
   if (roots.length > 0 && roots.every((r) => isDomesticWaterKind(r.service))) {
     return layoutWaterRiser(roots, levels, opts);
+  }
+  if (roots.length > 0 && roots.every((r) => isFuelGasKind(r.service))) {
+    return layoutGasRiser(roots, levels, opts);
   }
   if (hasMergedDwvRoots(roots)) {
     return layoutDwvRiser(roots, levels, opts);

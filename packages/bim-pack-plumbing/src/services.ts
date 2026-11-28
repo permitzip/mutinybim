@@ -38,3 +38,25 @@ export const PLUMBING_SERVICE_LINE_CODES: readonly ServiceLineCodeDef[] = [
   { id: "plumbing_gas.grease_waste", serviceId: "grease_waste", lineCode: "GW" },
   { id: "plumbing_gas.indirect_waste", serviceId: "indirect_waste", lineCode: "IW" },
 ];
+
+/**
+ * Plumbing solver ids by service id. Kept alongside `PLUMBING_SERVICE_ROWS` so
+ * `domestic_hot_water_return` declares its `"dhwr_loop"` solver without mutating
+ * the kernel's transitional frozen Round-13 service row shape.
+ */
+export const PLUMBING_SERVICE_SOLVERS: Readonly<Record<string, string>> = {
+  domestic_cold_water: "hunter",
+  domestic_hot_water: "hunter",
+  domestic_hot_water_return: "dhwr_loop",
+  sanitary: "dfu",
+  vent: "vent_dfu",
+  storm: "storm_gpm",
+  natural_gas: "gas_longest_length",
+  grease_waste: "dfu",
+  indirect_waste: "dfu",
+};
+
+/** Solver id registered for a plumbing/gas service id, or undefined when none. */
+export function serviceSolverOf(serviceId: string): string | undefined {
+  return PLUMBING_SERVICE_SOLVERS[serviceId] ?? PLUMBING_SERVICE_ROWS.find((r) => r.id === serviceId)?.solver;
+}

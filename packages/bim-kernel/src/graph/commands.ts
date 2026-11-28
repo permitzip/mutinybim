@@ -60,9 +60,14 @@ const subjectInput = z
 const decision = {
   value: scalar,
   unit: unitCode.optional(),
+  title: words(160).optional(),
   inputs: z.array(inputRef).max(50).optional(),
   /** In the decider's own words; never code text. */
   reasoning: words(2000),
+  /** Optional anonymized engineering rationale safe for public exports/snapshots. */
+  publicNote: words(1000).optional(),
+  /** Optional org/team-scoped detail kept separate from public exports/snapshots. */
+  privateNote: words(2000).optional(),
   decidedBy: words(120),
   decidedAt: isoDate.optional(),
   edition: words(80).optional(),
@@ -100,6 +105,8 @@ export const graphCommandSchemas = [
       value: scalar.optional(),
       unit: unitCode.optional(),
       reason: z.string().trim().max(2000).optional(),
+      publicNote: words(1000).optional(),
+      privateNote: words(2000).optional(),
       by: words(120),
       at: isoDate.optional(),
     })
@@ -177,8 +184,11 @@ function bodyOf(subject: DeterminationBody["subject"], key: string, input: Decis
     key,
     value: input.value,
     ...(input.unit ? { unit: input.unit } : {}),
+    ...(input.title ? { title: input.title } : {}),
     inputs: input.inputs ?? [],
     reasoning: input.reasoning,
+    ...(input.publicNote ? { publicNote: input.publicNote } : {}),
+    ...(input.privateNote ? { privateNote: input.privateNote } : {}),
     decidedBy: input.decidedBy,
     ...(input.decidedAt ? { decidedAt: input.decidedAt } : {}),
     ...(input.edition ? { edition: input.edition } : {}),
@@ -264,6 +274,8 @@ function setRequirementState(model: ModelState, c: Extract<GraphCommand, { type:
     ...(c.value !== undefined ? { value: c.value } : {}),
     ...(c.unit ? { unit: c.unit } : c.status === "overridden" ? { unit: req.unit } : {}),
     reason,
+    ...(c.publicNote ? { publicNote: c.publicNote } : {}),
+    ...(c.privateNote ? { privateNote: c.privateNote } : {}),
     by: c.by,
     ...(c.at ? { at: c.at } : {}),
   };

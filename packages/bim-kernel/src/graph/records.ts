@@ -102,9 +102,25 @@ export function readDeterminationBody(raw: unknown): ReadResult<DeterminationBod
   const inputs = readInputs(raw.inputs);
   if (!inputs) return bad(`determination ${raw.key} has inputs that aren't { key, … }`);
   if (!isText(raw.reasoning)) return bad(`determination ${raw.key} needs its reasoning in words`);
+  if (raw.title !== undefined && !isText(raw.title)) return bad(`determination ${raw.key}'s title must be text`);
+  if (raw.publicNote !== undefined && !isText(raw.publicNote)) return bad(`determination ${raw.key}'s publicNote must be text`);
+  if (raw.privateNote !== undefined && !isText(raw.privateNote)) return bad(`determination ${raw.key}'s privateNote must be text`);
   if (!isText(raw.decidedBy)) return bad(`determination ${raw.key} needs who decided it`);
   if (!isText(raw.confidence) || !isText(raw.status)) return bad(`determination ${raw.key} needs a confidence and a status`);
   return { ok: true, value: { ...raw, inputs } as DeterminationBody };
+}
+
+/** Strips org/team-scoped `privateNote` before public exports, shared snapshots, or external notices. */
+export function stripPrivateNotes<T extends { readonly privateNote?: string }>(record: T): Omit<T, "privateNote"> {
+  if (!("privateNote" in record)) return record;
+  const { privateNote: _privateNote, ...pub } = record;
+  return pub;
+}
+
+/** Returns a copy of a determination record with any org-scoped `privateNote` removed for public exports/snapshots. */
+export function publicDeterminationElement(el: DeterminationElement): DeterminationElement {
+  if (el.determination.privateNote === undefined) return el;
+  return { ...el, determination: stripPrivateNotes(el.determination) };
 }
 
 export function isDeterminationRecord(el: { readonly kind: string } | undefined): el is DeterminationElement {
@@ -151,6 +167,8 @@ export function readRequirementStateBody(raw: unknown): ReadResult<RequirementSt
   if (!isText(raw.status)) return bad(`the state of ${raw.requirementId} needs a status`);
   if (raw.value !== undefined && !isScalar(raw.value)) return bad(`the state of ${raw.requirementId} has a value that isn't a number, text or yes/no`);
   if (!isText(raw.reason) || !isText(raw.by)) return bad(`the state of ${raw.requirementId} needs a reason and who set it`);
+  if (raw.publicNote !== undefined && !isText(raw.publicNote)) return bad(`the state of ${raw.requirementId}'s publicNote must be text`);
+  if (raw.privateNote !== undefined && !isText(raw.privateNote)) return bad(`the state of ${raw.requirementId}'s privateNote must be text`);
   return { ok: true, value: raw as unknown as RequirementStateBody };
 }
 

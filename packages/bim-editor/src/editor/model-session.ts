@@ -6,7 +6,7 @@
  * so the React surface stays a thin shell; created only after the surface's
  * chunk loads (three.js and That Open never reach first load).
  */
-import { FLEX_DOMAIN, ROUTING_PLUS_EVERY_RUN_FEATURE, branchClosedMessage, elementEntries, elementsOfKind, hostName, isPitchedOrLevel, type BranchRef, type PartHost } from '@permitzip/bim-kernel'
+import { FLEX_DOMAIN, ROUTING_PLUS_EVERY_RUN_FEATURE, branchClosedMessage, elementEntries, elementsOfKind, hostName, type BranchRef, type PartHost } from '@permitzip/bim-kernel'
 import type { Actor, BimElement, Command, CommandRequest, Connection, DisplayContext, DuctInsulation, ElementId, FittingChoice, FittingSlot, IntakeChoice, Level, ModelState, ParamDef, ParamValue, PartInstance, PartMount, PartTypeDefinition, PartTypeElement, RouteEndpoint, RouteJoin, RunFitting, RunPoint, RunSegment, RunSize, SelectionScopeKind, SystemKind, Vec2, WorkFrame, ReferenceSnapCandidates } from '@permitzip/bim-kernel'
 import type { DesignLimitSources } from '@permitzip/bim-kernel/policy'
 import type { CommitOutcome, ConnectionStatus, Presence, SaveState, ScheduleClientPort, ServerMessage, SyncClient } from '@permitzip/bim-sync'
@@ -17,14 +17,15 @@ import type { RevitElementParameters, RevitParametersResponse, UnplacedElementsR
 import { AWAITING_WRITE_ACCESS, MODEL_VIEW_ONLY, connectionProblem, editsPausedMessage, operatorMessage, problemForDenied, type ConnectionProblem } from './operator-messages'
 import { ALIGN_SNAP_MM, GRID_MM, MM_PER_FT, MM_PER_IN, POINT_SNAP_MM, WALL_FACE_SNAP_MM, defaultHeightMm, describeElement, feetInches,  nearestLinkedWallFace,
   newElementId, partLabel, snapHint, snapPoint, snapTargets, type SnapTarget } from './placement'
+import { getSnapGridMm, snapToIncrement } from './snap-grid'
 import { linkedSnapNear } from './linked-reference/linked-reference-store'
 import { projectFamilyTable, projectPartTypesToSave } from '../contracts/bim/firm-part-versions'
 import { isStarterLevelRace, starterLevelCommand } from './levels/starter-level'
 import { axisBadge, resolveRoutePoint, snapDrag, type AxisLock, type RouteAxis } from './route-axis'
 import { hostForPlacement, placementOnSurface, routeStartOnSurface, type RouteStart } from './surface-point'
-import { LOW_VIEW_DEG, grabFor, grabHint, type RunGrab } from './run-grab'
+import { LOW_VIEW_DEG, connectEndToSideCommand, grabFor, grabHint, isVerticalAxis, isVerticalSegment, sideUnderEnd, type RunGrab } from './run-grab'
 import { resizeRequestFor } from './resize-scope'
-import { faceHandleSides, isDrainService, plusSpots, slopedSideHandles, tapOffsetFor, type BranchFace } from './plus-tee'
+import { faceHandleSides, isDrainService, isVerticalDirection, plusSpots, slopedSideHandles, tapOffsetFor, verticalStubElevationMm, type BranchFace } from './plus-tee'
 import type { FaceHandle } from './PlusHandles'
 import { riseHint, type RiseStyle } from './route-rise'
 import { currentScope, cycle, hoverTo, scopeWord, tabHint, type PreHighlight } from './tab-select'
@@ -568,6 +569,8 @@ export class ModelSession {
   private workFrame: WorkFrame | null = null
   private lastAxis: RouteAxis = 'free'
   private shiftHeld = false
+  private altHeld = false
+  private snapGridMm: number = getSnapGridMm()
   private planeLocked = false
   private preHighlight: PreHighlight | null = null
   /** Who wants to know what the pointer is over (a proposer previewing the room under it). */
@@ -1772,9 +1775,10 @@ export class ModelSession {
     const { grab, levelId, label } = found
     const floor = this.levelElevation(levelId) ?? 0
     const plane = floor + grab.at.z
-    const from = viewer.planPointAt(clientX, clientY, plane)
+    const verticalEnd = grab.kind === 'end' && isVerticalAxis(grab.axis)
+    const from = viewer.planPointAt(clientX, clientY, plane) ?? (verticalEnd ? { x: grab.at.x, y: grab.at.y } : null)
     if (!from) return null
-    const facing = this.lowView() ? viewer.facingPointAt(clientX, clientY, grab.at.x, grab.at.y, plane) : null
+    const facing = !verticalEnd && this.lowView() ? viewer.facingPointAt(clientX, clientY, grab.at.x, grab.at.y, plane) : null
     return this.startRunDrag(grab, label, from, { x: clientX, y: clientY }, plane, this.groupToDrag(grab.id), facing)
   }
 
@@ -1872,7 +1876,8 @@ export class ModelSession {
     const viewer = this.viewer
     if (!d || !viewer) return null
     let raw = { x: 0, y: 0, z: 0 }
-    if (vertical) {
+    const verticalEnd = d.kind === 'end' && isVerticalAxis(d.axis)
+    if (vertical || verticalEnd) {
       const v = viewer.verticalPointAt(clientX, clientY, d.from.x, d.from.y)
       const rise = v ? v.elevationMm - d.plane : this.screenRise(d, clientY)
       if (rise === null) return null
@@ -1915,9 +1920,10 @@ export class ModelSession {
     const view = this.view
     const kernel = this.kernel
     if (!d || !view || !kernel) return null
-    if (d.group) return this.previewGroupDrag(d, d.group, raw)
-    // A typed length is exact; a pointer drag lands on the grid.
-    const snapped = exact ? { delta: { x: Math.round(raw.x * 10) / 10, y: Math.round(raw.y * 10) / 10, z: Math.round(raw.z * 10) / 10 }, mode: 'along' as const } : snapDrag(d.kind, d.axis, raw)
+    if (d.group) return this.previewGroupDrag(d, d.group, raw, strict)
+    // A typed length is exact; a pointer drag lands on the active snap increment (Alt = temporary free 1 mm).
+    const stepMm = this.effectiveSnapMm(strict)
+    const snapped = exact ? { delta: { x: Math.round(raw.x * 10) / 10, y: Math.round(raw.y * 10) / 10, z: Math.round(raw.z * 10) / 10 }, mode: 'along' as const } : snapDrag(d.kind, d.axis, raw, stepMm)
     if (Math.hypot(snapped.delta.x, snapped.delta.y, snapped.delta.z) < 1) {
       d.delta = null
       this.clearRoutePreview()
@@ -1953,23 +1959,27 @@ export class ModelSession {
     d.delta = delta
     d.reroute = rerouted
     d.connectTo = null
-    // An open end pulled onto another run's side: release taps into it (the hint says so first).
+    // An open end pulled onto another run's side (including a vertical riser): release taps a tee into it.
     const onto = d.kind === 'end' && d.grip ? sideUnderEnd(res.model, d.id, d.grip) : null
     if (onto && d.grip) {
-      const tap = kernel.executeCommand(view, { type: 'stretch_to_side', from: { elementId: d.id, port: d.grip }, onto: onto.id, idPrefix: 'stretch-preview' })
-      if (tap.ok) {
+      const tapCmd = connectEndToSideCommand(view, d.id, d.grip, onto, 'stretch-preview')
+      const tap = tapCmd ? kernel.executeCommand(view, tapCmd) : null
+      if (tap?.ok) {
         d.connectTo = onto.id
         this.preview = tap.model
         if (this.accepted) this.viewer?.setAuthored(this.accepted, this.preview)
         const end = view.elements[d.id]
+        const endZ = end?.kind === 'run_segment' ? (d.grip === 'start' ? end.start.z : end.end.z) : onto.start.z
+        if (isVerticalSegment(onto)) {
+          return `Release to tap a tee into the vertical ${kernel.runLabel(view.elements, onto)} at ${feetInches(endZ)}. Esc to cancel.`
+        }
         const z = heightUnder(onto, end?.kind === 'run_segment' ? (d.grip === 'start' ? end.start : end.end) : onto.start)
-        const endZ = end?.kind === 'run_segment' ? (d.grip === 'start' ? end.start.z : end.end.z) : z
         const height = Math.abs(endZ - z) > 1 ? `; it ${z > endZ ? 'rises' : 'drops'} to ${feetInches(z)} on the way` : ''
         return `Release to tap into the ${kernel.runLabel(view.elements, onto)} at its height and system${height}. Esc to cancel.`
       }
       this.preview = res.model
       if (this.accepted) this.viewer?.setAuthored(this.accepted, this.preview)
-      return `It can't tap into the ${kernel.runLabel(view.elements, onto)} here: ${tap.error.message}. Release to just stretch it, Esc to cancel.`
+      return `It can't tap into the ${kernel.runLabel(view.elements, onto)} here: ${tap && !tap.ok ? tap.error.message : 'not aligned'}. Release to just stretch it, Esc to cancel.`
     }
     this.preview = res.model
     if (this.accepted) this.viewer?.setAuthored(this.accepted, this.preview)
@@ -1988,13 +1998,15 @@ export class ModelSession {
   }
 
   /** A Tab-widened run (or a selected group) moves rigidly: one `move_elements`, nothing stretches. */
-  private previewGroupDrag(d: NonNullable<ModelSession['runDrag']>, group: { ids: readonly string[]; word: string }, raw: RunPoint): string | null {
+  private previewGroupDrag(d: NonNullable<ModelSession['runDrag']>, group: { ids: readonly string[]; word: string }, raw: RunPoint, freeOverride = false): string | null {
     const view = this.view
     const kernel = this.kernel
     if (!view || !kernel) return null
-    const plan = snapDrag('corner', null, { x: raw.x, y: raw.y, z: 0 }).delta
-    // Up and down (Shift, or from a low view) lands on whole inches.
-    const snapped = { x: plan.x, y: plan.y, z: Math.round(raw.z / MM_PER_IN) * MM_PER_IN }
+    const stepMm = this.effectiveSnapMm(freeOverride)
+    const plan = snapDrag('corner', null, { x: raw.x, y: raw.y, z: 0 }, stepMm).delta
+    // Up and down (Shift, or from a low view) lands on whole inches (or 1 mm when Free).
+    const zStep = stepMm <= 0 ? 0 : Math.min(stepMm, MM_PER_IN)
+    const snapped = { x: plan.x, y: plan.y, z: snapToIncrement(raw.z, zStep) }
     if (Math.hypot(snapped.x, snapped.y, snapped.z) < 1) {
       d.delta = null
       this.clearRoutePreview()
@@ -2049,7 +2061,11 @@ export class ModelSession {
     const paused = this.refusePaused()
     if (paused) return paused
     if (d.group) return this.moveGroupBy(d.group.ids, { x: d.delta.x, y: d.delta.y }, d.delta.z)
-    if (d.connectTo && d.grip) return this.submit({ type: 'stretch_to_side', from: { elementId: d.id, port: d.grip }, onto: d.connectTo, idPrefix: newElementId('run') })
+    if (d.connectTo && d.grip) {
+      const onto = this.view?.elements[d.connectTo]
+      const cmd = this.view && onto?.kind === 'run_segment' ? connectEndToSideCommand(this.view, d.id, d.grip, onto, newElementId('run')) : null
+      return this.submit(cmd ?? { type: 'stretch_to_side', from: { elementId: d.id, port: d.grip }, onto: d.connectTo, idPrefix: newElementId('run') })
+    }
     return this.submit({ type: 'drag_run', elementId: d.id, delta: d.delta, ...(d.grip ? { grip: d.grip } : {}), ...(d.reroute ? { reroute: true } : {}) })
   }
 
@@ -2558,7 +2574,7 @@ export class ModelSession {
       ? { point: wallHit.position, kind: 'reference' as const, label: 'wall finish face' }
       : linkedWallHit
         ? { point: linkedWallHit.position, kind: 'linked' as const, label: linkedWallHit.label }
-        : snapPoint(target.raw, this.snapTargetsFor(target.levelId, []), target.reference, this.workFrame ?? undefined, linkedCandidates)
+        : snapPoint(target.raw, this.snapTargetsFor(target.levelId, []), target.reference, this.workFrame ?? undefined, linkedCandidates, this.effectiveSnapMm())
     const placementRot = wallHit ? wallHit.rotationDeg : linkedWallHit ? linkedWallHit.rotationDeg : spec.rotationDeg
     const type: PartTypeElement = { id: kernel.asElementId(spec.typeId), kind: 'part_type', version: 0, authoredRev: {}, definition: spec.definition }
     const part: PartInstance = {
@@ -2747,7 +2763,7 @@ export class ModelSession {
     const p = viewer.planPointAt(clientX, clientY, moving.elevationMm)
     if (!p) return null
     const raw = { x: part.position.x + p.x - moving.from.x, y: part.position.y + p.y - moving.from.y }
-    const snapped = snapPoint(raw, this.snapTargetsFor(moving.levelId, moving.ids), null, this.workFrame ?? undefined)
+    const snapped = snapPoint(raw, this.snapTargetsFor(moving.levelId, moving.ids), null, this.workFrame ?? undefined, null, this.effectiveSnapMm())
     moving.delta = { x: snapped.point.x - part.position.x, y: snapped.point.y - part.position.y }
     this.ghostFor({ ...part, position: snapped.point }, type, moving.elevationMm)
     return `${snapHint(snapped)}, ${feetInches(Math.hypot(moving.delta.x, moving.delta.y))} from where it was. Release to save, Esc to cancel.`
@@ -2850,6 +2866,26 @@ export class ModelSession {
     this.shiftHeld = down
   }
 
+  /** Alt / Option held: temporarily overrides the snap grid to Free (1 mm) for drags, moves, placement and routing. */
+  setAltHeld(down: boolean) {
+    this.altHeld = down
+  }
+
+  /** Set the active snap grid increment in mm (`0` = Free 1 mm). */
+  setSnapGridMm(mm: number) {
+    if (Number.isFinite(mm) && mm >= 0) this.snapGridMm = mm
+  }
+
+  /** Active snap grid increment in mm (`0` = Free 1 mm). */
+  snapGridStepMm(): number {
+    return this.snapGridMm
+  }
+
+  /** Effective snap increment accounting for temporary Alt free-drag override. */
+  private effectiveSnapMm(freeOverride = false): number {
+    return freeOverride || this.altHeld ? 0 : this.snapGridMm
+  }
+
   /**
    * Lock the work plane (Revit's "work plane"; L while placing or routing):
    * place and route at the height typed for the tool, whatever is under the
@@ -2888,7 +2924,7 @@ export class ModelSession {
     const view = this.view
     const kernel = this.kernel
     const el = this.selectedId ? view?.elements[this.selectedId] : undefined
-    if (!viewer || !viewerModule || !view || !kernel || !this.canEdit() || (el?.kind !== 'run_segment' && el?.kind !== 'run_fitting')) return []
+    if (!viewer || !viewerModule || !view || !kernel || !this.canEdit() || (el?.kind !== 'run_segment' && el?.kind !== 'run_fitting' && el?.kind !== 'part')) return []
     const floor = this.levelElevation(el.levelId) ?? 0
     // On screen, a few px out from `at` the way `dir` points.
     const beyond = (at: RunPoint, dir: RunPoint): { x: number; y: number } | null => {
@@ -3026,6 +3062,37 @@ export class ModelSession {
     return `Continuing from ${target.label}${this.transitionNote(target, spec)}. Click the next point; change the size in the Route panel first to continue at another size.`
   }
 
+  /** Start the armed route on a part's free duct/pipe connector (the "+" on a part, including bottom/vertical ports like expansion tanks). */
+  startRouteOnConnector(partId: string, connectorId: string): string {
+    const spec = this.routeSpec
+    const view = this.view
+    const kernel = this.kernel
+    if (!spec || !view || !kernel) return 'Choose what to route first.'
+    const el = view.elements[partId]
+    if (el?.kind !== 'part') return 'That part is no longer in the model.'
+    const type = view.elements[el.typeId]
+    if (type?.kind !== 'part_type') return "That part's type isn't loaded yet; reload and try again."
+    const conn = kernel.resolveConnectors(type.definition, el.values).find((c) => c.id === connectorId)
+    if (!conn) return 'That connector is no longer on this part.'
+    if (el.links?.[conn.id]) return 'That connector is already connected.'
+    const w = kernel.worldConnector(el, conn)
+    const vertical = isVerticalDirection(w.direction)
+    const label = `${kernel.partLabelOf(view.elements, el)}'s ${conn.label.toLowerCase()}`
+    const startElevationMm = vertical ? verticalStubElevationMm(w.position.z, w.direction.z, spec.size) : w.position.z
+    const target: RouteTarget = {
+      endpoint: { kind: 'part', partId: el.id, connectorId: conn.id },
+      point: { x: w.position.x, y: w.position.y },
+      label,
+      systemId: null,
+      elevationMm: startElevationMm,
+    }
+    this.routing = { from: target, points: [], startElevationMm }
+    if (vertical) {
+      return `Routing ${w.direction.z < 0 ? 'down' : 'up'} from ${label} (turning level at ${feetInches(startElevationMm)}). Click the next point, or Esc to cancel.`
+    }
+    return `Routing from ${label} at ${feetInches(startElevationMm)}. Click the next point, or Esc to cancel.`
+  }
+
   /** The "+" on an elbow's side: the elbow becomes a tee and the leg through `through` runs on past the corner. The open end to route on from, or the refusal. */
   teeAtElbow(
     elbowId: string,
@@ -3102,7 +3169,8 @@ export class ModelSession {
     }
     if (el.kind === 'run_segment' || el.kind === 'run_fitting') {
       const z = el.kind === 'run_segment' ? (el.start.z + el.end.z) / 2 : el.position.z
-      const at = viewer.planPointAt(clientX, clientY, floorOf(el.levelId) + z)
+      const verticalSeg = el.kind === 'run_segment' && isVerticalSegment(el)
+      const at = viewer.planPointAt(clientX, clientY, floorOf(el.levelId) + z) ?? (verticalSeg ? { x: el.start.x, y: el.start.y } : null)
       if (!at) return null
       const open: Array<{ port: string; p: Vec2 }> = []
       if (el.kind === 'run_segment') {
@@ -3113,7 +3181,7 @@ export class ModelSession {
       }
       const end = open.map((o) => ({ ...o, d: Math.hypot(o.p.x - at.x, o.p.y - at.y) })).sort((a, b) => a.d - b.d)[0]
       const label = kernel.runLabel(view.elements, el)
-      if (end && (el.kind === 'run_fitting' || end.d <= RUN_END_SNAP_MM)) {
+      if (end && !verticalSeg && (el.kind === 'run_fitting' || end.d <= RUN_END_SNAP_MM)) {
         return this.withHeight({ endpoint: { kind: 'run_end', elementId: el.id, port: end.port }, point: { x: end.p.x, y: end.p.y }, label: `the open end of the ${label}`, systemId: el.systemId, join: { kind: 'run_end', elementId: el.id, port: end.port } }, spec.levelId)
       }
       return el.kind === 'run_segment' ? this.branchTarget(el, at, spec) : null
@@ -3122,24 +3190,43 @@ export class ModelSession {
   }
 
   /**
-   * A new branch off the side of a level straight run, or of a pitched pipe (a
-   * sloped drain), where `at` (plan mm) is nearest its centreline: the tap
-   * takes the trunk's height there and its system, and the kernel places the
-   * system's branch fitting and pitches the branch towards the trunk. The 3D
-   * view and every drawing route a tap through here. Null for a riser.
+   * A new branch off the side of a level straight run, a pitched pipe (a
+   * sloped drain), or a round/pipe vertical riser where `at` (plan mm) is
+   * nearest its centreline: the tap takes the trunk's height there (or the
+   * current route height along a vertical riser) and its system, and the
+   * kernel places the system's branch fitting / tee. The 3D view and every
+   * drawing route a tap through here. Null for a flat-sided riser.
    */
   private branchTarget(el: RunSegment, at: Vec2, spec: RouteSpec): RouteTarget | null {
     const view = this.view
     const kernel = this.kernel
     if (!view || !kernel || el.domain !== spec.domain) return null
+    if (isVerticalSegment(el)) {
+      if (el.size.shape === 'rect' || el.size.shape === 'oval') return null
+      const minZ = Math.min(el.start.z, el.end.z)
+      const maxZ = Math.max(el.start.z, el.end.z)
+      const span = maxZ - minZ
+      if (span < 2) return null
+      const desiredZ = this.currentRouteElevation(spec)
+      const margin = Math.min(25.4, span * 0.25)
+      const elevationMm = Math.round(Math.min(maxZ - margin, Math.max(minZ + margin, desiredZ)) * 1000) / 1000
+      return {
+        endpoint: { kind: 'run_branch', segmentId: el.id },
+        point: { x: el.start.x, y: el.start.y },
+        label: `the vertical ${kernel.runLabel(view.elements, el)} at ${feetInches(elevationMm)} (a tee branch)`,
+        systemId: el.systemId,
+        elevationMm,
+      }
+    }
     if (Math.abs(el.start.z - el.end.z) > 0.5 && !(el.domain === 'pipe' && kernel.isPitchedOrLevel(el))) return null
     const ax = el.end.x - el.start.x
     const ay = el.end.y - el.start.y
     const len = Math.hypot(ax, ay)
     if (len < 1) return null
     const t = Math.min(1, Math.max(0, ((at.x - el.start.x) * ax + (at.y - el.start.y) * ay) / (len * len)))
-    // On a trunk square to the plan, land on the building's 6" grid (so a branch lines up with parts placed on it).
-    const onGrid = (v: number) => Math.round(v / GRID_MM) * GRID_MM
+    // On a trunk square to the plan, land on the active snap grid (so a branch lines up with parts placed on it).
+    const step = this.effectiveSnapMm()
+    const onGrid = (v: number) => snapToIncrement(v, step)
     const point =
       Math.abs(ay) < 0.5 ? { x: onGrid(el.start.x + ax * t), y: el.start.y } : Math.abs(ax) < 0.5 ? { x: el.start.x, y: onGrid(el.start.y + ay * t) } : { x: el.start.x + ax * t, y: el.start.y + ay * t }
     // The tap goes on the side the pointer is on; the next point decides for good.
@@ -3223,7 +3310,7 @@ export class ModelSession {
     const hit = viewer.pickSurface(clientX, clientY, (id) => this.view?.elements[id] !== undefined)
     if (!hit) return null
     const start = routeStartOnSurface(hit, floor, spec.elevationMm, runHalfExtents(spec.size))
-    const snapped = snapPoint(start.point, this.snapTargetsFor(spec.levelId, []), null, this.workFrame ?? undefined, this.linkedNear(spec.levelId, start.point))
+    const snapped = snapPoint(start.point, this.snapTargetsFor(spec.levelId, []), null, this.workFrame ?? undefined, this.linkedNear(spec.levelId, start.point), this.effectiveSnapMm())
     return { ...start, point: snapped.point }
   }
 
@@ -3272,6 +3359,7 @@ export class ModelSession {
         lock: this.axisLock,
         shift: this.shiftHeld,
         pipe: spec.domain === 'pipe',
+        gridMm: this.effectiveSnapMm(),
         ...(this.workFrame ? { frame: this.workFrame } : {}),
       })
       if (!res) return null
@@ -3280,7 +3368,7 @@ export class ModelSession {
     }
     if (!raw) return null
     this.probeReference(clientX, clientY)
-    return snapPoint(raw, this.snapTargetsFor(spec.levelId, []), this.referenceNear(clientX, clientY, raw), this.workFrame ?? undefined, this.linkedNear(spec.levelId, raw)).point
+    return snapPoint(raw, this.snapTargetsFor(spec.levelId, []), this.referenceNear(clientX, clientY, raw), this.workFrame ?? undefined, this.linkedNear(spec.levelId, raw), this.effectiveSnapMm()).point
   }
 
   /** The route_run command for what is drawn so far, plus the pointer's point or target. */
@@ -3552,7 +3640,8 @@ export class ModelSession {
     if (!spec || floor === null) return null
     const r = this.routing
     const prev = r ? (r.points[r.points.length - 1] ?? r.from?.point ?? null) : null
-    const onGrid = (v: number) => Math.round(v / GRID_MM) * GRID_MM
+    const step = this.effectiveSnapMm()
+    const onGrid = (v: number) => snapToIncrement(v, step)
     if (vertical && prev && p.z !== undefined) return { x: prev.x, y: prev.y, elevationMm: onGrid(p.z - floor) }
     return { x: onGrid(p.x), y: onGrid(p.y) }
   }
@@ -3614,7 +3703,7 @@ export class ModelSession {
       }
       const point = this.routeDrawingPoint(p, false)
       if (!point) return null
-      this.routing = { from: null, points: [point], ...(p.z !== undefined ? { startElevationMm: Math.round((p.z - floor) / GRID_MM) * GRID_MM } : {}) }
+      this.routing = { from: null, points: [point], ...(p.z !== undefined ? { startElevationMm: snapToIncrement(p.z - floor, this.effectiveSnapMm()) } : {}) }
       return 'Click the next point.'
     }
     if (target) return this.commitRoute(target)
@@ -4224,14 +4313,14 @@ function anchorOf(el: BimElement): RunPoint | null {
   return null
 }
 
-/** A "+" button on the selected piece (canvas px): continue from an open end, or make a tee at an elbow. */
+/** A "+" button on the selected piece or part (canvas px): continue from an open end, make a tee at an elbow, branch off a sloped side, or start from a part connector. */
 export interface PlusHandle {
   readonly x: number
   readonly y: number
-  /** `side`: a branch off a sloped pipe's side, `s` mm along it. */
-  readonly kind: 'continue' | 'tee' | 'side'
+  /** `side`: a branch off a sloped pipe's side, `s` mm along it; `connector`: a free duct/pipe connector on a placed part. */
+  readonly kind: 'continue' | 'tee' | 'side' | 'connector'
   readonly elementId: string
-  /** The open end (continue), the elbow port whose leg runs on through the corner (tee), or which side in plan (side: `left` / `right` of the run's direction). */
+  /** The open end (continue), the elbow port whose leg runs on through the corner (tee), the connector id (connector), or which side in plan (side: `left` / `right` of the run's direction). */
   readonly port: string
   readonly label: string
   /** A tee whose rising or dropping leg joins the level run's top or bottom (`elbow_to_tee` `face`). */
@@ -4240,7 +4329,8 @@ export interface PlusHandle {
   readonly s?: number
 }
 
-/** The level straight run whose side the dragged end now touches in plan (inside its width, away from its ends); null when none. */
+export { connectEndToSideCommand, isVerticalSegment, sideUnderEnd } from './run-grab'
+
 /** A run's centreline height at the plan point nearest `p` (a sloped drain is lower downstream). */
 function heightUnder(seg: RunSegment, p: { readonly x: number; readonly y: number }): number {
   const ax = seg.end.x - seg.start.x
@@ -4248,28 +4338,6 @@ function heightUnder(seg: RunSegment, p: { readonly x: number; readonly y: numbe
   const len2 = ax * ax + ay * ay
   const t = len2 < 1 ? 0 : Math.min(1, Math.max(0, ((p.x - seg.start.x) * ax + (p.y - seg.start.y) * ay) / len2))
   return seg.start.z + (seg.end.z - seg.start.z) * t
-}
-
-function sideUnderEnd(model: ModelState, id: string, grip: 'start' | 'end'): RunSegment | null {
-  const piece = model.elements[id]
-  if (piece?.kind !== 'run_segment') return null
-  const p = grip === 'start' ? piece.start : piece.end
-  let best: { seg: RunSegment; d: number } | null = null
-  for (const el of elementsOfKind(model.elements, 'run_segment')) {
-    // Level runs, and sloped pipe (a drain at its fall): `stretch_to_side` joins either with a branch at the height where the end meets it.
-    const sloped = Math.abs(el.start.z - el.end.z) > 1
-    if (el.id === id || el.domain !== piece.domain || el.levelId !== piece.levelId || (sloped && (el.domain !== 'pipe' || !isPitchedOrLevel(el)))) continue
-    if (el.links.start?.elementId === id || el.links.end?.elementId === id) continue
-    const ax = el.end.x - el.start.x
-    const ay = el.end.y - el.start.y
-    const len2 = ax * ax + ay * ay
-    if (len2 < 1) continue
-    const t = ((p.x - el.start.x) * ax + (p.y - el.start.y) * ay) / len2
-    if (t < 0.02 || t > 0.98) continue
-    const d = Math.hypot(el.start.x + ax * t - p.x, el.start.y + ay * t - p.y)
-    if (d <= runHalfExtents(el.size).widthMm + 25 && (!best || d < best.d)) best = { seg: el, d }
-  }
-  return best?.seg ?? null
 }
 
 function runHalfExtents(size: RunSize): { depthMm: number; widthMm: number } {

@@ -107,7 +107,16 @@ export function usePlumbingWorkflow({ model, editBlocked, modelToolsBlocked, sub
       : {}),
     ...(select
       ? {
-          connectFixtures: { drain: connectAction('drain'), vent: connectAction('vent'), cold_water: connectAction('cold_water'), hot_water: connectAction('hot_water') },
+          connectFixtures: {
+            drain: connectAction('drain'),
+            vent: connectAction('vent'),
+            cold_water: connectAction('cold_water'),
+            hot_water: connectAction('hot_water'),
+            dhwr: connectAction('dhwr'),
+            gas: connectAction('gas'),
+            flue: connectAction('flue'),
+            combustion_air: connectAction('combustion_air'),
+          },
         }
       : {}),
     ...(openRiser

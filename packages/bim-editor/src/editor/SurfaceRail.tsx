@@ -72,6 +72,7 @@ export interface SurfaceRailProps {
   readonly open: ViewsSheetsProps['open']
   readonly onOpen: ViewsSheetsProps['onOpen']
   readonly onRequest: ViewsSheetsProps['onRequest']
+  readonly onRenameView?: ViewsSheetsProps['onRenameView']
   readonly spaces: SpacesRailPanel | null
   readonly addonRail: AddonRailOpen | null
   readonly notPlaced: NotPlacedRailPanel | null
@@ -175,7 +176,7 @@ export const SurfaceRail = memo<(props: SurfaceRailProps) => ReactNode>(function
           testId="views-sheets-panel"
           action={<NewViewOrSheetMenu onRequest={props.onRequest} canEdit={canEdit} blockedReason={blockedReason} />}
         >
-          <ViewsSheetsPanel headerless model={documents} canEdit={canEdit} blockedReason={blockedReason} open={props.open} onOpen={props.onOpen} onRequest={props.onRequest} userId={props.userId} />
+          <ViewsSheetsPanel headerless model={documents} canEdit={canEdit} blockedReason={blockedReason} open={props.open} onOpen={props.onOpen} onRequest={props.onRequest} onRenameView={props.onRenameView} userId={props.userId} />
         </LayoutSection>
         <Separator />
         <LayoutSection surface={RAIL_SURFACE} id={RAIL_SECTIONS.show} title={`Show${openView ? ` in ${openView.name}` : ''}`}>

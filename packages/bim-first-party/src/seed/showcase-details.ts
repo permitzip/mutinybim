@@ -1,4 +1,5 @@
 import {
+  asElementId,
   DEFAULT_NOTE_SIZE_MM,
   detailContentBounds,
   executeCommand,
@@ -467,6 +468,403 @@ export function appendShowcaseDetails(model: ModelState): ModelState {
       sheetId: "sheet-m501",
       viewId: fan.viewId,
       center: { x: Math.round(14.5 * IN), y: Math.round(6.2 * IN) },
+    },
+  ]);
+
+  return appendShowcasePlumbingDetails(m);
+}
+
+/**
+ * Author CAD-standard Plumbing Legend (placed on Sheet P-001) and 4 model-linked
+ * Plumbing Details on Sheet P-501 (WS-6 `linkedElementIds` so edits to WH-1, ET-1,
+ * RPZ-1, FCO-1, or VTR-1 trigger live detail staleness alerts).
+ */
+export function appendShowcasePlumbingDetails(model: ModelState): ModelState {
+  // ── LEGEND VIEW FOR P-001: PIPE SERVICE LINE-CODE & EQUIPMENT/BACKFLOW SYMBOLS ──
+  const legendScale = 12; // 1" = 1'-0" paper-friendly drafting scale
+  const leg = new DetailBuilder("view-plumb-legend", legendScale, "leg-p");
+  leg.commands.push({
+    type: "create_view",
+    viewId: leg.viewId,
+    name: "Plumbing Pipe Service & Symbol Legend",
+    viewType: "detail",
+    props: { scale: legendScale, discipline: "plumbing" },
+  });
+
+  // Left panel: Pipe Service Line-Code Legend
+  leg.note(pt(0, 62), 3.6, "PIPE SERVICE LINE-CODE LEGEND", { bold: true });
+  leg.line(pt(0, 58), pt(46, 58), "medium");
+  const pipeLegend: readonly { readonly code: string; readonly label: string; readonly style: DetailLineStyleId }[] = [
+    { code: "CW", label: "DOMESTIC COLD WATER (TYPE L COPPER)", style: "wide" },
+    { code: "HW", label: "DOMESTIC HOT WATER (120°F, INSULATED)", style: "medium" },
+    { code: "HWR", label: "HOT WATER RECIRCULATION RETURN (DASHED)", style: "hidden" },
+    { code: "SAN", label: "SANITARY WASTE / SOIL DRAINAGE (PVC SCH 40)", style: "wide" },
+    { code: "V", label: "SANITARY VENT PIPING (DASHED IN PRINT)", style: "hidden" },
+    { code: "ST", label: "STORM ROOF DRAIN & LEADER (CAST IRON / PVC)", style: "center" },
+    { code: "G", label: "NATURAL GAS (2 PSI MAIN / 7\" W.C. BRANCH, SCH 40)", style: "wide" },
+    { code: "COND", label: "CONDENSATE DRAIN (NEUTRALIZED TO SANITARY)", style: "thin" },
+  ];
+  pipeLegend.forEach((row, idx) => {
+    const y = 53 - idx * 6.5;
+    leg.line(pt(0, y), pt(9, y), row.style);
+    leg.note(pt(10.5, y + 1.8), 0.75, row.code, { bold: true });
+    leg.note(pt(19.5, y + 1.8), 3.1, row.label);
+  });
+
+  // Right panel: Backflow & Plumbing Equipment Symbol Legend
+  leg.note(pt(62, 62), 3.6, "EQUIPMENT & BACKFLOW SYMBOL LEGEND", { bold: true });
+  leg.line(pt(62, 58), pt(108, 58), "medium");
+  const symRows: readonly { readonly tag: string; readonly label: string; readonly draw: (cx: number, cy: number) => void }[] = [
+    {
+      tag: "RPZ",
+      label: "REDUCED PRESSURE ZONE BACKFLOW PREVENTER (ASSE 1013)",
+      draw: (cx, cy) => {
+        leg.rect(cx - 3.0, cy - 1.4, 6.0, 2.8, "medium");
+        leg.circle(pt(cx, cy), 0.9, "thin");
+      },
+    },
+    {
+      tag: "MTR",
+      label: "DOMESTIC WATER METER (SITE SERVICE ENTRY)",
+      draw: (cx, cy) => {
+        leg.rect(cx - 2.6, cy - 1.4, 5.2, 2.8, "medium");
+        leg.line(pt(cx - 2.6, cy), pt(cx + 2.6, cy), "thin");
+      },
+    },
+    {
+      tag: "WH",
+      label: "COMMERCIAL WATER HEATER (ELECTRIC / CONDENSING GAS)",
+      draw: (cx, cy) => {
+        leg.circle(pt(cx, cy), 2.1, "medium");
+        leg.circle(pt(cx, cy), 1.4, "thin");
+      },
+    },
+    {
+      tag: "ET",
+      label: "THERMAL EXPANSION TANK (PRECHARGED DIAPHRAGM, IPC 607.3)",
+      draw: (cx, cy) => {
+        leg.circle(pt(cx, cy), 1.6, "medium");
+      },
+    },
+    {
+      tag: "RP",
+      label: "INLINE DHW RECIRCULATION PUMP (BRONZE WET-ROTOR)",
+      draw: (cx, cy) => {
+        leg.circle(pt(cx, cy), 1.7, "medium");
+        leg.chain([pt(cx - 1.0, cy - 0.9), pt(cx + 1.2, cy), pt(cx - 1.0, cy + 0.9), pt(cx - 1.0, cy - 0.9)], "thin");
+      },
+    },
+    {
+      tag: "GM / GR",
+      label: "FUEL GAS METER (2 PSI) / LINE PRESSURE REGULATOR (7\" W.C.)",
+      draw: (cx, cy) => {
+        leg.rect(cx - 2.6, cy - 1.5, 5.2, 3.0, "medium");
+        leg.circle(pt(cx, cy), 1.0, "thin");
+      },
+    },
+    {
+      tag: "RD / FCO",
+      label: "ROOF DRAIN (4\" DOME) / EXTERIOR FLOOR CLEANOUT (GRADE)",
+      draw: (cx, cy) => {
+        leg.circle(pt(cx, cy), 1.8, "medium");
+        leg.line(pt(cx - 1.8, cy), pt(cx + 1.8, cy), "thin");
+        leg.line(pt(cx, cy - 1.8), pt(cx, cy + 1.8), "thin");
+      },
+    },
+    {
+      tag: "VTR / CN",
+      label: "VENT THROUGH ROOF (3\" MIN) / CONDENSATE NEUTRALIZER",
+      draw: (cx, cy) => {
+        leg.circle(pt(cx, cy), 1.8, "wide");
+        leg.circle(pt(cx, cy), 0.9, "thin");
+      },
+    },
+  ];
+  symRows.forEach((row, idx) => {
+    const y = 53 - idx * 6.5;
+    row.draw(65.5, y);
+    leg.note(pt(70.5, y + 1.8), 0.85, row.tag, { bold: true });
+    leg.note(pt(80.5, y + 1.8), 3.2, row.label);
+  });
+
+  // ── P-501 DETAIL 1: WATER HEATER, EXPANSION TANK & DRAIN PAN (LINKED TO WH-1 & ET-1) ──
+  const whScale = 16; // 3/4" = 1'-0"
+  const wh = new DetailBuilder("view-detail-wh-assembly", whScale, "dtl-wh");
+  wh.commands.push({
+    type: "create_view",
+    viewId: wh.viewId,
+    name: "Water Heater, Expansion Tank & Drain Pan Detail",
+    viewType: "detail",
+    props: {
+      scale: whScale,
+      discipline: "plumbing",
+      linkedElementIds: [asElementId("wh-1"), asElementId("et-1")],
+    },
+  });
+
+  // Concrete floor slab & 2" overflow drain pan
+  wh.regionRect(-24, -8, 68, 8, { hatch: "concrete", tone: "halftone", lineStyle: "medium" });
+  wh.line(pt(-24, 0), pt(44, 0), "wide");
+  wh.breakLine(pt(-22, -10), pt(-22, 2), "left", 4);
+  wh.breakLine(pt(42, 2), pt(42, -10), "left", 4);
+  wh.rect(-13, 0, 26, 2.5, "wide");
+
+  // Commercial water heater tank body (22" Ø × 56" H)
+  wh.regionRect(-11, 2.5, 22, 54, { hatch: "insulation_rigid", tone: "screened", lineStyle: "wide" });
+  wh.rect(-11, 2.5, 22, 54, "wide");
+  wh.rect(-5, 36, 10, 9, "thin"); // control cover
+
+  // Top CW inlet (-5") + HW outlet (+5") copper risers & isolation valves
+  wh.chain([pt(-5, 56.5), pt(-5, 72), pt(-24, 72)], "wide");
+  wh.chain([pt(5, 56.5), pt(5, 76), pt(24, 76)], "wide");
+  // Thermal expansion tank ET-1 teed off CW inlet (-16", y = 55..69)
+  wh.line(pt(-16, 72), pt(-16, 65), "medium");
+  wh.regionRect(-21, 51, 10, 14, { hatch: "crosshatch", tone: "screened", lineStyle: "medium" });
+  wh.rect(-21, 51, 10, 14, "medium");
+
+  // Side T&P relief valve discharge pipe dropping to 6" above drain pan
+  wh.chain([pt(11, 48), pt(16, 48), pt(16, 6)], "medium");
+
+  // Side condensate neutralizer & floor drain stub for condensing gas WH-2
+  wh.rect(19, 10, 12, 4, "medium");
+  wh.line(pt(31, 12), pt(38, 12), "thin");
+
+  // CAD dimensions
+  wh.dimension(pt(-13, -4), pt(13, -4), 0.55, " DRAIN PAN");
+  wh.dimension(pt(-11, 2.5), pt(-11, 56.5), -1.15);
+
+  // Aligned margin callouts (zero crossings)
+  wh.calloutStack("left", -28, 76, 3.1, [
+    { text: '1-1/4" CW INLET W/ FULL-PORT\nBALL VALVE & DIELECTRIC UNION', to: pt(-10, 72) },
+    { text: "THERMAL EXPANSION TANK (ET-1)\nPRECHARGED TO STATIC PSI\nSUPPORT INDEPENDENTLY (IPC 607.3)", to: pt(-21, 58) },
+    { text: "COMMERCIAL WATER HEATER (WH-1)\nSET ON 2\" DEEP DRAIN PAN\nW/ 3/4\" INDIRECT DRAIN TO FD", to: pt(-11, 22) },
+  ]);
+  wh.calloutStack("right", 42, 76, 3.1, [
+    { text: '1-1/4" HW OUTLET & 3/4" HWR\nRECIRCULATION LOOP W/ RP-1\nINSULATE PER IECC C404.4', to: pt(10, 76) },
+    { text: 'T&P RELIEF VALVE (150 PSI / 210°F)\nFULL-SIZE COPPER DISCHARGE\nTERMINATE 6" ABOVE DRAIN PAN', to: pt(16, 44) },
+    { text: "INLINE CONDENSATE NEUTRALIZER\n(CN-1 ON CONDENSING WH-2)\nCALCIUM CARBONATE MEDIA", to: pt(25, 14) },
+  ]);
+
+  // ── P-501 DETAIL 2: RPZ BACKFLOW PREVENTER ASSEMBLY (LINKED TO RPZ-1) ──
+  const rpzScale = 12; // 1" = 1'-0"
+  const rpz = new DetailBuilder("view-detail-rpz", rpzScale, "dtl-rpz");
+  rpz.commands.push({
+    type: "create_view",
+    viewId: rpz.viewId,
+    name: "RPZ Backflow Preventer Assembly Detail",
+    viewType: "detail",
+    props: {
+      scale: rpzScale,
+      discipline: "plumbing",
+      linkedElementIds: [asElementId("rpz-1")],
+    },
+  });
+
+  // Floor slab & floor drain funnel receptor
+  rpz.regionRect(-24, -6, 56, 6, { hatch: "concrete", tone: "halftone", lineStyle: "medium" });
+  rpz.line(pt(-24, 0), pt(32, 0), "wide");
+  rpz.breakLine(pt(-22, -8), pt(-22, 2), "left", 4);
+  rpz.breakLine(pt(30, 2), pt(30, -8), "left", 4);
+
+  // Incoming 2" water service riser & outgoing main at 36" AFF
+  rpz.chain([pt(-18, -4), pt(-18, 36), pt(-10, 36)], "wide");
+  rpz.chain([pt(14, 36), pt(22, 36), pt(22, 16)], "wide");
+
+  // Horizontal RPZ body (20" W) + twin check bonnets + isolation valves
+  rpz.rect(-10, 33, 24, 6, "wide");
+  rpz.rect(-6, 39, 5, 4, "medium");
+  rpz.rect(5, 39, 5, 4, "medium");
+  rpz.line(pt(-12, 32), pt(-12, 42), "medium"); // inlet shutoff
+  rpz.line(pt(16, 32), pt(16, 42), "medium"); // outlet shutoff
+
+  // Bottom relief valve + air-gap funnel piped to floor drain
+  rpz.rect(-1, 28, 6, 5, "medium");
+  rpz.chain([pt(-1, 26), pt(5, 26), pt(3, 22), pt(1, 22), pt(-1, 26)], "medium");
+  rpz.line(pt(2, 22), pt(2, 2), "medium");
+  rpz.rect(-1, -1.5, 6, 1.5, "wide"); // floor drain grate
+
+  // CAD dimensions
+  rpz.dimension(pt(-18, 0), pt(-18, 36), -0.9, " AFF (12\"-60\")");
+  rpz.dimension(pt(-10, 52), pt(14, 52), 0.75, " RPZ ASSY");
+
+  // Aligned margin callouts
+  rpz.calloutStack("left", -26, 48, 3.0, [
+    { text: '2" TYPE L COPPER SERVICE RISER\nFROM EXTERIOR WATER METER (MTR-1)\nPROVIDE SLEEVE & WATERSTOP', to: pt(-18, 22) },
+    { text: "INLET ISOLATION BALL VALVE\n& WYE STRAINER W/ BLOWDOWN", to: pt(-12, 36) },
+  ]);
+  rpz.calloutStack("right", 32, 48, 3.0, [
+    { text: "RPZ BACKFLOW PREVENTER (RPZ-1)\nASSE 1013 W/ 4 TEST COCKS\nMIN 24\" CLEAR TEST ACCESS (IPC 608)", to: pt(8, 41) },
+    { text: "FACTORY AIR-GAP FUNNEL &\nFULL-SIZE INDIRECT RELIEF DRAIN\nTO FLOOR DRAIN (NO DIRECT CONN.)", to: pt(4, 24) },
+    { text: "PIPE SUPPORT STAND TO FLOOR\nANCHOR WITH STAINLESS STUDS", to: pt(22, 20) },
+  ]);
+
+  // ── P-501 DETAIL 3: EXTERIOR FLOOR CLEANOUT (LINKED TO FCO-1) ──
+  const fcoScale = 12;
+  const fco = new DetailBuilder("view-detail-fco", fcoScale, "dtl-fco");
+  fco.commands.push({
+    type: "create_view",
+    viewId: fco.viewId,
+    name: "Exterior Floor Cleanout Detail",
+    viewType: "detail",
+    props: {
+      scale: fcoScale,
+      discipline: "plumbing",
+      linkedElementIds: [asElementId("fco-1")],
+    },
+  });
+
+  // Grade line, compacted earth hatch, and 18"×18"×6" concrete collar
+  fco.regionRect(-18, -28, 36, 28, { hatch: "earth", tone: "screened", lineStyle: "thin" });
+  fco.regionRect(-9, -6, 18, 6, { hatch: "concrete", tone: "halftone", lineStyle: "wide" });
+  fco.line(pt(-18, 0), pt(18, 0), "wide");
+  fco.breakLine(pt(-18, -30), pt(-18, 2), "left", 4);
+  fco.breakLine(pt(18, 2), pt(18, -30), "left", 4);
+
+  // Heavy-duty nickel-bronze recessed cleanout head flush at grade
+  fco.rect(-4, -1.5, 8, 1.5, "wide");
+  // 4" PVC vertical riser neck + threaded brass plug + combo wye into sloped building sewer
+  fco.regionRect(-2.25, -21, 4.5, 19.5, { masking: true, boundary: false });
+  fco.line(pt(-2.25, -1.5), pt(-2.25, -19), "wide");
+  fco.line(pt(2.25, -1.5), pt(2.25, -19), "wide");
+  fco.line(pt(0, -1.5), pt(0, -21), "center");
+
+  // Sloped 4" PVC building sewer lateral (1/8" per ft toward MH-1)
+  fco.regionPoints([pt(-18, -23.5), pt(18, -22.5), pt(18, -18), pt(-18, -19)], { masking: true, boundary: false });
+  fco.line(pt(-18, -19), pt(18, -18), "wide");
+  fco.line(pt(-18, -23.5), pt(18, -22.5), "wide");
+  fco.line(pt(-18, -21.25), pt(18, -20.25), "center");
+  fco.component("flow_arrow", pt(-12, -22.5), { widthIn: 6, heightIn: 2.8, rotationDeg: 181 });
+
+  // CAD dimension (cleanly above grade line & callout leaders)
+  fco.dimension(pt(-9, 12), pt(9, 12), 0.5, " CONC. COLLAR");
+
+  // Aligned margin callouts
+  fco.calloutStack("left", -26, 10, 3.0, [
+    { text: 'HEAVY-DUTY RECESSED COVER (FCO-1)\nFLUSH AT FINISHED GRADE\nSET IN 18"×18"×6" CONC. COLLAR', to: pt(-4, -0.5) },
+    { text: '4" PVC SCH 40 RISER NECK\nWITH COUNTERSUNK BRASS PLUG', to: pt(-2.25, -11) },
+  ]);
+  fco.calloutStack("right", 26, 10, 3.0, [
+    { text: "COMPACTED GRAVEL BEDDING\n6\" MIN BELOW 1'-9\" INVERT (IPC 306.3)", to: pt(10, -24) },
+    { text: '4" PVC SANITARY SEWER LATERAL\nSLOPE 1/8" PER FT TO MH-1\nLONG-SWEEP COMBO WYE FITTING', to: pt(12, -18.5) },
+  ]);
+
+  // ── P-501 DETAIL 4: VENT THROUGH ROOF (VTR) FLASHING (LINKED TO VTR-1) ──
+  const vtrScale = 12;
+  const vtr = new DetailBuilder("view-detail-vtr", vtrScale, "dtl-vtr");
+  vtr.commands.push({
+    type: "create_view",
+    viewId: vtr.viewId,
+    name: "Vent Through Roof (VTR) Flashing Detail",
+    viewType: "detail",
+    props: {
+      scale: vtrScale,
+      discipline: "plumbing",
+      linkedElementIds: [asElementId("vtr-1")],
+    },
+  });
+
+  // Roof structure, rigid insulation, and EPDM/TPO membrane
+  vtr.regionRect(-24, -4, 48, 4, { hatch: "concrete", tone: "halftone", lineStyle: "medium" });
+  vtr.regionRect(-24, 0, 48, 4, { hatch: "insulation_rigid", tone: "screened", lineStyle: "thin" });
+  vtr.line(pt(-24, 4), pt(24, 4), "wide");
+  vtr.breakLine(pt(-22, -6), pt(-22, 6), "left", 4);
+  vtr.breakLine(pt(22, 6), pt(22, -6), "left", 4);
+
+  // 3" Vent stack extending 12"+ above finished roof membrane
+  vtr.regionRect(-1.75, -16, 3.5, 34, { masking: true, boundary: false });
+  vtr.line(pt(-1.75, -16), pt(-1.75, 18), "wide");
+  vtr.line(pt(1.75, -16), pt(1.75, 18), "wide");
+  vtr.line(pt(0, -16), pt(0, 19), "center");
+  vtr.line(pt(-1.75, 18), pt(1.75, 18), "wide");
+
+  // 4 lb lead / neoprene flashing boot + counterflashing collar + roof flange
+  vtr.chain([pt(-9, 4), pt(-4.5, 4), pt(-2.4, 14), pt(2.4, 14), pt(4.5, 4), pt(9, 4)], "wide");
+  vtr.line(pt(-2.4, 14), pt(-2.4, 17.5), "medium");
+  vtr.line(pt(2.4, 14), pt(2.4, 17.5), "medium");
+
+  // CAD dimensions (outside deck & stack geometry)
+  vtr.dimension(pt(-11, 4), pt(-11, 18), -0.45, " MIN");
+  vtr.dimension(pt(-9, -23), pt(9, -23), -0.45, " FLASHING FLANGE");
+
+  // Aligned margin callouts
+  vtr.calloutStack("left", -32, 24, 3.5, [
+    { text: '3" Ø VENT STACK (VTR-1)\nMIN 12" ABOVE ROOF & 10\'-0" CLEAR\nOF ALL OA INTAKES (IPC 903.5)', to: pt(-1.75, 17) },
+    { text: "ROOF MEMBRANE & R-30 RIGID INSUL.\nOVER CONCRETE ROOF DECK", to: pt(-15, 2) },
+  ]);
+  vtr.calloutStack("right", 28, 24, 3.5, [
+    { text: "4 LB LEAD / NEOPRENE ROOF JACK\nTURN TOP 1\" INTO VENT STACK\nSEAL WITH ELASTOMERIC CAULK", to: pt(3.2, 11) },
+    { text: "WEATHERPROOF DECK FLANGE\nSTRIP-IN WITH ROOFING MEMBRANE\nPER ROOFING MFR. WARRANTY", to: pt(7, 4) },
+  ]);
+
+  let m = run(model, [...leg.commands, ...wh.commands, ...rpz.commands, ...fco.commands, ...vtr.commands]);
+
+  // Fit tight CAD crops around every plumbing drafting view
+  const cropSpecs: readonly { readonly vid: string; readonly scale: number }[] = [
+    { vid: leg.viewId, scale: legendScale },
+    { vid: wh.viewId, scale: whScale },
+    { vid: rpz.viewId, scale: rpzScale },
+    { vid: fco.viewId, scale: fcoScale },
+    { vid: vtr.viewId, scale: vtrScale },
+  ];
+  const cropCmds: Command[] = [];
+  for (const { vid, scale } of cropSpecs) {
+    const b = detailContentBounds(m, vid);
+    if (!b) throw new Error(`showcase-details: empty bounds for ${vid}`);
+    const padMm = 0.35 * IN * scale;
+    cropCmds.push({
+      type: "set_view_crop",
+      viewId: vid,
+      crop: {
+        min: { x: Math.round((b.min.x - padMm) * 1000) / 1000, y: Math.round((b.min.y - padMm) * 1000) / 1000 },
+        max: { x: Math.round((b.max.x + padMm) * 1000) / 1000, y: Math.round((b.max.y + padMm) * 1000) / 1000 },
+      },
+    });
+  }
+
+  // Place legend on P-001 (if sheet-p001 exists) and all 4 linked details in a crisp 2×2 grid on Arch D Sheet P-501
+  const placeLegendCmd: Command[] = m.elements["sheet-p001"]
+    ? [{ type: "place_viewport", viewportId: "vp-plumb-legend", sheetId: "sheet-p001", viewId: leg.viewId, center: { x: 420, y: 410 } }]
+    : [];
+
+  m = run(m, [
+    ...cropCmds,
+    ...placeLegendCmd,
+    {
+      type: "create_sheet",
+      sheetId: "sheet-p501",
+      number: "P-501",
+      name: "PLUMBING DETAILS",
+      discipline: "plumbing",
+      group: "Plumbing",
+      sortOrder: 605,
+    },
+    {
+      type: "place_viewport",
+      viewportId: "vp-detail-wh-assembly",
+      sheetId: "sheet-p501",
+      viewId: wh.viewId,
+      center: { x: 225, y: 430 },
+    },
+    {
+      type: "place_viewport",
+      viewportId: "vp-detail-rpz",
+      sheetId: "sheet-p501",
+      viewId: rpz.viewId,
+      center: { x: 605, y: 430 },
+    },
+    {
+      type: "place_viewport",
+      viewportId: "vp-detail-fco",
+      sheetId: "sheet-p501",
+      viewId: fco.viewId,
+      center: { x: 225, y: 165 },
+    },
+    {
+      type: "place_viewport",
+      viewportId: "vp-detail-vtr",
+      sheetId: "sheet-p501",
+      viewId: vtr.viewId,
+      center: { x: 605, y: 165 },
     },
   ]);
 

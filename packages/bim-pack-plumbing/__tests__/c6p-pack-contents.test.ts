@@ -46,6 +46,7 @@ describe("the Plumbing and gas add-on", () => {
         "kernel.gravity_outfall",
         "kernel.library_rows",
         "kernel.linked_plan_display",
+        "kernel.material",
         "kernel.measure_rule",
         "kernel.network_adapter",
         "kernel.network_coupling",

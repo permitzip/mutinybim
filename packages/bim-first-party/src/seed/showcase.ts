@@ -34,7 +34,13 @@ import { LIGHTING_FIXTURE_SCHEDULE } from "@permitzip/bim-pack-electrical";
 import { to } from "@permitzip/bim-units";
 import { standardNoteParagraphs } from "@permitzip/bim-library";
 import { AIR_DEVICE_SCHEDULE, MECHANICAL_EQUIPMENT_SCHEDULE, previewAirConnect } from "@permitzip/bim-pack-mechanical";
-import { PLUMBING_FIXTURE_SCHEDULE } from "@permitzip/bim-pack-plumbing";
+import {
+  GAS_SIZING_TEMPLATE_ID,
+  PLUMBING_FIXTURE_SCHEDULE,
+  PUMP_SCHEDULE,
+  WATER_HEATER_SCHEDULE,
+  WATER_PRESSURE_LOSS_TEMPLATE_ID,
+} from "@permitzip/bim-pack-plumbing";
 import { BEAM_SCHEDULE, COLUMN_SCHEDULE, FOOTING_SCHEDULE, ROOF_ORDINARY_USE } from "@permitzip/bim-pack-structural";
 import { installFirstPartyAddOns } from "../index";
 import {
@@ -296,6 +302,9 @@ const PLUMB_WATER_HIDE = {
   "mep.electrical_equipment": { visible: false },
   "service:sanitary": { visible: false },
   "service:vent": { visible: false },
+  "service:storm": { visible: false },
+  "service:natural_gas": { visible: false },
+  "service:condensate": { visible: false },
 } as const;
 
 const PLUMB_DWV_HIDE = {
@@ -310,6 +319,26 @@ const PLUMB_DWV_HIDE = {
   "mep.electrical_equipment": { visible: false },
   "service:domestic_cold_water": { visible: false },
   "service:domestic_hot_water": { visible: false },
+  "service:domestic_hot_water_return": { visible: false },
+  "service:natural_gas": { visible: false },
+} as const;
+
+const PLUMB_GAS_HIDE = {
+  ...STRUCT_HIDE_OTHER,
+  duct: { visible: false },
+  duct_fitting: { visible: false },
+  air_terminal: { visible: false },
+  electrical_devices: { visible: false },
+  lighting_fixtures: { visible: false },
+  opening_tags: { visible: false },
+  "mep.electrical_equipment": { visible: false },
+  "service:domestic_cold_water": { visible: false },
+  "service:domestic_hot_water": { visible: false },
+  "service:domestic_hot_water_return": { visible: false },
+  "service:sanitary": { visible: false },
+  "service:vent": { visible: false },
+  "service:storm": { visible: false },
+  "service:condensate": { visible: false },
 } as const;
 
 const STRUCT_FND_HIDE = {
@@ -337,6 +366,8 @@ const STRUCT_FRAMING_HIDE = {
 
 const pvc = (inches: number) => ({ shape: "pipe" as const, nominalMm: inches * IN, material: "pvc" as const });
 const copper = (inches: number) => ({ shape: "pipe" as const, nominalMm: inches * IN, material: "copper" as const });
+const blackSteel = (inches: number) => ({ shape: "pipe" as const, nominalMm: inches * IN, material: "black_steel" as const });
+const castIron = (inches: number) => ({ shape: "pipe" as const, nominalMm: inches * IN, material: "cast_iron" as const });
 
 export function createShowcaseDemoModel(modelId = "showcase-demo"): ModelState {
   installFirstPartyAddOns();
@@ -841,19 +872,33 @@ function buildShowcase(modelId: string): ModelState {
   const exit = mustBuiltin("builtin:exit-sign-led@1");
   const linearPendant = mustBuiltin("builtin:linear-pendant-led@1");
   const exitCombo = mustBuiltin("builtin:exit-combo-wall-pack@1");
+  const withCutSheetParam = (entry: ReturnType<typeof mustBuiltin>) => ({
+    ...entry,
+    definition: {
+      ...entry.definition,
+      instanceParams: [...entry.definition.instanceParams, { name: "cut_sheet", label: "Cut sheet URL", kind: "text" as const }],
+    },
+  });
   const waterMeter = mustBuiltin("builtin:plumbing-water-meter@1");
-  const rpz = mustBuiltin("builtin:plumbing-rpz@1");
+  const rpz = withCutSheetParam(mustBuiltin("builtin:plumbing-rpz@1"));
   const expTank = mustBuiltin("builtin:plumbing-expansion-tank@1");
+  const recircPump = withCutSheetParam(mustBuiltin("builtin:plumbing-recirc-pump@1"));
   const floorCo = mustBuiltin("builtin:plumbing-cleanout-floor@1");
   const vtr = mustBuiltin("builtin:plumbing-vtr@1");
+  const roofDrain = mustBuiltin("builtin:plumbing-roof-drain@1");
   const manhole = mustBuiltin("builtin:plumbing-sanitary-manhole-existing@1");
+  const gasMeter = mustBuiltin("builtin:plumbing-gas-meter@1");
+  const gasReg = mustBuiltin("builtin:plumbing-gas-regulator@1");
+  const sedimentTrap = mustBuiltin("builtin:plumbing-sediment-trap@1");
+  const whGasTankless = withCutSheetParam(mustBuiltin("builtin:plumbing-water-heater-gas-tankless@1"));
+  const condNeutralizer = mustBuiltin("builtin:plumbing-condensate-neutralizer@1");
 
   m = runCmds(m, [
     {
       type: "save_part_types",
       types: [
         ...SHOWCASE_PART_TYPES.map((t) => ({ typeId: t.id, definition: t.definition })),
-        ...[rg, eg, swb, hpnl, xfmr, lpnl, discFused, discNf30, rec, gfci, quad, floorRec, floorQuad, nema620, twistLock, hardwired, sw1, sw3, swD, occ, exit, linearPendant, exitCombo, waterMeter, rpz, expTank, floorCo, vtr, manhole].map((t) => ({
+        ...[rg, eg, swb, hpnl, xfmr, lpnl, discFused, discNf30, rec, gfci, quad, floorRec, floorQuad, nema620, twistLock, hardwired, sw1, sw3, swD, occ, exit, linearPendant, exitCombo, waterMeter, rpz, expTank, recircPump, floorCo, vtr, roofDrain, manhole, gasMeter, gasReg, sedimentTrap, whGasTankless, condNeutralizer].map((t) => ({
           typeId: t.id,
           definition: t.definition,
         })),
@@ -995,29 +1040,44 @@ function buildShowcase(modelId: string): ModelState {
   m = runCmds(m, airPlan.plan.commands);
 
   // =========================================================================
-  // 5. PLUMBING — Exterior Water Meter MTR-1 → RPZ-1 → WH-1 + ET-1 → Stacked L1/L2 Wet Wall
+  // 5. PLUMBING — Exterior Water Meter MTR-1 → RPZ-1 → WH-1 + ET-1 + RP-1 (DHWR) → Stacked L1/L2 Wet Wall
   //               + Sanitary Building Sewer Lateral w/ Cleanout to Exterior Manhole MH-1
-  //               + 3" Vent Through Roof (VTR-1)
-  //   (Placed BEFORE Electrical circuits so WH-1 exists when circuited to HP-1!)
+  //               + 3" Vent Through Roof (VTR-1) + 4" Roof Drain & Storm Leader (RD-1)
+  //               + 2 PSI Natural Gas Service GM-1 → GR-1 (7" w.c.) → WH-2 (+ CN-1) & RTU-1 w/ Sediment Traps
+  //   (Placed BEFORE Electrical circuits so WH-1 & RP-1 exist when circuited!)
   // =========================================================================
   const SAN_SYS = { id: "sys-san", kind: "sanitary" as const, name: "Sanitary" };
   const VENT_SYS = { id: "sys-vent", kind: "vent" as const, name: "Vent" };
+  const PLUMB_STORM_SYS = { id: "sys-plumb-storm", kind: "storm" as const, name: "Roof Storm Drainage" };
   const DCW_SYS = { id: "sys-dcw", kind: "domestic_cold_water" as const, name: "Domestic Cold Water" };
   const DHW_SYS = { id: "sys-dhw", kind: "domestic_hot_water" as const, name: "Domestic Hot Water" };
+  const DHWR_SYS = { id: "sys-dhwr", kind: "domestic_hot_water_return" as const, name: "Domestic Hot Water Return" };
+  const GAS_SYS = { id: "sys-gas", kind: "natural_gas" as const, name: "Natural Gas" };
+  const COND_SYS = { id: "sys-cond", kind: "condensate" as const, name: "Condensate" };
 
   const Y_SAN = Y_WET - 1.0 * FT; // 4" under-slab sanitary trunk 12" south of wet wall -> clean horizontal plan separation from vent chase!
-  const Y_VENT = Y_WET - 2 * IN; // 2" vent headers inside 8" wet chase (10" north of SAN, 6" south of lavatory face!)
-  const Y_WATER = 14.0 * FT; // Street domestic water service separated 6'-6" horizontally from sanitary sewer/manhole (IPC 603.2 >= 5'-0"!) & clear of E-W section cut!
+  const Y_VENT = Y_WET; // 2" vent headers centered inside 8" wet chase (clear of DCW/DHW risers & lavatory faces!)
+  const Y_WATER = 12.2 * FT; // Street domestic water service clear of Grid B column (14') & separated 7'-10" horizontally from sanitary sewer/manhole (IPC 603.2 >= 5'-0"!)
   m = runCmds(m, [
-    // Exterior Site Utilities + MEP Room Water Service Entry (buried below 8" slab at -350 mm, ZERO water/sewer clash!)
+    // Exterior Site Utilities + MEP Room Water Service Entry (buried below 8" slab at -350 mm, ZERO water/sewer/column clash!)
     { type: "place_part", partId: "mtr-1", typeId: waterMeter.id, levelId: "L1", position: pt(-6.0 * FT, Y_WATER), offsetMm: -350, mark: "MTR-1", values: { room: "Site West" } },
-    { type: "place_part", partId: "rpz-1", typeId: rpz.id, levelId: "L1", position: pt(1.6 * FT, Y_WATER), offsetMm: Math.round(3.0 * FT), mark: "RPZ-1", values: { room: "MEP / Electrical 101" } },
+    { type: "place_part", partId: "rpz-1", typeId: rpz.id, levelId: "L1", position: pt(1.6 * FT, Y_WATER), offsetMm: Math.round(3.0 * FT), mark: "RPZ-1", values: { room: "MEP / Electrical 101", cut_sheet: "[Watts 009M2-QT RPZ](https://www.watts.com/products/plumbing-flow-control-solutions/backflow-preventers/reduced-pressure-zone-assemblies/009)" } },
     { type: "place_part", partId: "wh-1", typeId: SHOWCASE_WATER_HEATER.id, levelId: "L1", position: pt(13.5 * FT, 18.0 * FT), offsetMm: 0, mark: "WH-1", values: { room: "MEP / Electrical 101", circuit: "HP-1-2,4,6", "electrical.disconnect_required": false, "electrical.local_disconnect": "not_required", "electrical.disconnect_note": "NEC 422.31(B) — lockable breaker in HP-1 within MEP Room 101" } },
-    { type: "place_part", partId: "et-1", typeId: expTank.id, levelId: "L1", position: pt(15.6 * FT, 18.8 * FT), offsetMm: Math.round(4.5 * FT), mark: "ET-1", values: { room: "MEP / Electrical 101" } },
+    // Thermal expansion tank ET-1 positioned west of WH-1 (clear of dhw-riser) and piped cleanly onto the cold-water inlet dcw-wh (IPC 607.3)
+    { type: "place_part", partId: "et-1", typeId: expTank.id, levelId: "L1", position: pt(11.6 * FT, 18.0 * FT), offsetMm: Math.round(3.8 * FT), mark: "ET-1", values: { room: "MEP / Electrical 101" } },
+    // Inline DHW recirculation pump RP-1 piped on sys-dhwr returning from far L2 hot header to WH-1#hwr (circuited on LP-1-15)
+    { type: "place_part", partId: "rp-1", typeId: recircPump.id, levelId: "L1", position: pt(13.5 * FT, 15.5 * FT), offsetMm: 560, rotationDeg: 90, mark: "RP-1", values: { room: "MEP / Electrical 101", cut_sheet: "[Bell & Gossett ecocirc E3](https://www.xylem.com/en-us/products--services/pumps-packaged-pump-systems/pumps/circulator-pumps/ecocirc-e3/)" } },
     { type: "place_part", partId: "mh-1", typeId: manhole.id, levelId: "L1", position: pt(-10.0 * FT, Y_SAN), offsetMm: -545, rotationDeg: 180, mark: "MH-1", values: { room: "Public Sewer" } },
     // Exterior Floor Cleanout at grade (z = 0) with parametric 21" riser neck extending straight down into the sloped 4" sanitary lateral!
     { type: "place_part", partId: "fco-1", typeId: floorCo.id, levelId: "L1", position: pt(-3.0 * FT, Y_SAN), offsetMm: 0, mark: "FCO-1", values: { room: "Exterior West", riser_height: 530 } },
     { type: "place_part", partId: "vtr-1", typeId: vtr.id, levelId: "ROOF", position: pt(9.5 * FT, Y_VENT), offsetMm: Math.round(3.5 * FT), mark: "VTR-1", values: { room: "Upper Roof" } },
+    // Primary 4" Cast-Iron Roof Drain on Upper West Roof routed via clean vertical storm leader out to exterior west storm outfall
+    { type: "place_part", partId: "rd-1", typeId: roofDrain.id, levelId: "ROOF", position: pt(1.6 * FT, 17.5 * FT), offsetMm: -156, mark: "RD-1", values: { room: "Upper Roof", roof_area_sqft: 952 } },
+    // Exterior 2 PSI Commercial Gas Meter GM-1 + Line Gas Regulator GR-1 (2 psi -> 7" w.c.) + Condensing Tankless WH-2 w/ Condensate Neutralizer CN-1 + Sediment Traps ST-1 & ST-2
+    { type: "place_part", partId: "gm-1", typeId: gasMeter.id, levelId: "L1", position: pt(-4.5 * FT, 9.8 * FT), offsetMm: 457, mark: "GM-1", values: { room: "Site West" } },
+    { type: "place_part", partId: "gr-1", typeId: gasReg.id, levelId: "L1", position: pt(4.5 * FT, 9.8 * FT), offsetMm: 2600, mark: "GR-1", values: { room: "MEP / Electrical 101" } },
+    { type: "place_part", partId: "wh-2", typeId: whGasTankless.id, levelId: "L1", position: pt(7.5 * FT, 19.6 * FT), offsetMm: Math.round(4.5 * FT), mark: "WH-2", values: { room: "MEP / Electrical 101", cut_sheet: "[Navien NPE-240A2](https://www.navieninc.com/downloads/npe-a2-spec-sheet)" } },
+    { type: "place_part", partId: "cn-1", typeId: condNeutralizer.id, levelId: "L1", position: pt(9.0 * FT, 19.6 * FT), offsetMm: Math.round(2.5 * FT), mark: "CN-1", values: { room: "MEP / Electrical 101" } },
 
     // Level 1 Restroom 102 commercial fixtures (aligned with vanity-l1 cutouts at 11.0' & 14.6')
     { type: "place_part", partId: "wc-101", typeId: SHOWCASE_WC_COMMERCIAL.id, levelId: "L1", position: pt(4.0 * FT, Y_WET_NORTH_FACE), rotationDeg: 0, mark: "WC-1", values: { room: "Restroom 102", accessible: true } },
@@ -1149,8 +1209,8 @@ function buildShowcase(modelId: string): ModelState {
       from: { kind: "run_branch", segmentId: dcwL1Header() },
       points: [
         { x: Math.round(13.5 * FT) - 102, y: Math.round(20.6 * FT), elevationMm: 520 },
-        { x: Math.round(13.5 * FT) - 102, y: Math.round(19.6 * FT), elevationMm: 520 },
-        { x: Math.round(13.5 * FT) - 102, y: Math.round(19.6 * FT), elevationMm: Math.round(6.0 * FT) },
+        { x: Math.round(13.5 * FT) - 102, y: Math.round(19.0 * FT), elevationMm: 520 },
+        { x: Math.round(13.5 * FT) - 102, y: Math.round(19.0 * FT), elevationMm: Math.round(6.0 * FT) },
         { x: Math.round(13.5 * FT) - 102, y: Math.round(18.0 * FT), elevationMm: Math.round(6.0 * FT) },
       ],
       to: { kind: "part", partId: "wh-1", connectorId: "cw" },
@@ -1178,7 +1238,37 @@ function buildShowcase(modelId: string): ModelState {
 
   const dcwL2NS = findSeg(m, "dcw-riser", (s) => Math.abs(s.start.z - (H1 + 520)) < 20 && Math.abs(s.end.z - (H1 + 520)) < 20 && Math.abs(s.end.y - s.start.y) > 200);
   const dcwL2EW = findSeg(m, "dcw-riser", (s) => Math.abs(s.start.z - (H1 + 520)) < 20 && Math.abs(s.end.x - s.start.x) > 500);
+  const dcwWhTopHoriz = findSeg(m, "dcw-wh", (s) => Math.abs(s.start.z - Math.round(6.0 * FT)) < 20 && Math.abs(s.end.z - Math.round(6.0 * FT)) < 20 && Math.abs(s.end.y - s.start.y) > 200);
   m = runCmds(m, [
+    // Configure municipal hydrant flow test + design limits on sys-dcw for live Water Pressure Loss Calc Sheet on P-101
+    {
+      type: "set_system_design",
+      systemId: "sys-dcw",
+      design: {
+        pipe: {
+          supplyPressurePsi: 65,
+          minFixturePressurePsi: 25,
+          demandCurve: "ipc_e_valve",
+        },
+      },
+    },
+    // Pipe thermal expansion tank ET-1 cleanly onto the cold-water water-heater inlet (IPC 607.3 — zero clash, connected on 3D & Water Riser!)
+    {
+      type: "route_run",
+      idPrefix: "dcw-et1",
+      levelId: "L1",
+      domain: "pipe",
+      size: copper(0.75),
+      elevationMm: Math.round(6.0 * FT),
+      system: DCW_SYS,
+      from: { kind: "run_branch", segmentId: dcwWhTopHoriz },
+      points: [
+        { x: Math.round(13.5 * FT) - 102, y: Math.round(18.6 * FT), elevationMm: Math.round(6.0 * FT) },
+        { x: Math.round(11.6 * FT), y: Math.round(18.6 * FT), elevationMm: Math.round(6.0 * FT) },
+        { x: Math.round(11.6 * FT), y: Math.round(18.0 * FT), elevationMm: Math.round(6.0 * FT) },
+      ],
+      to: { kind: "part", partId: "et-1", connectorId: "cw" },
+    },
     {
       type: "route_run",
       idPrefix: "dcw-wc3",
@@ -1258,9 +1348,9 @@ function buildShowcase(modelId: string): ModelState {
       system: DHW_SYS,
       from: { kind: "run_branch", segmentId: dhwL1NS },
       points: [
-        { x: Math.round(13.5 * FT) + 102, y: Math.round(19.4 * FT), elevationMm: Math.round(6.0 * FT) },
-        { x: Math.round(11.0 * FT) - 100, y: Math.round(19.4 * FT), elevationMm: Math.round(6.0 * FT) },
-        { x: Math.round(11.0 * FT) - 100, y: Math.round(19.4 * FT), elevationMm: 700 },
+        { x: Math.round(13.5 * FT) + 102, y: Math.round(19.65 * FT), elevationMm: Math.round(6.0 * FT) },
+        { x: Math.round(11.0 * FT) - 100, y: Math.round(19.65 * FT), elevationMm: Math.round(6.0 * FT) },
+        { x: Math.round(11.0 * FT) - 100, y: Math.round(19.65 * FT), elevationMm: 700 },
       ],
       to: { kind: "part", partId: "lav-101", connectorId: "hw" },
     },
@@ -1313,6 +1403,37 @@ function buildShowcase(modelId: string): ModelState {
         { x: Math.round(14.6 * FT) - 100, y: Math.round(20.1 * FT), elevationMm: H1 + 700 },
       ],
       to: { kind: "part", partId: "lav-202", connectorId: "hw" },
+    },
+
+    // ---- DOMESTIC HOT WATER RECIRCULATION (DHWR) LOOP — Far L2 Return Header → Vertical Drop → Inline Pump RP-1 → WH-1#hwr ----
+    {
+      type: "route_run",
+      idPrefix: "dhwr-return",
+      levelId: "L1",
+      domain: "pipe",
+      size: copper(0.75),
+      elevationMm: H1 + 700,
+      system: DHWR_SYS,
+      points: [
+        { x: Math.round(11.4 * FT), y: Math.round(19.0 * FT), elevationMm: H1 + 700 },
+        { x: Math.round(12.0 * FT), y: Math.round(19.0 * FT), elevationMm: H1 + 700 },
+        { x: Math.round(12.0 * FT), y: Math.round(19.0 * FT), elevationMm: 560 },
+        { x: Math.round(12.0 * FT), y: Math.round(14.3 * FT), elevationMm: 560 },
+        { x: Math.round(13.5 * FT), y: Math.round(14.3 * FT), elevationMm: 560 },
+      ],
+      to: { kind: "part", partId: "rp-1", connectorId: "in" },
+    },
+    {
+      type: "route_run",
+      idPrefix: "dhwr-discharge",
+      levelId: "L1",
+      domain: "pipe",
+      size: copper(0.75),
+      elevationMm: 560,
+      system: DHWR_SYS,
+      from: { kind: "part", partId: "rp-1", connectorId: "out" },
+      points: [],
+      to: { kind: "part", partId: "wh-1", connectorId: "hwr" },
     },
 
     // ---- SANITARY DWV (4" Sloped Building Drain + Exterior Sewer Lateral to MH-1 + 3" L2 Stack + Fixture Branches) ----
@@ -1597,6 +1718,171 @@ function buildShowcase(modelId: string): ModelState {
       points: [pt(11.0 * FT, Y_VENT), pt(11.0 * FT, Y_WET_NORTH_FACE + 50)],
       to: { kind: "part", partId: "lav-201", connectorId: "v" },
     },
+
+    // ---- STORM ROOF DRAINAGE (4" Roof Drain RD-1 → Vertical Cast-Iron Leader → Exterior West Storm Outfall) ----
+    {
+      type: "route_run",
+      idPrefix: "storm-rd1",
+      levelId: "L1",
+      domain: "pipe",
+      size: castIron(4),
+      elevationMm: -600,
+      slopeInPerFt: 0.125,
+      system: PLUMB_STORM_SYS,
+      from: { kind: "part", partId: "rd-1", connectorId: "out" },
+      points: [
+        { x: Math.round(1.6 * FT), y: Math.round(17.5 * FT), elevationMm: -600 },
+        { x: Math.round(-10.0 * FT), y: Math.round(17.5 * FT), elevationMm: -600 },
+      ],
+    },
+
+    // ---- CONDENSATE DRAINAGE (Condensing Tankless WH-2 → Calcium Carbonate Neutralizer CN-1 → Indirect Floor Drain Stub) ----
+    {
+      type: "route_run",
+      idPrefix: "cond-wh2",
+      levelId: "L1",
+      domain: "pipe",
+      size: pvc(0.75),
+      elevationMm: Math.round(2.5 * FT),
+      system: COND_SYS,
+      from: { kind: "part", partId: "wh-2", connectorId: "condensate" },
+      points: [
+        { x: Math.round(7.5 * FT) + 45, y: Math.round(19.6 * FT), elevationMm: Math.round(2.5 * FT) },
+      ],
+      to: { kind: "part", partId: "cn-1", connectorId: "in" },
+    },
+    {
+      type: "route_run",
+      idPrefix: "cond-cn1-out",
+      levelId: "L1",
+      domain: "pipe",
+      size: pvc(0.75),
+      elevationMm: Math.round(2.5 * FT),
+      system: COND_SYS,
+      from: { kind: "part", partId: "cn-1", connectorId: "out" },
+      points: [
+        { x: Math.round(10.25 * FT), y: Math.round(19.6 * FT), elevationMm: Math.round(2.5 * FT) },
+        { x: Math.round(10.25 * FT), y: Math.round(19.6 * FT), elevationMm: 150 },
+      ],
+    },
+
+    // ---- FUEL GAS (2 PSI Black-Steel Service GM-1 → Line Regulator GR-1 (2 psi -> 7" w.c.) → WH-2 & Rooftop RTU-1 w/ Sediment Traps!) ----
+    {
+      type: "route_run",
+      idPrefix: "gas-street",
+      levelId: "L1",
+      domain: "pipe",
+      size: blackSteel(1.25),
+      system: GAS_SYS,
+      points: [pt(-9.0 * FT, 9.8 * FT)],
+      to: { kind: "part", partId: "gm-1", connectorId: "in" },
+    },
+    {
+      type: "route_run",
+      idPrefix: "gas-main-2psi",
+      levelId: "L1",
+      domain: "pipe",
+      size: blackSteel(1.25),
+      system: GAS_SYS,
+      from: { kind: "part", partId: "gm-1", connectorId: "out" },
+      points: [
+        { x: Math.round(1.0 * FT), y: Math.round(9.8 * FT), elevationMm: 457 + 18 * IN * 0.92 },
+        { x: Math.round(1.0 * FT), y: Math.round(9.8 * FT), elevationMm: 2600 },
+      ],
+      to: { kind: "part", partId: "gr-1", connectorId: "in" },
+    },
+    {
+      type: "route_run",
+      idPrefix: "gas-7in-hdr",
+      levelId: "L1",
+      domain: "pipe",
+      size: blackSteel(1.25),
+      elevationMm: 2600,
+      system: GAS_SYS,
+      from: { kind: "part", partId: "gr-1", connectorId: "out" },
+      points: [
+        { x: Math.round(12.0 * FT), y: Math.round(9.8 * FT), elevationMm: 2600 },
+        { x: Math.round(12.0 * FT), y: Math.round(8.2 * FT), elevationMm: 2600 },
+        { x: Math.round(12.0 * FT), y: Math.round(8.2 * FT), elevationMm: 3000 },
+        { x: Math.round(35.5 * FT), y: Math.round(8.2 * FT), elevationMm: 3000 },
+        { x: Math.round(35.5 * FT), y: Math.round(8.2 * FT), elevationMm: H1 + 560 },
+        { x: Math.round(48.5 * FT) - 550, y: Math.round(8.2 * FT), elevationMm: H1 + 560 },
+      ],
+      to: { kind: "part", partId: "rtu-1", connectorId: "g" },
+    },
+    {
+      type: "set_system_design",
+      systemId: "sys-gas",
+      design: {
+        pipe: {
+          gasType: "natural",
+          inletPressureInWc: 55.4,
+          allowableDropInWc: 27.7,
+          gasSizing: "longest_run",
+        },
+      },
+    },
+  ]);
+
+  const gas7inMepSeg = findSeg(m, "gas-7in-hdr", (s) => Math.abs(s.start.z - 2600) < 20 && Math.abs(s.end.x - s.start.x) > 500);
+  const gasRtuRiserSeg = findSeg(m, "gas-7in-hdr", (s) => Math.abs(s.end.z - s.start.z) > 500);
+  m = runCmds(m, [
+    {
+      type: "route_run",
+      idPrefix: "gas-wh2",
+      levelId: "L1",
+      domain: "pipe",
+      size: blackSteel(1),
+      elevationMm: 2600,
+      system: GAS_SYS,
+      from: { kind: "run_branch", segmentId: gas7inMepSeg },
+      points: [
+        { x: Math.round(7.5 * FT) - 45, y: Math.round(9.8 * FT), elevationMm: 2600 },
+        { x: Math.round(7.5 * FT) - 45, y: Math.round(18.6 * FT), elevationMm: 2600 },
+        { x: Math.round(7.5 * FT) - 45, y: Math.round(18.6 * FT), elevationMm: 1000 },
+        { x: Math.round(7.5 * FT) - 45, y: Math.round(19.6 * FT), elevationMm: 1000 },
+      ],
+      to: { kind: "part", partId: "wh-2", connectorId: "g" },
+    },
+    // Inline sediment trap / drip leg on vertical riser to RTU-1 (IFGC 408.4)
+    { type: "place_run_accessory", accessoryId: "drip-rtu1", segmentId: gasRtuRiserSeg, atMm: 330, family: "pipe.gas.drip_leg" },
+  ]);
+
+  const gasWh2DropSeg = findSeg(m, "gas-wh2", (s) => Math.abs(s.end.z - s.start.z) > 500);
+  m = runCmds(m, [
+    // Inline sediment trap / drip leg on vertical drop to WH-2 (IFGC 408.4)
+    { type: "place_run_accessory", accessoryId: "drip-wh2", segmentId: gasWh2DropSeg, atMm: 1200, family: "pipe.gas.drip_leg" },
+    // Category IV condensing flue & combustion air intake from WH-2 out west exterior wall (IFGC 501.2 / 304)
+    {
+      type: "route_run",
+      idPrefix: "wh2-flue",
+      levelId: "L1",
+      domain: "duct",
+      size: { shape: "round", diameter: 3 * IN },
+      elevationMm: 3060,
+      system: EA_SYS,
+      from: { kind: "part", partId: "wh-2", connectorId: "flue" },
+      points: [
+        { x: Math.round(7.5 * FT) - 85, y: Math.round(19.6 * FT), elevationMm: 3060 },
+        { x: Math.round(7.5 * FT) - 85, y: Math.round(16.8 * FT), elevationMm: 3060 },
+        { x: Math.round(-0.6 * FT), y: Math.round(16.8 * FT), elevationMm: 3060 },
+      ],
+    },
+    {
+      type: "route_run",
+      idPrefix: "wh2-intake",
+      levelId: "L1",
+      domain: "duct",
+      size: { shape: "round", diameter: 3 * IN },
+      elevationMm: 2950,
+      system: { id: "sys-oa", kind: "outside_air" as const, name: "Combustion & Outdoor Air" },
+      from: { kind: "part", partId: "wh-2", connectorId: "intake" },
+      points: [
+        { x: Math.round(7.5 * FT) + 85, y: Math.round(19.6 * FT), elevationMm: 2950 },
+        { x: Math.round(7.5 * FT) + 85, y: Math.round(15.8 * FT), elevationMm: 2950 },
+        { x: Math.round(-0.6 * FT), y: Math.round(15.8 * FT), elevationMm: 2950 },
+      ],
+    },
   ]);
 
   // =========================================================================
@@ -1786,12 +2072,27 @@ function buildShowcase(modelId: string): ModelState {
     { type: "create_service_link", linkId: "ckt-lp-ef1", sourceId: "lp-1", positions: [7], electrical: { ratingA: 15 }, description: "EF-1 (Greenheck CSP-B150 Indoor Inline Exhaust Fan)", members: [{ elementId: "ef-1" }] },
     { type: "create_service_link", linkId: "ckt-lp-l2", sourceId: "lp-1", positions: [9], electrical: { ratingA: 20 }, description: "Level 2 Conference Floor Box, Mezzanine & Restroom 202 Receptacles", members: [{ elementId: "rec-201" }, { elementId: "rec-202" }, { elementId: "rec-203" }, { elementId: "fb-conf-1" }] },
     { type: "create_service_link", linkId: "ckt-lp-240v", sourceId: "lp-1", positions: [11, 13], electrical: { ratingA: 20 }, description: "Studio 240V NEMA 6-20R, Twist-Lock & Hardwired Connection [BL]", members: [{ elementId: "rec-240v" }, { elementId: "rec-tl" }, { elementId: "hw-mep-1" }] },
+    { type: "create_service_link", linkId: "ckt-lp-rp1", sourceId: "lp-1", positions: [15], electrical: { ratingA: 15 }, description: "RP-1 (DHW Recirculation Pump — Inline Bronze)", members: [{ elementId: "rp-1" }] },
   ]);
 
   // =========================================================================
-  // 7. SAVED 2D / 3D VIEWS, SCHEDULES, LIVE DIAGRAMS & 12-SHEET ARCH D SET
+  // 7. SAVED 2D / 3D VIEWS, SCHEDULES, LIVE DIAGRAMS & ARCH D PERMIT SET
   // =========================================================================
   const plumbingScheduleDef = { ...PLUMBING_FIXTURE_SCHEDULE, filters: [] };
+  const waterHeaterScheduleDef = {
+    ...WATER_HEATER_SCHEDULE,
+    columns: [
+      ...WATER_HEATER_SCHEDULE.columns,
+      { id: "cut_sheet", kind: "parameter" as const, path: "cut_sheet", heading: "CUT SHEET", hideWhenEmpty: true },
+    ],
+  };
+  const pumpScheduleDef = {
+    ...PUMP_SCHEDULE,
+    columns: [
+      ...PUMP_SCHEDULE.columns,
+      { id: "cut_sheet", kind: "parameter" as const, path: "cut_sheet", heading: "CUT SHEET", hideWhenEmpty: true },
+    ],
+  };
 
   m = runCmds(m, [
     // ---- First-Class View Templates (Kernel Bedrock — live-bound across discipline plans) ----
@@ -1858,11 +2159,20 @@ function buildShowcase(modelId: string): ModelState {
     {
       type: "create_view_template",
       viewTemplateId: "vt-plumb-dwv",
-      name: "Plumb — Sanitary & Vent Plan",
-      description: "Plumbing sanitary & vent DWV plan hiding pressurized water and non-plumbing trades.",
+      name: "Plumb — Sanitary, Vent & Storm Plan",
+      description: "Plumbing sanitary, vent & storm DWV plan hiding pressurized water, gas, and non-plumbing trades.",
       viewTypes: ["floor_plan"],
       locks: ["discipline", "category_overrides"],
       props: { discipline: "plumbing", categoryOverrides: PLUMB_DWV_HIDE },
+    },
+    {
+      type: "create_view_template",
+      viewTemplateId: "vt-plumb-gas",
+      name: "Plumb — Fuel Gas Plan",
+      description: "Plumbing fuel gas plan hiding domestic water, DWV, and non-plumbing trades.",
+      viewTypes: ["floor_plan"],
+      locks: ["discipline", "category_overrides"],
+      props: { discipline: "plumbing", categoryOverrides: PLUMB_GAS_HIDE },
     },
 
     // ---- Saved 3D Perspective Views (Hero Exterior + NW MEP Cutaway, with fovDeg!) ----
@@ -2409,7 +2719,38 @@ function buildShowcase(modelId: string): ModelState {
     { type: "place_viewport", viewportId: "vp-sched-photometrics", sheetId: "sheet-e203", viewId: "view-sched-photometrics", center: { x: 635, y: 185 } },
     { type: "place_viewport", viewportId: "vp-sched-egress", sheetId: "sheet-e203", viewId: "view-sched-egress", center: { x: 635, y: 430 } },
 
-    // ---- Plumbing Views & Sheets (P-101 Overall Water + Enlarged Wet Core + Riser + Schedule; P-102 Overall DWV + Enlarged DWV + Riser + Isometric) ----
+    // ---- Flagship 5-Sheet Commercial Plumbing Set (P-001 Notes & Legend; P-101 Water/DHWR/Calc/Schedules; P-102 DWV/Storm/Iso; P-103 Fuel Gas/Riser/IFGC Calc; P-501 Linked Details) ----
+    { type: "create_sheet", sheetId: "sheet-p001", number: "P-001", name: "PLUMBING GENERAL NOTES, SYMBOLS & LEGEND", discipline: "plumbing", group: "Plumbing", sortOrder: 600 },
+    {
+      type: "create_text_note",
+      itemId: "note-p001-general",
+      ownerId: "sheet-p001",
+      at: { x: 45, y: 55 },
+      width: 340,
+      paragraphs: standardNoteParagraphs("plumbing-general", {
+        extraNotes: [
+          "PROVIDE ASSE 1013 REDUCED PRESSURE ZONE (RPZ) BACKFLOW PREVENTER AT BUILDING WATER SERVICE ENTRY WITH FULL-SIZE AIR-GAP FUNNEL PIPED INDIRECTLY TO FLOOR DRAIN (IPC 608.15.2).",
+          "PROVIDE PRECHARGED THERMAL EXPANSION TANK (ET-1) ON COLD WATER INLET OF CLOSED HOT WATER SYSTEM SET TO STATIC STREET PRESSURE (IPC 607.3).",
+          "INSTALL INLINE BRONZE RECIRCULATION PUMP (RP-1) AND BALANCING VALVE ON DHWR RETURN LOOP; INSULATE ALL HW & HWR PIPING PER IECC C404.4.",
+        ],
+      }),
+    },
+    {
+      type: "create_text_note",
+      itemId: "note-p001-gas",
+      ownerId: "sheet-p001",
+      at: { x: 420, y: 55 },
+      width: 350,
+      paragraphs: [
+        { runs: [{ text: "FUEL GAS & TESTING NOTES (IFGC 2021 / IPC 2021)", bold: true }] },
+        { runs: [{ text: "1. FUEL GAS PIPING SHALL BE SCHEDULE 40 ASTM A53 BLACK STEEL WITH MALLEABLE IRON THREADED FITTINGS (2\" & SMALLER) OR WELDED FITTINGS (2-1/2\" & LARGER)." }] },
+        { runs: [{ text: "2. MEDIUM-PRESSURE 2 PSI GAS MAIN FROM GM-1 TO LINE REGULATOR GR-1 SHALL BE CLEARLY LABELED \"2 PSI GAS\" EVERY 5'-0\" PER IFGC 401.5; LINE REGULATOR GR-1 REDUCES PRESSURE TO 7\" W.C. WITH INTEGRAL VENT LIMITER." }] },
+        { runs: [{ text: "3. PROVIDE FULL-SIZE SEDIMENT TRAP (DRIP LEG, MIN 3\" LONG) AND MANUAL SHUTOFF VALVE IMMEDIATELY UPSTREAM OF EACH AUTOMATIC GAS APPLIANCE (WH-2, RTU-1) PER IFGC 408.4." }] },
+        { runs: [{ text: "4. ROUTE CONDENSING WATER HEATER (WH-2) ACIDIC CONDENSATE THROUGH INLINE CALCIUM CARBONATE NEUTRALIZER (CN-1) PRIOR TO INDIRECT SANITARY DRAIN DISCHARGE." }] },
+        { runs: [{ text: "5. PRESSURE-TEST 2 PSI GAS PIPING AT MINIMUM 10 PSIG FOR 30 MINUTES AND 7\" W.C. PIPING AT MINIMUM 3 PSIG FOR 15 MINUTES PRIOR TO CONCEALMENT (IFGC 406.4)." }] },
+      ],
+    },
+
     {
       type: "create_view",
       viewId: "view-plumb-water-l1",
@@ -2424,14 +2765,14 @@ function buildShowcase(modelId: string): ModelState {
       viewId: "view-plumb-water-enlarged",
       name: "Enlarged L1 — Water Core",
       viewType: "floor_plan",
-      crop: { min: pt(-0.5 * FT, 11.5 * FT), max: pt(22.5 * FT, D_ALL + 1.0 * FT) },
+      crop: { min: pt(-0.5 * FT, 11.0 * FT), max: pt(22.5 * FT, D_ALL + 1.0 * FT) },
       props: {
         level: "Level 1",
         scale: 48,
         viewTemplateId: "vt-plumb-water",
         cropPolygon: [
-          pt(-0.5 * FT, 11.5 * FT),
-          pt(22.5 * FT, 11.5 * FT),
+          pt(-0.5 * FT, 11.0 * FT),
+          pt(22.5 * FT, 11.0 * FT),
           pt(22.5 * FT, 20.0 * FT),
           pt(19.5 * FT, 20.0 * FT),
           pt(19.5 * FT, D_ALL + 1.0 * FT),
@@ -2445,13 +2786,13 @@ function buildShowcase(modelId: string): ModelState {
       itemId: "co-water-l1",
       ownerId: "view-plumb-water-l1",
       shape: "callout",
-      points: [pt(-0.5 * FT, 11.5 * FT), pt(22.5 * FT, D_ALL + 1.0 * FT), pt(25.0 * FT, D_ALL + 2.5 * FT)],
+      points: [pt(-0.5 * FT, 11.0 * FT), pt(22.5 * FT, D_ALL + 1.0 * FT), pt(25.0 * FT, D_ALL + 2.5 * FT)],
       callout: {
         viewId: "view-plumb-water-enlarged",
         showLabel: false,
         boundary: [
-          pt(-0.5 * FT, 11.5 * FT),
-          pt(22.5 * FT, 11.5 * FT),
+          pt(-0.5 * FT, 11.0 * FT),
+          pt(22.5 * FT, 11.0 * FT),
           pt(22.5 * FT, 20.0 * FT),
           pt(19.5 * FT, 20.0 * FT),
           pt(19.5 * FT, D_ALL + 1.0 * FT),
@@ -2470,22 +2811,39 @@ function buildShowcase(modelId: string): ModelState {
     {
       type: "create_view",
       viewId: "view-plumb-riser-water",
-      name: "Domestic Water Riser Diagram",
+      name: "Domestic Water & DHWR Riser Diagram",
       viewType: "detail",
-      props: { discipline: "plumbing", diagram: { kind: "plumbing_riser", hints: { systemKinds: ["domestic_cold_water", "domestic_hot_water"] } } },
+      props: { discipline: "plumbing", diagram: { kind: "plumbing_riser", hints: { systemKinds: ["domestic_cold_water", "domestic_hot_water", "domestic_hot_water_return"] } } },
     },
     { type: "create_view", viewId: "view-sched-plumb", name: "Plumbing Fixture Schedule", viewType: "schedule", props: { discipline: "plumbing", scheduleV2: plumbingScheduleDef } },
-    { type: "create_sheet", sheetId: "sheet-p101", number: "P-101", name: "DOMESTIC WATER PLANS & RISER", discipline: "plumbing", group: "Plumbing", sortOrder: 601 },
-    { type: "place_viewport", viewportId: "vp-water-l1", sheetId: "sheet-p101", viewId: "view-plumb-water-l1", center: { x: 185, y: 140 } },
-    { type: "place_viewport", viewportId: "vp-water-enlarged", sheetId: "sheet-p101", viewId: "view-plumb-water-enlarged", center: { x: 165, y: 335 } },
-    { type: "place_viewport", viewportId: "vp-water-l2", sheetId: "sheet-p101", viewId: "view-plumb-water-l2", center: { x: 165, y: 500 } },
-    { type: "place_viewport", viewportId: "vp-riser-water", sheetId: "sheet-p101", viewId: "view-plumb-riser-water", center: { x: 615, y: 185 } },
-    { type: "place_viewport", viewportId: "vp-sched-plumb", sheetId: "sheet-p101", viewId: "view-sched-plumb", center: { x: 590, y: 445 } },
+    { type: "create_view", viewId: "view-sched-wh", name: "Water Heater Schedule", viewType: "schedule", props: { discipline: "plumbing", scheduleV2: waterHeaterScheduleDef } },
+    { type: "create_view", viewId: "view-sched-pumps", name: "Plumbing Pump Schedule", viewType: "schedule", props: { discipline: "plumbing", scheduleV2: pumpScheduleDef } },
+    { type: "create_sheet", sheetId: "sheet-p101", number: "P-101", name: "DOMESTIC WATER PLANS, RISER & SCHEDULES", discipline: "plumbing", group: "Plumbing", sortOrder: 601 },
+    { type: "place_viewport", viewportId: "vp-water-l1", sheetId: "sheet-p101", viewId: "view-plumb-water-l1", center: { x: 145, y: 100 } },
+    { type: "place_viewport", viewportId: "vp-water-enlarged", sheetId: "sheet-p101", viewId: "view-plumb-water-enlarged", center: { x: 145, y: 265 } },
+    { type: "place_viewport", viewportId: "vp-water-l2", sheetId: "sheet-p101", viewId: "view-plumb-water-l2", center: { x: 145, y: 420 } },
+    { type: "place_viewport", viewportId: "vp-riser-water", sheetId: "sheet-p101", viewId: "view-plumb-riser-water", center: { x: 600, y: 155 } },
+    { type: "place_viewport", viewportId: "vp-sched-plumb", sheetId: "sheet-p101", viewId: "view-sched-plumb", center: { x: 605, y: 365 } },
+    { type: "place_viewport", viewportId: "vp-sched-wh", sheetId: "sheet-p101", viewId: "view-sched-wh", center: { x: 600, y: 460 } },
+    { type: "place_viewport", viewportId: "vp-sched-pumps", sheetId: "sheet-p101", viewId: "view-sched-pumps", center: { x: 600, y: 525 } },
+    {
+      type: "add_field_block",
+      itemId: "calc-water-loss",
+      sheetId: "sheet-p101",
+      at: { x: 255, y: 320 },
+      textSize: 1.9,
+      block: {
+        template: "Domestic Water Pressure Loss Calculation (IPC Appendix E)",
+        subjectId: "sys-dcw",
+        title: "WATER PRESSURE LOSS CALCULATION",
+        calc: { template: WATER_PRESSURE_LOSS_TEMPLATE_ID },
+      },
+    },
 
     {
       type: "create_view",
       viewId: "view-plumb-dwv-l1",
-      name: "Level 1 — Overall Sanitary & Vent Plan",
+      name: "Level 1 — Overall Sanitary, Vent & Storm Plan",
       viewType: "floor_plan",
       crop: { min: pt(-13 * FT, -2 * FT), max: pt(W_ALL + 2 * FT, D_ALL + 3 * FT) },
       props: { level: "Level 1", scale: 96, viewTemplateId: "vt-plumb-dwv" },
@@ -2503,31 +2861,80 @@ function buildShowcase(modelId: string): ModelState {
     {
       type: "create_view",
       viewId: "view-plumb-dwv-l2",
-      name: "Level 2 — Sanitary & Vent Plan",
+      name: "Level 2 — Sanitary, Vent & Storm Plan",
       viewType: "floor_plan",
-      crop: { min: pt(-2 * FT, 18.5 * FT), max: pt(21 * FT, D_ALL + 2 * FT) },
+      crop: { min: pt(-2 * FT, 16.5 * FT), max: pt(21 * FT, D_ALL + 2 * FT) },
       props: { level: "Level 2", scale: 48, viewTemplateId: "vt-plumb-dwv" },
     },
     {
       type: "create_view",
       viewId: "view-plumb-riser-dwv",
-      name: "Sanitary & Vent Riser Diagram",
+      name: "Sanitary, Vent & Storm Riser Diagram",
       viewType: "detail",
-      props: { discipline: "plumbing", diagram: { kind: "plumbing_riser", hints: { systemKinds: ["sanitary", "vent"] } } },
+      props: { discipline: "plumbing", diagram: { kind: "plumbing_riser", hints: { systemKinds: ["sanitary", "vent", "storm"] } } },
     },
     {
       type: "create_view",
       viewId: "view-plumb-iso",
-      name: "Sanitary & Vent Isometric Diagram",
+      name: "Sanitary, Vent & Storm Isometric Diagram",
       viewType: "detail",
-      props: { discipline: "plumbing", diagram: { kind: "plumbing_isometric", hints: { systemKinds: ["sanitary", "vent"] } } },
+      props: { discipline: "plumbing", diagram: { kind: "plumbing_isometric", hints: { systemKinds: ["sanitary", "vent", "storm"] } } },
     },
-    { type: "create_sheet", sheetId: "sheet-p102", number: "P-102", name: "SANITARY & VENT PLANS & ISO", discipline: "plumbing", group: "Plumbing", sortOrder: 602 },
-    { type: "place_viewport", viewportId: "vp-dwv-l1", sheetId: "sheet-p102", viewId: "view-plumb-dwv-l1", center: { x: 185, y: 140 } },
-    { type: "place_viewport", viewportId: "vp-dwv-enlarged", sheetId: "sheet-p102", viewId: "view-plumb-dwv-enlarged", center: { x: 165, y: 335 } },
-    { type: "place_viewport", viewportId: "vp-dwv-l2", sheetId: "sheet-p102", viewId: "view-plumb-dwv-l2", center: { x: 165, y: 500 } },
-    { type: "place_viewport", viewportId: "vp-riser-dwv", sheetId: "sheet-p102", viewId: "view-plumb-riser-dwv", center: { x: 615, y: 175 } },
-    { type: "place_viewport", viewportId: "vp-plumb-iso", sheetId: "sheet-p102", viewId: "view-plumb-iso", center: { x: 605, y: 435 } },
+    { type: "create_sheet", sheetId: "sheet-p102", number: "P-102", name: "SANITARY, VENT & STORM PLANS, RISER & ISO", discipline: "plumbing", group: "Plumbing", sortOrder: 602 },
+    { type: "place_viewport", viewportId: "vp-dwv-l1", sheetId: "sheet-p102", viewId: "view-plumb-dwv-l1", center: { x: 145, y: 100 } },
+    { type: "place_viewport", viewportId: "vp-dwv-enlarged", sheetId: "sheet-p102", viewId: "view-plumb-dwv-enlarged", center: { x: 145, y: 270 } },
+    { type: "place_viewport", viewportId: "vp-dwv-l2", sheetId: "sheet-p102", viewId: "view-plumb-dwv-l2", center: { x: 145, y: 450 } },
+    { type: "place_viewport", viewportId: "vp-riser-dwv", sheetId: "sheet-p102", viewId: "view-plumb-riser-dwv", center: { x: 560, y: 165 } },
+    { type: "place_viewport", viewportId: "vp-plumb-iso", sheetId: "sheet-p102", viewId: "view-plumb-iso", center: { x: 560, y: 460 } },
+
+    // ---- Sheet P-103: Fuel Gas Plan, ASPE Fuel Gas Riser, Gas Equipment & Connection Schedules, and Live IFGC Gas Sizing Calc Sheet ----
+    {
+      type: "create_view",
+      viewId: "view-plumb-gas-l1",
+      name: "Level 1 & Roof — Fuel Gas Plan",
+      viewType: "floor_plan",
+      crop: { min: pt(-12 * FT, -2 * FT), max: pt(W_ALL + 2 * FT, D_ALL + 3 * FT) },
+      props: { level: "Level 1", scale: 96, viewTopMm: Math.round(16 * FT), viewTemplateId: "vt-plumb-gas" },
+    },
+    {
+      type: "create_view",
+      viewId: "view-plumb-riser-gas",
+      name: "ASPE Fuel Gas Riser Diagram",
+      viewType: "detail",
+      props: { discipline: "plumbing", diagram: { kind: "plumbing_riser", hints: { systemKinds: ["natural_gas"] } } },
+    },
+    {
+      type: "create_view",
+      viewId: "view-sched-gas-equip",
+      name: "Gas Equipment Schedule",
+      viewType: "schedule",
+      props: { discipline: "plumbing", formSchedule: { kind: "gas_equipment", template: builtinFormTemplate("gas_equipment") } },
+    },
+    {
+      type: "create_view",
+      viewId: "view-sched-gas-conn",
+      name: "Gas Connection Schedule",
+      viewType: "schedule",
+      props: { discipline: "plumbing", formSchedule: { kind: "gas_connections", template: builtinFormTemplate("gas_connections") } },
+    },
+    { type: "create_sheet", sheetId: "sheet-p103", number: "P-103", name: "FUEL GAS PLAN, RISER & SCHEDULES", discipline: "plumbing", group: "Plumbing", sortOrder: 603 },
+    { type: "place_viewport", viewportId: "vp-gas-l1", sheetId: "sheet-p103", viewId: "view-plumb-gas-l1", center: { x: 205, y: 145 } },
+    { type: "place_viewport", viewportId: "vp-riser-gas", sheetId: "sheet-p103", viewId: "view-plumb-riser-gas", center: { x: 600, y: 155 } },
+    { type: "place_viewport", viewportId: "vp-sched-gas-equip", sheetId: "sheet-p103", viewId: "view-sched-gas-equip", center: { x: 230, y: 365 } },
+    { type: "place_viewport", viewportId: "vp-sched-gas-conn", sheetId: "sheet-p103", viewId: "view-sched-gas-conn", center: { x: 230, y: 500 } },
+    {
+      type: "add_field_block",
+      itemId: "calc-gas-sizing",
+      sheetId: "sheet-p103",
+      at: { x: 465, y: 325 },
+      textSize: 1.9,
+      block: {
+        template: "IFGC Fuel Gas Pipe Sizing Calculation (2 PSI / 7\" w.c.)",
+        subjectId: "sys-gas",
+        title: "IFGC GAS PIPE SIZING CALCULATION",
+        calc: { template: GAS_SIZING_TEMPLATE_ID },
+      },
+    },
 
     // ---- New-feature annotations & locks showcase ----
     // Multi-line leader callouts (auto-snapped leader landing + always-draggable elbow grip)

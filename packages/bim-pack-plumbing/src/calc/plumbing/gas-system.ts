@@ -182,6 +182,29 @@ export function sizeGasSystem(model: ModelState, systemId: string, ifgc: IfgcEdi
       const inches = inchesOfLabel(s.size);
       const seg = zone.segments.find((x) => x.id === s.id);
       if (inches === null) {
+        const eqId = s.size ? /^([\d.]+)\s*in\.\s*ID$/i.exec(s.size) : null;
+        if (eqId) {
+          // Sized by IFGC 402.4 Equation 4-1/4-2 when no capacity table is bundled:
+          // map required inside diameter to the smallest standard Sch 40 nominal pipe >= required ID.
+          const reqId = Number(eqId[1]);
+          const sch40Sizes = [
+            { nom: 0.5, id: 0.622 },
+            { nom: 0.75, id: 0.824 },
+            { nom: 1, id: 1.049 },
+            { nom: 1.25, id: 1.38 },
+            { nom: 1.5, id: 1.61 },
+            { nom: 2, id: 2.067 },
+            { nom: 2.5, id: 2.469 },
+            { nom: 3, id: 3.068 },
+            { nom: 4, id: 4.026 },
+          ];
+          const fit = sch40Sizes.find((z) => z.id >= reqId - 1e-6);
+          if (fit) {
+            const prev = need.get(s.elementId);
+            need.set(s.elementId, { inches: Math.max(prev?.inches ?? 0, fit.nom), zoneIds: new Set([...(prev?.zoneIds ?? []), zone.id]), label: s.label, current: seg?.nominalIn ?? null });
+            continue;
+          }
+        }
         noFit.add(s.elementId);
         continue;
       }

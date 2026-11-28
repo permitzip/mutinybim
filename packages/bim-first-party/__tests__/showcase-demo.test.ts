@@ -228,7 +228,7 @@ describe("createShowcaseDemoModel", () => {
     }
   });
 
-  it("renders all 23 Arch D sheets cleanly (including Civil C-101) with no unresolved callout references and verified passing normal + egress photometrics", () => {
+  it("renders all 26 Arch D sheets cleanly (including Civil C-101 and flagship 5-sheet Plumbing P-001..P-501) with no unresolved callout references and verified passing normal + egress photometrics", () => {
     const sheets = active.filter((el): el is Extract<typeof el, { kind: "sheet" }> => el.kind === "sheet");
     expect(sheets.map((s) => s.number).sort()).toEqual([
       "A-101",
@@ -248,8 +248,11 @@ describe("createShowcaseDemoModel", () => {
       "M-101",
       "M-201",
       "M-501",
+      "P-001",
       "P-101",
       "P-102",
+      "P-103",
+      "P-501",
       "S-101",
       "S-102",
       "S-201",
@@ -572,6 +575,7 @@ describe("createShowcaseDemoModel", () => {
       "vt-elec-power",
       "vt-mech-hvac",
       "vt-plumb-dwv",
+      "vt-plumb-gas",
       "vt-plumb-water",
     ]);
     const mechPlan = model.elements["view-mech-l1"];

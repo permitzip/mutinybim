@@ -87,8 +87,17 @@ describe("p14-wet-vent", () => {
     expect(wetVentCheck(m, first, { firm: [TABLE], project: [roomy] })).toBeNull();
   });
 
-  it("no table, or no row for its size: says what to add, never guesses", () => {
-    expect(wetVentCheck(m, first, {})).toMatchObject({ kind: "no_table", words: "Can't check the wet vent for 6 DFU yet: add a wet vent table in Library › Lookup tables" });
+  it("falls back to built-in IPC Table 912.3 when no firm/project table is uploaded, and returns no_table when fallback is disabled", () => {
+    const builtinFinding = wetVentCheck(m, first, {});
+    if (builtinFinding?.kind !== "too_small") throw new Error(`expected too_small from IPC 912.3 fallback, got ${builtinFinding?.kind}`);
+    expect(builtinFinding.source).toBe("IPC Table 912.3");
+    expect(builtinFinding.maxDfu).toBe(4);
+    expect(builtinFinding.fix?.label).toBe('Make it 2.5"');
+
+    expect(wetVentCheck(m, first, {}, undefined, { useBuiltinFallback: false })).toMatchObject({
+      kind: "no_table",
+      words: "Can't check the wet vent for 6 DFU yet: add a wet vent table in Library › Lookup tables",
+    });
     const no2 = { ...TABLE, rows: [[3, 12]] };
     expect(wetVentCheck(m, first, { firm: [no2] })).toMatchObject({ kind: "no_row" });
   });

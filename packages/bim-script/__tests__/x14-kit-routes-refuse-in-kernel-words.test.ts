@@ -39,6 +39,8 @@ function recorder(m: ModelState): { ctx: ScriptContext; sent: Command[] } {
     parts: { define: () => undefined },
     calcs: () => [],
     calc: () => ({ ok: false, reason: "not in this recorder" }),
+    note: () => undefined,
+    decisions: { record: () => "det-1", supersede: () => "det-2", query: () => [] },
   };
   return { ctx, sent };
 }

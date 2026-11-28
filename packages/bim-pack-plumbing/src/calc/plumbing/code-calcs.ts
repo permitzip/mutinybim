@@ -1,5 +1,5 @@
 import { PIPE_DESIGN_DEFAULTS, PIPE_MATERIALS, PIPE_SPEC_IDS, pipeSpec } from "@permitzip/bim-kernel";
-import { hazenWilliamsPsiPer100Ft, hunterStyleGpm, interpolateTable } from "../../routing/pipe/hydraulics";
+import { flowTestSupplyPsi, hazenWilliamsPsiPer100Ft, hunterStyleGpm, interpolateTable } from "../../routing/pipe/hydraulics";
 import { z } from "zod";
 import { nominalLabel, parseGasCapacityTable, lookupGasSize, pressureInWc, type GasCapacityTable, type GasTableSize, type Pressure, methodCite, findGasTable, gasTableCite, GAS_PROPERTIES, highPressureCfh, highPressureDiameter, ifgcCite, isIfgcEdition, lowPressureCfh, lowPressureDiameter, usesHighPressure, type IfgcEdition, ipcCite, isIpcEdition, type IpcEdition, defineCalc, round, ipcTables } from "@permitzip/bim-calc";
 import { ASHRAE_CURVES, BUILDING_TYPES, LEGACY_FIT_CITE, readCurve, type DemandCurve } from "../packs/hunter/curves";
@@ -113,10 +113,19 @@ const pressureInput = z
   .object({
     supply: z
       .object({
-        kind: z.enum(["design_minimum", "flow_test"]).describe("design_minimum: a basis-of-design pressure in lieu of flow test data. flow_test: residual pressure at the design flow."),
-        psi: z.number().positive().max(300),
+        kind: z.enum(["design_minimum", "flow_test"]).describe("design_minimum: a basis-of-design pressure in lieu of flow test data. flow_test: residual pressure at design flow, or hydrant flow-test curve (static_psi, residual_psi, test_gpm, elevation_ft)."),
+        psi: z.number().positive().max(300).optional(),
+        static_psi: z.number().positive().max(300).optional().describe("Hydrant/service flow test static pressure at 0 gpm (psi)."),
+        residual_psi: z.number().min(0).max(300).optional().describe("Hydrant/service flow test residual pressure at test_gpm (psi)."),
+        test_gpm: z.number().positive().max(100_000).optional().describe("Flow rate measured during the hydrant/service flow test (gpm)."),
+        elevation_ft: z.number().min(-1_000).max(20_000).optional().describe("Elevation of the test gauge / hydrant above project datum (ft)."),
+        service_elevation_ft: z.number().min(-1_000).max(20_000).optional().describe("Elevation of the service entry / root above project datum (ft)."),
+        safety_margin_psi: z.number().min(0).max(100).optional().describe("Optional safety margin deducted from flow-test supply pressure (psi)."),
       })
-      .strict(),
+      .strict()
+      .refine((s) => s.psi !== undefined || (s.kind === "flow_test" && s.static_psi !== undefined && s.residual_psi !== undefined && s.test_gpm !== undefined), {
+        message: "Give supply.psi, or for kind='flow_test' give static_psi, residual_psi and test_gpm.",
+      }),
     meter_loss_psi: loss.optional(),
     backflow_loss_psi: loss.optional(),
     backflow_device: z.string().trim().min(1).max(60).optional().describe("RPZ, DCVA, …"),
@@ -138,7 +147,7 @@ export const pressureReportCalc = defineCalc({
   version: "1.0.0",
   domain: "plumbing",
   title: "Domestic water pressure loss report",
-  summary: "Starts at the design minimum (or flow test) pressure and deducts meter, backflow preventer, tap, PRV, static head (height × 0.433) and the highest fixture pressure from Table 604.3, giving the pressure left to overcome pipe friction (and the allowable loss per 100 ft when the developed length is given).",
+  summary: "Starts at the design minimum (or flow test / hydrant N^1.85 curve) pressure and deducts meter, backflow preventer, tap, PRV, static head (height × 0.433) and the highest fixture pressure from Table 604.3, giving the pressure left to overcome pipe friction (and the allowable loss per 100 ft when the developed length is given).",
   codeFamily: "ipc",
   needsModel: false,
   input: pressureInput,
@@ -148,8 +157,38 @@ export const pressureReportCalc = defineCalc({
     const steps: CalcStep[] = [];
     const issues: CalcIssue[] = [];
     const lines: Array<{ key: string; label: string; psi: number; cite: Citation[] }> = [];
-    const supplyCite = input.supply.kind === "design_minimum" ? methodCite("Basis of design", "minimum design pressure in lieu of flow test data") : methodCite("Hydrant flow test", "residual pressure at the design flow");
-    steps.push({ label: "Supply", detail: `${input.supply.psi} psi ${input.supply.kind === "design_minimum" ? "minimum design pressure (basis of design in lieu of flow test data)" : "residual pressure from the flow test"}`, cite: [supplyCite] });
+    const supplyCite = input.supply.kind === "design_minimum" ? methodCite("Basis of design", "minimum design pressure in lieu of flow test data") : methodCite("Hydrant flow test", "available supply pressure from flow-test data (N^1.85 curve)");
+    const hasFlowTestCurve =
+      input.supply.kind === "flow_test" &&
+      input.supply.static_psi !== undefined &&
+      input.supply.residual_psi !== undefined &&
+      input.supply.test_gpm !== undefined;
+    const flowTestEval = hasFlowTestCurve
+      ? flowTestSupplyPsi(
+          {
+            staticPsi: input.supply.static_psi as number,
+            residualPsi: input.supply.residual_psi as number,
+            testGpm: input.supply.test_gpm as number,
+            ...(input.supply.elevation_ft !== undefined ? { elevationFt: input.supply.elevation_ft } : {}),
+            ...(input.supply.safety_margin_psi !== undefined ? { safetyMarginPsi: input.supply.safety_margin_psi } : {}),
+          },
+          input.design_gpm ?? 0,
+          input.supply.service_elevation_ft,
+        )
+      : null;
+    const supplyPsi = flowTestEval ? round(flowTestEval.availableAtDesignPsi, 2) : (input.supply.psi as number);
+    if (flowTestEval) {
+      steps.push({
+        label: "Supply",
+        detail: `${flowTestEval.staticPsi} psi static, ${flowTestEval.residualPsi} psi @ ${flowTestEval.testGpm} gpm → ${supplyPsi} psi available at ${input.design_gpm ?? 0} gpm${flowTestEval.elevationAdjustPsi !== 0 ? ` (${flowTestEval.elevationAdjustPsi > 0 ? "+" : ""}${flowTestEval.elevationAdjustPsi} psi elevation adj)` : ""}`,
+        cite: [supplyCite],
+      });
+      if (flowTestEval.extrapolated) {
+        issues.push({ severity: "warning", message: `Design flow (${input.design_gpm ?? 0} gpm) exceeds flow-test rate (${flowTestEval.testGpm} gpm); supply pressure is extrapolated on the N^1.85 curve.`, cite: [supplyCite] });
+      }
+    } else {
+      steps.push({ label: "Supply", detail: `${supplyPsi} psi ${input.supply.kind === "design_minimum" ? "minimum design pressure (basis of design in lieu of flow test data)" : "residual pressure from the flow test"}`, cite: [supplyCite] });
+    }
     if (input.supply.kind === "design_minimum") issues.push({ severity: "info", message: "A flow test is required to confirm the design pressure; this report uses the basis-of-design value.", cite: [supplyCite] });
     const add = (key: string, label: string, psi: number | undefined, cite: Citation[]) => {
       if (psi === undefined) return;
@@ -180,16 +219,16 @@ export const pressureReportCalc = defineCalc({
     if (fixturePsi === undefined) issues.push({ severity: "error", message: "Give the critical fixture (its Table 604.3 name) or the pressure it needs.", cite: [ipcCite(ed, "fixture_flow_pressure")] });
     add("fixture_psi", "Highest pressure required at a fixture", fixturePsi, fixtureCite);
     const deducted = lines.reduce((s, l) => s + l.psi, 0);
-    const available = round(input.supply.psi - deducted, 2);
+    const available = round(supplyPsi - deducted, 2);
     const allCite = [supplyCite, ...lines.flatMap((l) => l.cite)];
     const values: CalcValue[] = [
-      { key: "supply_psi", label: input.supply.kind === "design_minimum" ? "Minimum design pressure" : "Flow test residual pressure", value: input.supply.psi, unit: "psi", cite: [supplyCite] },
+      { key: "supply_psi", label: input.supply.kind === "design_minimum" ? "Minimum design pressure" : flowTestEval ? "Flow-test supply pressure at design flow" : "Flow test residual pressure", value: supplyPsi, unit: "psi", cite: [supplyCite] },
       ...lines.map((l): CalcValue => ({ key: l.key, label: l.label, value: round(l.psi, 2), unit: "psi", cite: l.cite })),
       { key: "available_psi", label: "Available to overcome pipe friction", value: available, unit: "psi", cite: allCite },
     ];
     if (input.total_wsfu !== undefined) values.unshift({ key: "total_wsfu", label: "Total fixture units at the service", value: input.total_wsfu, unit: "wsfu", cite: [GIVEN] });
     if (input.design_gpm !== undefined) values.unshift({ key: "design_gpm", label: "Total gpm at the service", value: input.design_gpm, unit: "gpm", cite: [GIVEN] });
-    steps.push({ label: "Available for friction", detail: `${input.supply.psi} − ${lines.map((l) => round(l.psi, 2)).join(" − ")} = ${available} psi`, cite: allCite });
+    steps.push({ label: "Available for friction", detail: `${supplyPsi} − ${lines.map((l) => round(l.psi, 2)).join(" − ")} = ${available} psi`, cite: allCite });
     let allowable: number | null = null;
     if (input.developed_length_ft !== undefined && available > 0) {
       allowable = round((available / input.developed_length_ft) * 100, 3);
@@ -197,7 +236,7 @@ export const pressureReportCalc = defineCalc({
       steps.push({ label: "Allowable friction", detail: `${available} psi over ${input.developed_length_ft} ft developed length: ${allowable} psi per 100 ft`, cite: [ipcCite(ed, "water_sizing")] });
     }
     if (available <= 0) issues.push({ severity: "error", message: `Nothing is left for pipe friction (${available} psi). Raise the supply pressure (booster), or cut a loss.`, cite: allCite });
-    return { values, steps, issues, detail: { lines, availablePsi: available, allowablePsiPer100Ft: allowable } };
+    return { values, steps, issues, detail: { lines, supplyPsi, ...(flowTestEval ? { flowTest: flowTestEval } : {}), availablePsi: available, allowablePsiPer100Ft: allowable } };
   },
 });
 

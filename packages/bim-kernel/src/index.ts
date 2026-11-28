@@ -112,6 +112,7 @@ export * from "./annotation/drafting-migrations";
 export * from "./schema-version";
 export * from "./annotation/detail-snaps";
 export * from "./drawing/detail-check";
+export * from "./drawing/detail-staleness";
 export { NOTE_FONT_FACES, NOTE_FONT_FILES } from "./annotation/font-metrics.generated";
 export * from "./organization/model";
 export * from "./organization/rules";
