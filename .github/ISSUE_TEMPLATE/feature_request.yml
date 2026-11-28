@@ -71,4 +71,4 @@ body:
     attributes:
       label: Helping
       options:
-        - label: I would like to work on this.
+        - label: I would like to work on this. After the issue is open, comment `/claim` on it so it is assigned to you.

@@ -3,8 +3,8 @@
 Thank you for helping. MutinyBIM is built by software people and by licensed
 professionals in every building trade. You do not need to be both.
 
-This guide covers sign-off, setup, tests, the rules every change follows, and
-how pull requests are reviewed.
+This guide covers sign-off, setup, tests, the rules every change follows, how
+issues are claimed, and how pull requests are reviewed.
 
 ## Sign your commits (DCO)
 
@@ -155,7 +155,8 @@ Every calculation must:
 ## Pull requests
 
 1. Open an issue first for anything larger than a small fix, so we can agree
-   on the shape. For kernel changes this saves a lot of rework.
+   on the shape. For kernel changes this saves a lot of rework. To work on an
+   existing issue, comment `/claim` on it (see [Claiming an issue](#claiming-an-issue)).
 2. Keep pull requests small and focused. One idea per pull request.
 3. Fill in the pull request template.
 4. Before review, make sure:
@@ -178,10 +179,39 @@ Every calculation must:
 | --- | --- |
 | `good first issue` | A well-scoped starting task. |
 | `help wanted` | We would welcome a contributor here. |
+| `claimed` | Someone is working on this. Comment `/claim` to take an open issue. |
+| `needs check-in` | A claimed issue is waiting on a progress update. |
 | `needs licensed review` | Needs review by a licensed professional in the discipline. |
 | `kernel gap` | Must be fixed in the shared kernel, not worked around in an add-on. |
 | `discipline: architecture` · `structural` · `civil` · `fire protection` · `mechanical` · `electrical` · `plumbing` | Which trade it serves. |
 | `area: kernel` · `add-on` · `scripting` · `sheets` · `viewer` · `model-server` · `docs` · `perf` | Which part of the code it touches. |
+
+## Claiming an issue
+
+You do not need to be added to this repository to work on an issue. Fork the
+repo, open a pull request, and mention the issue (`Closes #123`).
+
+If you want the issue assigned to you so other people know it is in progress:
+
+1. Leave a comment that is exactly `/claim` or `/take` (or `take` on its own
+   line). A GitHub Action will assign you and add the `claimed` label.
+2. Open a draft pull request within a week, or comment with a short check-in
+   (what you have done and when you expect a PR).
+3. If a week passes with no check-in and no open pull request linked to the
+   issue, a bot comments to ask how it is going and adds `needs check-in`.
+   Three days after that, if there is still no check-in or linked PR, the bot
+   unassigns you and opens the issue again.
+
+Please claim at most two issues at a time. If you cannot continue, comment
+`/unclaim` (or `/release`) so someone else can take it.
+
+An issue that already has an assignee stays with that person unless they
+unclaim it or a maintainer reassigns it. Maintainers may assign or unassign
+at any time.
+
+A `/claim` comment is enough for GitHub to allow the assignment even if you
+are not a collaborator. Being assigned does not grant write access; you still
+work from a fork.
 
 ## Docs
 
