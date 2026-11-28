@@ -57,6 +57,24 @@ const ABOUT: readonly Omit<KitExample, "source">[] = [
     builds: "Imports existing and proposed LandXML 1.2 TIN surfaces onto a Site level, computes prismoidal cut, fill, net earthwork and overlap area, and places a Site Grading Plan on sheet C-101.",
     topics: ["civil", "grading", "landxml", "tin", "cut and fill", "earthwork", "site plan", "contours"],
   },
+  {
+    name: "fuel-gas-hybrid-pressure",
+    title: "Commercial fuel gas (hybrid 2 psi / 7 in. w.c.)",
+    builds: "A commercial kitchen and mechanical room supplied at 2 psi natural gas through a line pressure regulator to 7 in. w.c. appliances, with shutoff valve, drip leg, combustion exhaust/intake venting, IFGC 2021 zone-by-zone gas sizing, and a plan, live riser diagram, and gas schedules on sheet P-401.",
+    topics: ["plumbing", "fuel gas", "gas", "hybrid pressure", "2 psi", "regulator", "ifgc", "gas sizing", "combustion vent", "riser"],
+  },
+  {
+    name: "domestic-water-recirc-pressure-loss",
+    title: "Commercial domestic water, DHWR loop & pressure loss",
+    builds: "A commercial domestic water service with hydrant flow test curve, RPZ backflow preventer, water heater, expansion tank, insulated DHW/DHWR recirculation loop with balancing and check valves, IECC pipe insulation schedule, IPC pipe sizing & pressure-loss report, and a plan, riser diagram, and fixture schedule on sheet P-201.",
+    topics: ["plumbing", "domestic water", "dhwr", "recirculation", "rpz", "backflow", "pressure loss", "flow test", "water heater", "insulation", "riser"],
+  },
+  {
+    name: "commercial-kitchen-dwv-grease",
+    title: "Commercial kitchen DWV, grease & indirect waste",
+    builds: "A commercial kitchen and restroom core with segregated sanitary waste, dedicated grease waste through an inline 100 gpm grease interceptor, separate clear-water/indirect waste, named soil stack, IPC 708 cleanout spacing, under-slab DWV plan (negative viewBottom, non-negative viewDepth), live riser diagram, and fixture schedule on sheet P-101.",
+    topics: ["plumbing", "dwv", "sanitary", "grease waste", "grease interceptor", "indirect waste", "cleanouts", "stack", "under-slab", "riser"],
+  },
 ];
 
 export const KIT_EXAMPLES: readonly KitExample[] = ABOUT.map((a) => ({ ...a, source: KIT_EXAMPLE_SOURCES[a.name] ?? "" }));

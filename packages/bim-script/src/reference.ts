@@ -708,6 +708,193 @@ export interface AddSheetMarkupSpec {
   readonly closed?: boolean; readonly smartShape?: MarkupSmartShape;
   readonly status?: MarkupStatus; readonly author?: string; readonly note?: string;
 }
+export interface WaterFlowTestSpec {
+  readonly staticPsi: number; readonly residualPsi: number; readonly testGpm: number;
+  readonly elevationFt?: number; readonly safetyMarginPsi?: number; readonly testedAt?: string; readonly location?: string;
+}
+export interface DhwrDesignSpec {
+  readonly deltaTF?: number; readonly heatLossBtuPerHrFt?: number; readonly maxVelocityFps?: number; readonly minVelocityFps?: number;
+  readonly supplyTempF?: number; readonly returnTempF?: number; readonly pumpGpm?: number; readonly pumpHeadFt?: number;
+  readonly bufferTankGal?: number; readonly aquastatLowF?: number; readonly aquastatHighF?: number;
+}
+export interface PlumbingSystemDesignSpec {
+  readonly name?: string; readonly sizingMode?: "check" | "auto" | null;
+  readonly demandCurve?: "ashrae_a" | "ashrae_b" | "ashrae_c" | "ashrae_d" | "ipc_e_tank" | "ipc_e_valve" | "firm" | "legacy_fit" | null;
+  readonly fuel?: "natural" | "natural_gas" | "propane";
+  readonly inletPressure?: Measure | number; readonly inletPressureInWc?: number; readonly inletPressurePsi?: number;
+  readonly allowableDrop?: Measure | number; readonly allowableDropInWc?: number; readonly allowableDropPsi?: number;
+  readonly gasSizing?: "longest_length" | "longest_run" | "branch_length" | "actual_length";
+  readonly gasEquation?: "spitzglass" | "mueller"; readonly specificGravity?: number; readonly heatingValueBtuPerCf?: number;
+  readonly staticPressure?: Measure | number; readonly staticPressurePsi?: number; readonly supplyPressurePsi?: number;
+  readonly fixedLosses?: Measure | number; readonly fixedLossesPsi?: number;
+  readonly minFixturePressure?: Measure | number; readonly minFixturePressurePsi?: number;
+  readonly maxVelocityFps?: number; readonly waterTempF?: number; readonly hazenC?: number;
+  readonly frictionMethod?: "hazen_williams" | "darcy"; readonly fittingMethod?: "k" | "equivalent_length";
+  readonly demandMethod?: "table" | "hunter_formula" | "flow_is_gpm";
+  readonly demandTable?: readonly { readonly fu: number; readonly gpm: number }[];
+  readonly fixtureTable?: readonly { readonly fixture: string; readonly wsfu?: number; readonly dfu?: number; readonly mbh?: number }[];
+  readonly flowTest?: WaterFlowTestSpec; readonly dhwr?: DhwrDesignSpec;
+  readonly rainfallInPerHr?: number;
+  readonly slopes?: readonly { readonly maxNominalIn: number; readonly inPerFt: number }[];
+  readonly fillRatio?: number; readonly manningN?: number;
+  readonly capacityTable?: readonly { readonly nominalIn: number; readonly inPerFt?: number; readonly maxDfu: number }[];
+  readonly insulation?: { readonly thickness: Measure | number; readonly material?: string; readonly rValue?: number } | null;
+}
+export interface PlumbingSizeSystemSpec {
+  readonly system: string; readonly apply?: boolean; readonly allowSmaller?: boolean;
+  readonly method?: "longest_length" | "branch_length"; readonly elementId?: string;
+  readonly plumbingEdition?: string; readonly fuelGasEdition?: string; readonly state?: string; readonly idPrefix?: string;
+}
+export interface PlumbingPipeSizeChange {
+  readonly segmentId: string; readonly label: string; readonly currentIn: number | null; readonly currentLabel: string | null;
+  readonly proposedIn: number; readonly proposedLabel: string; readonly change: "up" | "down" | "same"; readonly applied: boolean;
+  readonly zoneId?: string; readonly governs?: string;
+}
+export interface PlumbingSizeSystemResult {
+  readonly ok: boolean; readonly systemId: string; readonly systemName: string; readonly systemKind: string;
+  readonly calcId: "plumbing.gas_system" | "plumbing.size_system"; readonly applied: boolean; readonly appliedCount: number;
+  readonly changes: readonly PlumbingPipeSizeChange[]; readonly proposals: readonly PlumbingPipeSizeChange[];
+  readonly findings: readonly { readonly code?: string; readonly severity: string; readonly message: string; readonly elementId?: string }[];
+  readonly issues: readonly { readonly severity: string; readonly message: string }[]; readonly summary: string;
+  readonly totalMbh?: number; readonly totalLoad?: number; readonly designGpm?: number | null; readonly allowablePsiPer100Ft?: number | null;
+  readonly zones?: readonly unknown[]; readonly reason?: string; readonly raw: unknown;
+}
+export type PlumbingAccessoryKind = "gas_regulator" | "regulator" | "gas_shutoff" | "gas_cock" | "drip_leg" | "sediment_trap" | "gas_union" | "ball_valve" | "shutoff_valve" | "gate_valve" | "check_valve" | "balancing_valve" | "prv" | "pressure_reducing_valve" | "cleanout" | "cleanout_tee" | "cleanout_wye" | "test_tee" | "p_trap" | "union" | "coupling" | "backflow" | "rpz" | "dcva" | "pvb";
+export interface GasRegulatorParams {
+  readonly role?: "line" | "service" | "appliance"; readonly outletInWc?: number; readonly outletPsi?: number; readonly outletPressure?: Measure;
+  readonly dropInWc?: number; readonly dropPsi?: number; readonly allowableDrop?: Measure;
+  readonly vent?: "vent_limiter" | "vent_to_outdoors" | "none"; readonly capacityMbh?: number;
+}
+export interface PlacePlumbingAccessorySpec {
+  readonly segment: string; readonly kind?: PlumbingAccessoryKind; readonly family?: string; readonly partTypeId?: string;
+  readonly at?: Measure | number; readonly fromEnd?: Measure | number; readonly fraction?: number;
+  readonly regulator?: GasRegulatorParams; readonly nippleLength?: Measure | number;
+  readonly params?: Readonly<Record<string, number | string>>; readonly mark?: string; readonly flip?: boolean; readonly id?: string;
+}
+export interface PlacePlumbingAccessoryResult {
+  readonly id: string; readonly segmentId: string; readonly atMm: number; readonly mode: "accessory" | "inline_part";
+  readonly family?: string; readonly partTypeId?: string;
+}
+export interface ProposeCleanoutsSpec {
+  readonly segments?: readonly string[]; readonly system?: string; readonly spacing?: Measure | number;
+  readonly apply?: boolean; readonly idPrefix?: string;
+}
+export interface ProposeCleanoutsResult {
+  readonly ghosts: readonly GhostPlacement[];
+  readonly spots: readonly { readonly key: string; readonly segmentId: string; readonly atMm: number; readonly spot: string; readonly typeId: string; readonly reason: string }[];
+  readonly summary: string; readonly passes: boolean; readonly notes: readonly string[]; readonly applied: boolean; readonly placedIds: readonly string[];
+}
+export type ManageStackSpec =
+  | { readonly action: "name" | "create"; readonly stacks: readonly { readonly stackId?: string; readonly pipeId: string; readonly number?: string; readonly name?: string; readonly systemCode?: string; readonly serves?: string }[] }
+  | { readonly action: "name" | "create"; readonly stackId?: string; readonly pipeId: string; readonly number?: string; readonly name?: string; readonly systemCode?: string; readonly serves?: string }
+  | { readonly action: "edit" | "assign"; readonly stackId: string; readonly number?: string; readonly name?: string | null; readonly systemCode?: string | null; readonly serves?: string | null; readonly pipeId?: string }
+  | { readonly action: "delete" | "remove"; readonly stackIds: string | readonly string[] }
+  | { readonly action: "checks"; readonly baseClearanceDiameters: number | null }
+  | { readonly action: "list" };
+export interface ManageStackResult {
+  readonly action: string; readonly stackIds?: readonly string[]; readonly stacks?: readonly unknown[]; readonly baseClearanceDiameters?: number | null;
+}
+export interface SetInsulationScheduleSpec {
+  readonly rows: readonly { readonly systemKinds: readonly string[]; readonly belowNominal: Measure | number; readonly thickness: Measure | number; readonly material?: string }[];
+  readonly source?: string; readonly sizingMode?: "check" | "auto";
+  readonly buildingType?: "restaurant" | "hospital" | "nursing_home" | "dormitory" | "hotel" | "motel" | "apartment" | "office" | "school" | "other";
+  readonly demandCurve?: "ashrae_a" | "ashrae_b" | "ashrae_c" | "ashrae_d" | "ipc_e_tank" | "ipc_e_valve" | "firm" | "legacy_fit";
+  readonly applyToSystems?: boolean | readonly string[];
+}
+export interface SetInsulationScheduleResult {
+  readonly saved: true; readonly rowCount: number; readonly source: string | null;
+  readonly appliedSystems: readonly { readonly systemId: string; readonly updatedSegments: number }[];
+}
+export interface GasReportOptions { readonly method?: "longest_length" | "branch_length"; readonly elementId?: string; readonly fuelGasEdition?: string; readonly state?: string }
+export interface GasSystemReport {
+  readonly ok: boolean; readonly systemId: string; readonly systemName: string; readonly method: string | null; readonly totalMbh: number | null;
+  readonly zones: readonly unknown[]; readonly proposals: readonly PlumbingPipeSizeChange[];
+  readonly findings: readonly { readonly code?: string; readonly severity: string; readonly message: string; readonly elementId?: string }[];
+  readonly issues: readonly { readonly severity: string; readonly message: string }[];
+  readonly values: readonly { readonly key: string; readonly label: string; readonly value: unknown; readonly unit: string | null }[];
+  readonly detail: unknown; readonly reason?: string;
+}
+export interface WaterReportOptions {
+  readonly elementId?: string; readonly plumbingEdition?: string; readonly state?: string;
+  readonly pressure?: {
+    readonly supplyKind?: "design_minimum" | "flow_test"; readonly supplyPsi?: number; readonly meterLossPsi?: number;
+    readonly backflowLossPsi?: number; readonly backflowDevice?: string; readonly tapLossPsi?: number; readonly prvLossPsi?: number;
+    readonly otherLosses?: readonly { readonly label: string; readonly psi: number }[];
+    readonly highestFixtureHeight?: Measure | number; readonly staticHeadPsiPerFt?: number;
+    readonly criticalFixture?: string; readonly criticalFixturePsi?: number; readonly developedLength?: Measure | number;
+  };
+}
+export interface WaterSystemReport {
+  readonly ok: boolean; readonly systemId: string; readonly systemName: string; readonly totalWsfu: number | null;
+  readonly designGpm: number | null; readonly curve: string | null; readonly availablePsi: number | null;
+  readonly allowablePsiPer100Ft: number | null; readonly developedLengthFt: number | null;
+  readonly criticalFixture: string | null; readonly criticalPressurePsi: number | null; readonly hydraulicsPass: boolean | null;
+  readonly proposals: readonly PlumbingPipeSizeChange[];
+  readonly findings: readonly { readonly code?: string; readonly severity: string; readonly message: string; readonly elementId?: string }[];
+  readonly pressureReport: { readonly ok: boolean; readonly availablePsi: number | null; readonly allowablePsiPer100Ft: number | null; readonly values: readonly unknown[]; readonly issues: readonly { readonly severity: string; readonly message: string }[] } | null;
+  readonly issues: readonly { readonly severity: string; readonly message: string }[];
+  readonly sizingRaw: unknown; readonly hydraulicsRaw: unknown;
+}
+export interface CombustionVentBranchSpec {
+  readonly connectorId?: string; readonly system?: { readonly id: string; readonly kind?: string; readonly name?: string };
+  readonly size?: RunSize; readonly diameter?: Measure; readonly material?: PipeMaterial; readonly domain?: "pipe" | "duct";
+  readonly points?: readonly { readonly x: Measure; readonly y: Measure; readonly height?: Measure }[]; readonly height?: Measure;
+  readonly termination?: { readonly x: Measure; readonly y: Measure; readonly height?: Measure };
+  readonly offset?: { readonly x?: Measure; readonly y?: Measure }; readonly riseStyle?: "vertical" | "45" | "60" | "22.5"; readonly capEnd?: boolean; readonly id?: string;
+}
+export interface ConnectCombustionVentSpec {
+  readonly equipment: string | PlacedPart; readonly level: string; readonly toLevel?: string;
+  readonly termination: { readonly x: Measure; readonly y: Measure; readonly height?: Measure };
+  readonly exhaust?: CombustionVentBranchSpec; readonly intake?: boolean | CombustionVentBranchSpec;
+}
+export interface ConnectCombustionVentResult { readonly equipmentId: string; readonly exhaust: RouteHandle; readonly intake?: RouteHandle }
+export interface MechanicalSystemDesignSpec {
+  readonly name?: string; readonly altitude?: Measure | number; readonly temperatureF?: number; readonly temperatureC?: number;
+  readonly material?: "galvanized" | "aluminum" | "stainless" | "flex" | "fiberglass";
+  readonly frictionMethod?: "colebrook" | "altshul_tsal";
+  readonly insulation?: { readonly kind: "wrap" | "liner"; readonly thickness: Measure | number; readonly material?: string; readonly rValue?: number; readonly surface?: "faced" | "spray_coated" } | null;
+  readonly sizing?: { readonly frictionInPer100Ft?: number; readonly maxVelocityFpm?: number; readonly maxAspectRatio?: number } | null;
+}
+export interface SizeDuctsSpec {
+  readonly system?: string; readonly segments?: readonly string[]; readonly cfm?: number; readonly shape?: "rect" | "round";
+  readonly systemKind?: string; readonly holdHeight?: Measure | number;
+  readonly frictionInPer100Ft?: number; readonly maxVelocityFpm?: number; readonly maxAspectRatio?: number;
+  readonly apply?: boolean; readonly idPrefix?: string;
+}
+export interface SizeDuctsResult {
+  readonly systemId: string | null; readonly applied: boolean; readonly appliedCount: number;
+  readonly segments: readonly { readonly segmentId: string | null; readonly cfm: number; readonly shape: "rect" | "round"; readonly current: RunSize | null; readonly suggested: RunSize; readonly changed: boolean; readonly applied: boolean; readonly velocityFpm: number | null; readonly frictionInPer100Ft: number | null }[];
+  readonly skipped: readonly { readonly segmentId: string; readonly reason: string }[];
+}
+export interface AirBalanceSpec { readonly scope?: "model" | "level" | "zone"; readonly level?: string; readonly zoneId?: string; readonly system?: string }
+export interface AirBalanceResult {
+  readonly ok: boolean; readonly scope: "model" | "level" | "zone";
+  readonly building: { readonly netCfm: number | null; readonly exhaustCfm: number | null; readonly makeupCfm: number | null; readonly outdoorCfm: number | null; readonly state: string | null } | null;
+  readonly zones: readonly unknown[]; readonly issues: readonly { readonly severity: string; readonly message: string }[];
+  readonly pressure?: { readonly systemId: string; readonly requiredEspInWc: number | null; readonly totalPa: number | null; readonly criticalEnd: string | null; readonly issues: readonly { readonly severity: string; readonly message: string }[] };
+  readonly raw: unknown;
+}
+export type DamperKind = "volume" | "fire" | "smoke" | "fire_smoke" | "backdraft";
+export interface PlaceDamperSpec {
+  readonly segment: string; readonly kind?: DamperKind; readonly at?: Measure | number; readonly fromEnd?: Measure | number; readonly fraction?: number;
+  readonly typeId?: string; readonly mark?: string; readonly flip?: boolean; readonly id?: string;
+}
+export interface PlaceMechanicalAccessorySpec {
+  readonly segment: string; readonly typeId?: string; readonly partType?: PartTypeDefinition; readonly family?: string;
+  readonly params?: Readonly<Record<string, number | string>>;
+  readonly at?: Measure | number; readonly fromEnd?: Measure | number; readonly fraction?: number;
+  readonly mark?: string; readonly flip?: boolean; readonly id?: string;
+}
+export interface PlaceMechanicalAccessoryResult {
+  readonly id: string; readonly segmentId: string; readonly atMm: number; readonly mode: "inline_part" | "accessory";
+  readonly typeId?: string; readonly family?: string;
+}
+export type DiffuserRef = string | PlacedPart | { readonly elementId: string; readonly port?: string; readonly cfm?: number } | { readonly part: PlacedPart; readonly port?: string; readonly cfm?: number };
+export interface ConnectDiffusersSpec { readonly from: readonly DiffuserRef[]; readonly into: string; readonly port?: string; readonly id?: string }
+export interface ConnectDiffusersResult {
+  readonly idPrefix: string; readonly connectedCount: number;
+  readonly terminals: readonly { readonly elementId: string; readonly port: string; readonly cfm?: number }[];
+}
 `;
 
 function member(e: KitEntry): string {

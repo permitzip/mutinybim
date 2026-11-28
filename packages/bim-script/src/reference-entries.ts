@@ -35,7 +35,7 @@ export interface KitRecipe {
   readonly needsModelContent?: boolean;
 }
 
-const KIT = 'import { defineScript, units, routes, parts, building, equipment, documents, markups, drafting, checks, electrical } from "@permitzip/bim-script";';
+const KIT = 'import { defineScript, units, routes, parts, building, equipment, documents, markups, drafting, checks, electrical, plumbing, mechanical } from "@permitzip/bim-script";';
 
 const layout = (body: string, reads = "{ levels: true }") => `${KIT}\nexport default defineScript({\n  kind: "layout",\n  reads: ${reads},\n  parameters: {},\n  run(ctx) {\n${body}\n  },\n});\n`;
 const route = (body: string) => `${KIT}\nexport default defineScript({\n  kind: "route",\n  reads: { levels: true },\n  parameters: {},\n  run(ctx) {\n${body}\n  },\n});\n`;
@@ -688,17 +688,17 @@ export const KIT_ENTRIES: readonly KitEntry[] = [
   },
   {
     name: "documents.planView",
-    summary: "A floor plan of one level (for a discipline, scale, Revit-standard `viewTopRef`: \"level_above\" | \"associated_level\" | \"unlimited\", `viewTop`/`cutHeight`/`viewBottom`, `browserGroup`, `sortOrder`, detailLevel, symbolScale, showLineCodes, `offsetStackedRuns`, `showReferenceDisciplines`, and per-category/service overrides including singleLineBelow); returns the view's id.",
+    summary: "A floor plan of one level (for a discipline, scale, Revit-standard `viewTopRef`: \"level_above\" | \"associated_level\" | \"unlimited\", `viewTop`/`cutHeight`/`viewBottom`/`viewDepth`, `browserGroup`, `sortOrder`, detailLevel, symbolScale, showLineCodes, `offsetStackedRuns`, `showReferenceDisciplines`, and per-category/service overrides including singleLineBelow); returns the view's id. Under-slab plumbing note: `viewBottom` is signed height above the level (pass negative, e.g. `viewBottom: units.ft(-4)`, to include under-slab drains), while `viewDepth` is ALWAYS non-negative (`>= 0`, extra depth below `viewBottom`, e.g. `viewDepth: units.ft(0)` or `viewBottom: units.ft(0), viewDepth: units.ft(4)` — negative `viewDepth` fails `viewDepthMm >= 0`).",
     signature: "planView(ctx: ScriptContext, spec: PlanViewSpec): string",
-    example: layout(`    documents.planView(ctx, { level: "L1", name: "Level 1 - Plumbing", discipline: "plumbing", scale: 48, viewTopRef: "level_above", browserGroup: "Plumbing", sortOrder: 300, detailLevel: "medium", offsetStackedRuns: true });`),
-    topics: ["view", "plan", "floor plan", "view range", "level above", "browser group", "sort order", "detail level", "symbolScale", "annotative", "single line", "double line", "line code", "stacked runs", "section references"],
+    example: layout(`    documents.planView(ctx, { level: "L1", name: "Level 1 - Plumbing", discipline: "plumbing", scale: 48, viewTopRef: "level_above", viewBottom: units.ft(-4), viewDepth: units.ft(0), browserGroup: "Plumbing", sortOrder: 300, detailLevel: "medium", offsetStackedRuns: true });`),
+    topics: ["view", "plan", "floor plan", "view range", "under-slab", "underslab", "below slab", "viewBottom", "viewDepth", "viewDepthMm", "level above", "browser group", "sort order", "detail level", "symbolScale", "annotative", "single line", "double line", "line code", "stacked runs", "section references"],
   },
   {
     name: "documents.setView",
-    summary: "Changes a view's `viewTopRef` (\"level_above\" | \"associated_level\" | \"unlimited\"), `viewTop`/`cutHeight`/`viewBottom`, `browserGroup`, `sortOrder`, detail level (coarse/medium/fine), visual style, annotative `symbolScale` (0.5–3.0), inline service codes, `offsetStackedRuns`, `showReferenceDisciplines`, scale, discipline, or per-category/service graphics overrides (including singleLineBelow).",
+    summary: "Changes a view's `viewTopRef` (\"level_above\" | \"associated_level\" | \"unlimited\"), `viewTop`/`cutHeight`/`viewBottom`/`viewDepth`, `browserGroup`, `sortOrder`, detail level (coarse/medium/fine), visual style, annotative `symbolScale` (0.5–3.0), inline service codes, `offsetStackedRuns`, `showReferenceDisciplines`, scale, discipline, or per-category/service graphics overrides (including singleLineBelow). For under-slab plumbing views, set negative `viewBottom` (e.g. `units.ft(-4)`) and non-negative `viewDepth` (`>= 0`); never pass negative `viewDepth`.",
     signature: "setView(ctx: ScriptContext, viewId: string, changes: ViewChanges): void",
-    example: layout(`    const plan = documents.planView(ctx, { level: "L1", name: "Level 1 - Plumbing", discipline: "plumbing" });\n    documents.setView(ctx, plan, { viewTopRef: "level_above", browserGroup: "Plumbing", sortOrder: 300, detailLevel: "medium", showLineCodes: true, offsetStackedRuns: true, scale: 48 });`),
-    topics: ["view", "view range", "level above", "browser group", "sort order", "detail level", "symbolScale", "annotative", "category overrides", "single line", "double line", "schematic", "line code", "stacked runs", "section references"],
+    example: layout(`    const plan = documents.planView(ctx, { level: "L1", name: "Level 1 - Plumbing", discipline: "plumbing" });\n    documents.setView(ctx, plan, { viewTopRef: "level_above", viewBottom: units.ft(-4), viewDepth: units.ft(0), browserGroup: "Plumbing", sortOrder: 300, detailLevel: "medium", showLineCodes: true, offsetStackedRuns: true, scale: 48 });`),
+    topics: ["view", "view range", "under-slab", "viewBottom", "viewDepth", "viewDepthMm", "level above", "browser group", "sort order", "detail level", "symbolScale", "annotative", "category overrides", "single line", "double line", "schematic", "line code", "stacked runs", "section references"],
   },
   {
     name: "documents.viewTemplate",
@@ -828,10 +828,10 @@ export const KIT_ENTRIES: readonly KitEntry[] = [
   },
   {
     name: "documents.schedule",
-    summary: "A schedule view; returns its id. Give classes (rooms, spaces, zones, equipment, any class documents.scheduleFields lists) with field paths or full columns, filters, sort, groups and totals; or a category for a one-category list. Put it on a sheet with documents.place; change it later with documents.editSchedule.",
+    summary: "A schedule view; returns its id. Give `classes` (any class `documents.scheduleFields(ctx)` lists) with `columns` as plain field-path strings (`[\"number\", \"name\", \"area\"]`) OR full `ScheduleColumn` objects (`{ id, kind: \"field\" | \"parameter\" | \"formula\" | \"aggregate\", path?, expression?, fn?, relationship?, heading?, total? }` — formula expressions MUST wrap field paths in curly braces like `\"{area} * 1\"` with optional `unit`, never bare identifiers or `{ field: \"...\" }`), OR pass `category` + string `columns` (`[\"mark\", \"type_name\", \"level\"]`) for a one-category list. Put it on a sheet with `documents.place`; edit later with `documents.editSchedule`.",
     signature: "schedule(ctx: ScriptContext, spec: { name: string; category: ScheduleCategory; columns: readonly string[]; title?: string; id?: string } | { name: string; classes: readonly string[]; columns: readonly (string | ScheduleColumn)[]; levels?: readonly string[]; filters?: readonly ScheduleFilter[]; sort?: readonly (string | { path: string; direction: \"asc\" | \"desc\" })[]; groups?: readonly (string | { path: string; header?: boolean; footer?: boolean; totals?: boolean })[]; totals?: boolean; includeSubclasses?: boolean; id?: string }): string",
-    example: layout(`${UNIT}\n    const rooms = documents.schedule(ctx, { name: "Room schedule", classes: ["arch.room"], columns: ["number", "name", "area"], sort: ["number"], totals: true });\n    const equipmentSchedule = documents.schedule(ctx, { name: "Equipment schedule", category: "mechanical_equipment", columns: ["mark", "type_name", "level"] });\n    const sheet = documents.sheet(ctx, { number: "A-601", name: "Schedules" });\n    documents.place(ctx, sheet, rooms, { x: units.mm(150), y: units.mm(400) });\n    documents.place(ctx, sheet, equipmentSchedule, { x: units.mm(450), y: units.mm(400) });`),
-    topics: ["schedule", "make a schedule", "room schedule", "space schedule", "equipment schedule", "table", "classes"],
+    example: layout(`${UNIT}\n    const rooms = documents.schedule(ctx, { name: "Room schedule", classes: ["arch.room"], columns: ["number", "name", "area", { id: "double_area", kind: "formula", expression: "{area} * 2", heading: "2x Area" }], sort: ["number"], totals: true });\n    const equipmentSchedule = documents.schedule(ctx, { name: "Equipment schedule", category: "mechanical_equipment", columns: ["mark", "type_name", "level"] });\n    const sheet = documents.sheet(ctx, { number: "A-601", name: "Schedules" });\n    documents.place(ctx, sheet, rooms, { x: units.mm(150), y: units.mm(400) });\n    documents.place(ctx, sheet, equipmentSchedule, { x: units.mm(450), y: units.mm(400) });`),
+    topics: ["schedule", "make a schedule", "schedule columns", "schedule formula", "formula column", "curly braces", "room schedule", "space schedule", "equipment schedule", "table", "classes"],
   },
   {
     name: "documents.tag",
@@ -1465,6 +1465,111 @@ export const KIT_ENTRIES: readonly KitEntry[] = [
     example: layout(`    const detail = drafting.view(ctx, { name: "QA Detail", scale: 16 });\n    drafting.rect(ctx, { view: detail, at: { x: units.in(0), y: units.in(0) }, width: units.in(36), height: units.in(18), lineStyle: "wide" });\n    drafting.calloutStack(ctx, { view: detail, side: "right", x: units.in(44), topY: units.in(16), notes: [{ text: "ROOF CURB", to: { x: units.in(36), y: units.in(10) } }] });\n    drafting.fitCrop(ctx, detail);\n    const qa = drafting.check(ctx, detail);\n    ctx.report("Detail QA", qa);`),
     topics: ["detail audit", "check detail", "overlap", "text collision", "legibility", "qa", "crop check"],
   },
+  {
+    name: "plumbing.setSystemDesign",
+    summary: "Configures design inputs on a pipe system via `set_system_design`: fuel gas (inlet pressure, allowable drop, `longest_length` vs `branch_length`, natural gas/propane, heating value), domestic water (static pressure, WS-1 `flowTest` curve, demand curve, fixed losses), DHWR (`dhwr` loop settings), storm (`rainfallInPerHr`), and drainage slopes/rules.",
+    signature: "setSystemDesign(ctx: ScriptContext, systemRef: string, spec: PlumbingSystemDesignSpec): { readonly systemId: string }",
+    example: route(`    routes.along(ctx, { level: "L1", domain: "pipe", size: routes.pipe(units.in(1.25), "black_steel"), system: { id: "gas-1", kind: "natural_gas", name: "Fuel Gas" }, height: units.ft(10), points: [{ x: units.ft(0), y: units.ft(0) }, { x: units.ft(40), y: units.ft(0) }] });\n    plumbing.setSystemDesign(ctx, "gas-1", { fuel: "natural_gas", inletPressurePsi: 2, allowableDropPsi: 1, gasSizing: "longest_length", heatingValueBtuPerCf: 1000 });`),
+    topics: ["plumbing", "system design", "fuel gas", "gas pressure", "inlet pressure", "flow test", "dhwr", "demand curve", "storm", "rainfall", "drainage"],
+  },
+  {
+    name: "plumbing.sizeSystem",
+    summary: "Runs `plumbing.gas_system` (for fuel gas) or `plumbing.size_system` (for water, sanitary, vent, storm, DHWR), optionally applies `set_pipe_sizes` (`apply: true`, `allowSmaller`), and returns structured before/after pipe size changes and findings.",
+    signature: "sizeSystem(ctx: ScriptContext, spec: PlumbingSizeSystemSpec): PlumbingSizeSystemResult",
+    example: route(`    const range = equipment.place(ctx, { level: "L1", type: "builtin:plumbing-gas-range@1", at: { x: units.ft(30), y: units.ft(4) }, mark: "GR-1" });\n    const main = routes.along(ctx, { level: "L1", domain: "pipe", size: routes.pipe(units.in(0.5), "black_steel"), system: { id: "gas-1", kind: "natural_gas", name: "Fuel Gas" }, height: units.ft(9), points: [{ x: units.ft(0), y: units.ft(0) }, { x: units.ft(30), y: units.ft(0) }] });\n    routes.connectInto(ctx, { from: [{ elementId: range.id, port: "g" }], into: main.segment(1) });\n    plumbing.setSystemDesign(ctx, "gas-1", { fuel: "natural_gas", inletPressureInWc: 7, allowableDropInWc: 0.5, gasSizing: "longest_length" });\n    const sized = plumbing.sizeSystem(ctx, { system: "gas-1", apply: true, fuelGasEdition: "2021" });\n    ctx.report("Gas sizing", { applied: sized.applied, changes: sized.changes.length });`),
+    topics: ["plumbing", "size pipes", "pipe sizing", "gas sizing", "water sizing", "drain sizing", "set_pipe_sizes", "ifgc", "ipc"],
+  },
+  {
+    name: "plumbing.placeAccessory",
+    summary: "Places a typed inline plumbing/gas accessory on a straight pipe segment (`place_run_accessory` for gas regulators with outlet/drop/vent params, shutoff/ball/gate/check/balancing valves, cleanouts, drip legs, P-traps; or inline `insertPartOnRun` for backflow devices `rpz`/`dcva`/`pvb`) using typed length units for `at` or `fromEnd`.",
+    signature: "placeAccessory(ctx: ScriptContext, spec: PlacePlumbingAccessorySpec): PlacePlumbingAccessoryResult",
+    example: route(`    const main = routes.along(ctx, { level: "L1", domain: "pipe", size: routes.pipe(units.in(1.25), "black_steel"), system: { id: "gas-1", kind: "natural_gas", name: "Fuel Gas" }, height: units.ft(10), points: [{ x: units.ft(0), y: units.ft(0) }, { x: units.ft(30), y: units.ft(0) }] });\n    plumbing.placeAccessory(ctx, { segment: main.segment(1), at: units.ft(15), kind: "gas_regulator", regulator: { role: "line", outletInWc: 7, dropInWc: 0.5, vent: "vent_limiter" } });\n    plumbing.placeAccessory(ctx, { segment: main.segment(1), at: units.ft(5), kind: "gas_shutoff" });`),
+    topics: ["plumbing", "accessory", "gas regulator", "regulator", "shutoff valve", "ball valve", "check valve", "balancing valve", "drip leg", "cleanout", "backflow", "rpz", "dcva", "pvb"],
+  },
+  {
+    name: "plumbing.proposeCleanouts",
+    summary: "Invokes the `plumbing.cleanouts` spacing & direction-change proposer on horizontal drainage piping and returns proposed cleanout spots (or inserts them in-line when `apply: true`).",
+    signature: "proposeCleanouts(ctx: ScriptContext, spec?: ProposeCleanoutsSpec): ProposeCleanoutsResult",
+    example: route(`    routes.along(ctx, { level: "L1", domain: "pipe", size: routes.pipe(units.in(4), "pvc"), system: { id: "san-1", kind: "sanitary", name: "Sanitary" }, height: units.ft(-2), slope: { rise: units.in(0.125), per: units.ft(1) }, flow: "with_points", points: [{ x: units.ft(0), y: units.ft(0) }, { x: units.ft(120), y: units.ft(0) }] });\n    const res = plumbing.proposeCleanouts(ctx, { system: "san-1", spacing: units.ft(100), apply: true });\n    ctx.report("Cleanouts", { summary: res.summary, placed: res.placedIds.length });`),
+    topics: ["plumbing", "cleanouts", "cleanout spacing", "drainage", "dwv", "ipc 708", "propose cleanouts"],
+  },
+  {
+    name: "plumbing.manageStack",
+    summary: "Typed wrapper for vertical plumbing stacks: name/create stacks (`name_stacks`), edit or reassign stack tags/rooms/pipes (`edit_stack`), remove stack names (`delete_stacks`), set base-of-stack clearance checks (`set_stack_checks`), or list stacks (`bim_plumbing_catalog`).",
+    signature: "manageStack(ctx: ScriptContext, spec: ManageStackSpec): ManageStackResult",
+    example: route(`    const stack = routes.along(ctx, { level: "L1", domain: "pipe", size: routes.pipe(units.in(4), "cast_iron"), system: { id: "san-1", kind: "sanitary", name: "Sanitary" }, height: units.ft(-1), points: [{ x: units.ft(5), y: units.ft(5), height: units.ft(-1) }, { x: units.ft(5), y: units.ft(5), height: units.ft(14) }] });\n    plumbing.manageStack(ctx, { action: "name", pipeId: stack.segment(1), number: "S-1", name: "Core Soil Stack", serves: "Restrooms" });`),
+    topics: ["plumbing", "stack", "vertical stack", "riser", "name stack", "edit stack", "soil stack", "vent stack"],
+  },
+  {
+    name: "plumbing.setInsulationSchedule",
+    summary: "Saves the project pipe insulation schedule (`plumbing_settings` catalog entry) with typed nominal size bands and wrap thicknesses, and optionally applies `set_pipe_insulation` to routed pipe systems.",
+    signature: "setInsulationSchedule(ctx: ScriptContext, spec: SetInsulationScheduleSpec): SetInsulationScheduleResult",
+    example: route(`    routes.along(ctx, { level: "L1", domain: "pipe", size: routes.pipe(units.in(1), "copper"), system: { id: "dhw-1", kind: "domestic_hot_water", name: "Domestic Hot Water" }, height: units.ft(10), points: [{ x: units.ft(0), y: units.ft(0) }, { x: units.ft(25), y: units.ft(0) }] });\n    plumbing.setInsulationSchedule(ctx, { rows: [{ systemKinds: ["domestic_hot_water", "domestic_hot_water_return"], belowNominal: units.in(1.5), thickness: units.in(1), material: "fiberglass" }, { systemKinds: ["domestic_hot_water", "domestic_hot_water_return"], belowNominal: units.in(48), thickness: units.in(1.5), material: "fiberglass" }], source: "IECC 2021 Table C403.12.3", applyToSystems: true });`),
+    topics: ["plumbing", "insulation", "pipe insulation", "insulation schedule", "iecc", "hot water insulation"],
+  },
+  {
+    name: "plumbing.gasReport",
+    summary: "Runs `plumbing.gas_system` (IFGC 402.4 zone-by-zone sizing) on a fuel gas system and returns total MBH, pressure zones, pipe size proposals, and findings.",
+    signature: "gasReport(ctx: ScriptContext, systemRef: string, opts?: GasReportOptions): GasSystemReport",
+    example: route(`    const range = equipment.place(ctx, { level: "L1", type: "builtin:plumbing-gas-range@1", at: { x: units.ft(25), y: units.ft(4) }, mark: "GR-1" });\n    const main = routes.along(ctx, { level: "L1", domain: "pipe", size: routes.pipe(units.in(1), "black_steel"), system: { id: "gas-1", kind: "natural_gas", name: "Fuel Gas" }, height: units.ft(9), points: [{ x: units.ft(0), y: units.ft(0) }, { x: units.ft(25), y: units.ft(0) }] });\n    routes.connectInto(ctx, { from: [{ elementId: range.id, port: "g" }], into: main.segment(1) });\n    const report = plumbing.gasReport(ctx, "gas-1", { fuelGasEdition: "2021" });\n    ctx.report("Gas report", { totalMbh: report.totalMbh, zones: report.zones.length });`),
+    topics: ["plumbing", "gas report", "fuel gas", "ifgc", "pressure zones", "mbh", "gas sizing"],
+  },
+  {
+    name: "plumbing.waterReport",
+    summary: "Runs `plumbing.size_system`, `plumbing.pipe_system`, and `plumbing.pressure_report` on a domestic water system, returning WSFU, design GPM, available/allowable friction, critical fixture pressure, proposals, and findings.",
+    signature: "waterReport(ctx: ScriptContext, systemRef: string, opts?: WaterReportOptions): WaterSystemReport",
+    example: route(`    const lav = equipment.place(ctx, { level: "L1", type: "builtin:plumbing-lavatory@1", at: { x: units.ft(20), y: units.ft(4) }, mark: "L-1" });\n    const main = routes.along(ctx, { level: "L1", domain: "pipe", size: routes.pipe(units.in(1), "copper"), system: { id: "dcw-1", kind: "domestic_cold_water", name: "Domestic Cold Water" }, height: units.ft(9), points: [{ x: units.ft(0), y: units.ft(0) }, { x: units.ft(20), y: units.ft(0) }] });\n    routes.connectInto(ctx, { from: [{ elementId: lav.id, port: "cw" }], into: main.segment(1) });\n    plumbing.setSystemDesign(ctx, "dcw-1", { demandCurve: "ashrae_d", staticPressurePsi: 60, fixedLossesPsi: 12, minFixturePressurePsi: 15 });\n    const report = plumbing.waterReport(ctx, "dcw-1", { plumbingEdition: "2021" });\n    ctx.report("Water report", { totalWsfu: report.totalWsfu, designGpm: report.designGpm, availablePsi: report.availablePsi });`),
+    topics: ["plumbing", "water report", "pressure loss", "pressure report", "wsfu", "hunter curve", "domestic water", "hydraulics"],
+  },
+  {
+    name: "plumbing.connectCombustionVent",
+    summary: "Routes combustion exhaust (flue) and optional combustion-air intake from a gas-fired water heater, boiler, or furnace to a roof or sidewall termination point.",
+    signature: "connectCombustionVent(ctx: ScriptContext, spec: ConnectCombustionVentSpec): ConnectCombustionVentResult",
+    example: route(`    const wh = equipment.place(ctx, { level: "L1", type: "builtin:plumbing-water-heater-tank@1", at: { x: units.ft(8), y: units.ft(8) }, mark: "WH-1" });\n    plumbing.connectCombustionVent(ctx, { equipment: wh, level: "L1", termination: { x: units.ft(8), y: units.ft(14), height: units.ft(14) }, exhaust: { diameter: units.in(4), material: "pvc" }, intake: true });`),
+    topics: ["plumbing", "combustion vent", "flue", "exhaust", "combustion air", "intake", "water heater", "boiler", "category iv"],
+  },
+  {
+    name: "mechanical.setSystemDesign",
+    summary: "Configures design parameters on a duct system via `set_system_design`: altitude, air temperature, duct material, friction method, default wrap/liner insulation, and equal-friction/velocity/aspect-ratio sizing criteria.",
+    signature: "setSystemDesign(ctx: ScriptContext, systemRef: string, spec: MechanicalSystemDesignSpec): { readonly systemId: string }",
+    example: route(`    routes.along(ctx, { level: "L1", domain: "duct", size: routes.rect(units.in(20), units.in(12)), system: { id: "sa-1", kind: "supply_air", name: "Supply Air" }, height: units.ft(10), points: [{ x: units.ft(0), y: units.ft(0) }, { x: units.ft(30), y: units.ft(0) }] });\n    mechanical.setSystemDesign(ctx, "sa-1", { material: "galvanized", temperatureF: 55, sizing: { frictionInPer100Ft: 0.08, maxVelocityFpm: 1200, maxAspectRatio: 4 }, insulation: { kind: "wrap", thickness: units.in(2), rValue: 6 } });`),
+    topics: ["mechanical", "hvac", "duct design", "system design", "duct insulation", "friction rate", "sizing criteria"],
+  },
+  {
+    name: "mechanical.sizeDucts",
+    summary: "Sizes duct segments (or computes a standalone CFM lookup) via `mechanical.duct_size` using the system's equal-friction, velocity, and height constraints, optionally applying `resize_stretch` when `apply: true`.",
+    signature: "sizeDucts(ctx: ScriptContext, spec: SizeDuctsSpec): SizeDuctsResult",
+    example: route(`    const sized = mechanical.sizeDucts(ctx, { cfm: 1600, shape: "rect", holdHeight: units.in(12), frictionInPer100Ft: 0.08 });\n    const pick = sized.segments[0]?.suggested;\n    if (pick) routes.along(ctx, { level: "L1", domain: "duct", size: pick, system: { id: "sa-1", kind: "supply_air", name: "Supply Air" }, height: units.ft(10), points: [{ x: units.ft(0), y: units.ft(0) }, { x: units.ft(30), y: units.ft(0) }] });`),
+    topics: ["mechanical", "hvac", "size ducts", "duct sizing", "equal friction", "resize_stretch", "cfm"],
+  },
+  {
+    name: "mechanical.airBalance",
+    summary: "Runs `mech.pressurization` (exhaust vs makeup/outdoor air balance for building, level, or zone) and optionally `mech.duct_system_pressure` (fan ESP & critical path) on a duct system.",
+    signature: "airBalance(ctx: ScriptContext, spec?: AirBalanceSpec): AirBalanceResult",
+    example: route(`    equipment.place(ctx, { level: "L1", type: "builtin:rtu-5-ton@2", at: { x: units.ft(10), y: units.ft(10) }, mark: "RTU-1" });\n    const bal = mechanical.airBalance(ctx, { scope: "model" });\n    ctx.report("Air balance", bal.building);`),
+    topics: ["mechanical", "hvac", "air balance", "pressurization", "makeup air", "outdoor air", "exhaust", "fan esp", "static pressure"],
+  },
+  {
+    name: "mechanical.placeDamper",
+    summary: "Inserts an inline volume, fire, smoke, combination fire/smoke, or backdraft damper on a straight duct segment (`at`, `fromEnd`, or `fraction`), auto-sized to the duct and tagged with `damper_kind` for rated-wall checks.",
+    signature: "placeDamper(ctx: ScriptContext, spec: PlaceDamperSpec): PlaceMechanicalAccessoryResult",
+    example: route(`    const main = routes.along(ctx, { level: "L1", domain: "duct", size: routes.rect(units.in(20), units.in(12)), system: { id: "sa-1", kind: "supply_air", name: "Supply Air" }, height: units.ft(10), points: [{ x: units.ft(0), y: units.ft(0) }, { x: units.ft(24), y: units.ft(0) }] });\n    mechanical.placeDamper(ctx, { segment: main.segment(1), at: units.ft(12), kind: "fire", mark: "FD-1" });`),
+    topics: ["mechanical", "hvac", "damper", "fire damper", "smoke damper", "volume damper", "backdraft damper", "duct accessory"],
+  },
+  {
+    name: "mechanical.placeAccessory",
+    summary: "Inserts an inline mechanical accessory part (`typeId`, e.g. inline fan, VAV box, silencer) on a straight duct/pipe run via `insertPartOnRun`, or a hosted pipe accessory (`family`) via `place_run_accessory`.",
+    signature: "placeAccessory(ctx: ScriptContext, spec: PlaceMechanicalAccessorySpec): PlaceMechanicalAccessoryResult",
+    example: route(`    const exh = routes.along(ctx, { level: "L1", domain: "duct", size: routes.round(units.in(10)), system: { id: "ea-1", kind: "exhaust_air", name: "Exhaust Air" }, height: units.ft(10), points: [{ x: units.ft(0), y: units.ft(0) }, { x: units.ft(24), y: units.ft(0) }] });\n    mechanical.placeAccessory(ctx, { segment: exh.segment(1), at: units.ft(12), typeId: "builtin:inline-fan-10@1", mark: "EF-1" });`),
+    topics: ["mechanical", "hvac", "accessory", "inline fan", "vav", "duct accessory", "insert part"],
+  },
+  {
+    name: "mechanical.connectDiffusers",
+    summary: "Connects supply diffusers and return/exhaust grilles into a duct trunk (`connect_into`), optionally setting per-terminal design `cfm` before connecting so airflow propagates upstream.",
+    signature: "connectDiffusers(ctx: ScriptContext, spec: ConnectDiffusersSpec): ConnectDiffusersResult",
+    example: route(`    const main = routes.along(ctx, { level: "L1", domain: "duct", size: routes.rect(units.in(16), units.in(10)), system: { id: "sa-1", kind: "supply_air", name: "Supply Air" }, height: units.ft(10.5), points: [{ x: units.ft(0), y: units.ft(10) }, { x: units.ft(30), y: units.ft(10) }] });\n    const d1 = equipment.place(ctx, { level: "L1", type: "builtin:supply-diffuser-24@1", at: { x: units.ft(10), y: units.ft(10) }, height: units.ft(9), mark: "SD-1" });\n    const d2 = equipment.place(ctx, { level: "L1", type: "builtin:supply-diffuser-24@1", at: { x: units.ft(20), y: units.ft(10) }, height: units.ft(9), mark: "SD-2" });\n    mechanical.connectDiffusers(ctx, { from: [{ part: d1, cfm: 200 }, { part: d2, cfm: 200 }], into: main.segment(1) });`),
+    topics: ["mechanical", "hvac", "diffuser", "grille", "air terminal", "connect diffusers", "connect_into", "duct branch"],
+  },
 ];
 
 export const KIT_RECIPES: readonly KitRecipe[] = [
@@ -1839,5 +1944,76 @@ export const KIT_RECIPES: readonly KitRecipe[] = [
     topics: ["civil", "grading", "landxml", "tin", "earthwork", "cut and fill", "cut fill", "terrain", "topography", "site grading"],
     needsModelContent: true,
     example: layout(`    const landXml = \`<?xml version="1.0"?><LandXML version="1.2"><Units><Imperial linearUnit="foot"/></Units><Surfaces><Surface name="Existing"><Definition surfType="TIN"><Pnts><P id="1">0 0 100</P><P id="2">0 80 100</P><P id="3">50 80 100</P><P id="4">50 0 100</P></Pnts><Faces><F>1 2 3</F><F>1 3 4</F></Faces></Definition></Surface><Surface name="Proposed"><Definition surfType="TIN"><Pnts><P id="1">0 0 101.25</P><P id="2">0 80 101.25</P><P id="3">50 80 101.25</P><P id="4">50 0 101.25</P></Pnts><Faces><F>1 2 3</F><F>1 3 4</F></Faces></Definition></Surface></Surfaces></LandXML>\`;\n    ctx.edit({ type: "civil.import_landxml_surfaces", landXml });\n    const earthwork = ctx.calc({ calc: "civil.surface_cut_fill", inputs: { existingId: "gs-existing", proposedId: "gs-proposed" } });\n    ctx.report("Cut and fill", earthwork);\n    ctx.label("Import LandXML surfaces and report earthwork cut and fill");`),
+  },
+  {
+    name: "Commercial plumbing and fuel gas kit",
+    task: "plumbing kit",
+    summary: "Configure pipe system design (fuel gas, water flow test, DHWR, storm, drainage), place regulators/valves/backflow/cleanouts, name vertical stacks, apply pipe insulation schedules, size systems with IFGC/IPC, and route combustion vents using the `plumbing` kit.",
+    steps: [
+      "Route piping with `routes.along` / `routes.branch` / `routes.connectInto` and set system design via `plumbing.setSystemDesign` (fuel gas 2 psi vs 7 in. w.c., domestic water `flowTest`, `dhwr`, `rainfallInPerHr`).",
+      "Place inline regulators, shutoffs, drip legs, check/balancing valves, or backflow devices (`rpz`/`dcva`/`pvb`) with `plumbing.placeAccessory`, and run `plumbing.proposeCleanouts(ctx, { system, apply: true })` on horizontal drains.",
+      "Size the system with `plumbing.sizeSystem(ctx, { system, apply: true })`, name vertical stacks with `plumbing.manageStack`, set project pipe insulation with `plumbing.setInsulationSchedule`, and inspect `plumbing.gasReport` / `plumbing.waterReport`.",
+      "Route gas-fired water heater/boiler exhaust and combustion air intake with `plumbing.connectCombustionVent`.",
+    ],
+    uses: [
+      "plumbing.setSystemDesign",
+      "plumbing.sizeSystem",
+      "plumbing.placeAccessory",
+      "plumbing.proposeCleanouts",
+      "plumbing.manageStack",
+      "plumbing.setInsulationSchedule",
+      "plumbing.gasReport",
+      "plumbing.waterReport",
+      "plumbing.connectCombustionVent",
+    ],
+    topics: ["plumbing", "plumbing kit", "fuel gas", "hybrid gas", "dhwr", "recirculation", "cleanouts", "stack", "pipe insulation", "combustion vent", "water report", "gas report"],
+    example: route(`    const range = equipment.place(ctx, { level: "L1", type: "builtin:plumbing-gas-range@1", at: { x: units.ft(30), y: units.ft(4) }, mark: "GR-1" });\n    const main = routes.along(ctx, { level: "L1", domain: "pipe", size: routes.pipe(units.in(1), "black_steel"), system: { id: "gas-1", kind: "natural_gas", name: "Fuel Gas" }, height: units.ft(10), points: [{ x: units.ft(0), y: units.ft(0) }, { x: units.ft(30), y: units.ft(0) }] });\n    routes.connectInto(ctx, { from: [{ elementId: range.id, port: "g" }], into: main.segment(1) });\n    plumbing.setSystemDesign(ctx, "gas-1", { fuel: "natural_gas", inletPressurePsi: 2, allowableDropPsi: 1, gasSizing: "longest_length" });\n    plumbing.placeAccessory(ctx, { segment: main.segment(1), at: units.ft(20), kind: "gas_regulator", regulator: { role: "line", outletInWc: 7, dropInWc: 0.5, vent: "vent_limiter" } });\n    const sized = plumbing.sizeSystem(ctx, { system: "gas-1", apply: true, fuelGasEdition: "2021" });\n    ctx.report("Gas sizing", { totalMbh: sized.totalMbh, applied: sized.applied });`),
+  },
+  {
+    name: "Mechanical HVAC kit",
+    task: "mechanical kit",
+    summary: "Configure duct system criteria, connect ceiling diffusers with CFM, size ductwork, insert inline fire/smoke/volume dampers or fans, and audit building pressurization & fan ESP using the `mechanical` kit.",
+    steps: [
+      "Route duct trunks with `routes.along` and configure duct design/insulation/equal-friction criteria with `mechanical.setSystemDesign`.",
+      "Connect supply/return/exhaust air terminals and set per-terminal airflow in one step with `mechanical.connectDiffusers`.",
+      "Size duct segments with `mechanical.sizeDucts(ctx, { system, holdHeight, apply: true })`, insert dampers (`mechanical.placeDamper`) or inline equipment (`mechanical.placeAccessory`), and check building air balance & ESP with `mechanical.airBalance`.",
+    ],
+    uses: [
+      "mechanical.setSystemDesign",
+      "mechanical.sizeDucts",
+      "mechanical.airBalance",
+      "mechanical.placeDamper",
+      "mechanical.placeAccessory",
+      "mechanical.connectDiffusers",
+    ],
+    topics: ["mechanical", "mechanical kit", "hvac", "size ducts", "damper", "fire damper", "air balance", "pressurization", "connect diffusers"],
+    example: route(`    const main = routes.along(ctx, { level: "L1", domain: "duct", size: routes.rect(units.in(20), units.in(12)), system: { id: "sa-1", kind: "supply_air", name: "Supply Air" }, height: units.ft(10.5), points: [{ x: units.ft(0), y: units.ft(10) }, { x: units.ft(30), y: units.ft(10) }] });\n    mechanical.setSystemDesign(ctx, "sa-1", { material: "galvanized", sizing: { frictionInPer100Ft: 0.08, maxVelocityFpm: 1200, maxAspectRatio: 4 } });\n    const d1 = equipment.place(ctx, { level: "L1", type: "builtin:supply-diffuser-24@1", at: { x: units.ft(18), y: units.ft(10) }, height: units.ft(9), mark: "SD-1" });\n    mechanical.connectDiffusers(ctx, { from: [{ part: d1, cfm: 350 }], into: main.segment(1) });\n    mechanical.placeDamper(ctx, { segment: main.segment(1), at: units.ft(8), kind: "volume", mark: "VD-1" });\n    const bal = mechanical.airBalance(ctx, { scope: "model" });\n    ctx.report("Air balance", bal.building);`),
+  },
+  {
+    name: "Under-slab plumbing plan views (viewBottom vs viewDepth)",
+    task: "under-slab views",
+    summary: "Show below-slab sanitary, grease, and storm drains cleanly on a floor plan without triggering `viewDepthMm >= 0` validation errors.",
+    steps: [
+      "`viewBottom` is a SIGNED height relative to the view's level: pass a negative length (e.g. `viewBottom: units.ft(-4)`) to reach 4 ft below finished floor.",
+      "`viewDepth` is ALWAYS NON-NEGATIVE (`>= 0`, extra depth measured downward BELOW `viewBottom`): pass `viewDepth: units.ft(0)` when `viewBottom` is already negative, OR `viewBottom: units.ft(0), viewDepth: units.ft(4)` — NEVER pass a negative `viewDepth` (`viewDepthMm` schema requires `>= 0`).",
+      "The effective lower reach is `levelElevation + viewBottom - viewDepth`; set `viewTopRef: \"level_above\"` or `viewTop: units.ft(10)` so overhead water/gas mains and under-slab drains appear together (or split into an Under-Slab DWV plan with `viewTop: units.ft(1)` and an Overhead Water/Gas plan).",
+    ],
+    uses: ["documents.planView", "documents.setView"],
+    topics: ["under-slab", "underslab", "below slab", "viewBottom", "viewDepth", "viewDepthMm", "view range", "plumbing plan", "underground", "dwv plan"],
+    example: layout(`    const underSlab = documents.planView(ctx, { level: "L1", name: "P-101 Under-Slab DWV Plan", discipline: "plumbing", scale: 48, cutHeight: units.ft(2), viewTop: units.ft(2), viewBottom: units.ft(-5), viewDepth: units.ft(0), detailLevel: "medium" });\n    const overhead = documents.planView(ctx, { level: "L1", name: "P-102 Domestic Water & Gas Plan", discipline: "plumbing", scale: 48, viewTopRef: "level_above", viewBottom: units.ft(0), viewDepth: units.ft(0), detailLevel: "medium" });\n    ctx.report("Plumbing plans", { underSlab, overhead });`),
+  },
+  {
+    name: "Schedule column and formula syntax (documents.schedule)",
+    task: "schedule columns",
+    summary: "Write valid `documents.schedule` columns and formula expressions on the first try without schema or formula compiler errors.",
+    steps: [
+      "Inspect exact class IDs and field paths first with `documents.scheduleFields(ctx)` (lists all classes) and `documents.scheduleFields(ctx, [\"mep.plumbing_fixture\"])` (lists that class's fields and relationships).",
+      "For `classes` schedules, each entry in `columns` is either a plain field-path string (`\"mark\"`, `\"type_name\"`, `\"own.dfu\"`) OR a full `ScheduleColumn` object `{ id, kind, ... }` — never `{ field: \"...\" }`.",
+      "Formula columns (`kind: \"formula\"`) MUST wrap field paths in curly braces inside `expression` (e.g. `expression: \"{own.mbh} * 1000\"` or `expression: \"{area} * 2\"`) and respect dimensional units; bare unbraced names fail formula compilation.",
+      "For simple single-category lists (`plumbing_fixture`, `mechanical_equipment`, `pipe`, `duct`), pass `{ name, category, columns: [\"mark\", \"type_name\", \"level\"] }` with plain string column names.",
+    ],
+    uses: ["documents.scheduleFields", "documents.schedule", "documents.scheduleRows"],
+    topics: ["schedule", "schedule columns", "schedule formula", "formula syntax", "curly braces", "documents.schedule", "schedule error", "aggregate"],
+    example: layout(`${UNIT}\n    const fields = documents.scheduleFields(ctx, ["arch.room"])[0]?.fields.map((f) => f.path) ?? [];\n    const sched = documents.schedule(ctx, { name: "Room Area Schedule", classes: ["arch.room"], columns: ["number", "name", { id: "area", kind: "field", path: "area", heading: "Area", total: true }, { id: "area_double", kind: "formula", expression: "{area} * 2", heading: "2x Area" }], sort: ["number"], totals: true });\n    ctx.report("Schedule", { sched, fieldCount: fields.length });`),
   },
 ];
